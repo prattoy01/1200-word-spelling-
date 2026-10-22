@@ -1,7 +1,9 @@
 /**
- * Audio processing, compression, local IndexedDB offline cache, and speech synthesis utilities.
- * Ensures any uploaded MP3, M4A, OGG, WAV, or microphone recording fits cleanly within
- * Firestore's 1 MiB document limit (< 850,000 Base64 chars) so it syncs across all browsers and Incognito.
+ * Mobile & Cross-Browser Audio Engine for Listen & Write.
+ * - Transcodes microphone recordings and uploads into universal 16-bit PCM WAV
+ *   so recordings made on PC Web (WebM/OGG) play on iPhone/Android and vice versa.
+ * - Uses Blob Object URLs + persistent unlocked HTMLAudioElement for reliable mobile playback.
+ * - Fixes Android Chrome / iOS Safari speechSynthesis quirks for bundled words.
  */
 
 export interface ProcessedAudio {
@@ -14,9 +16,6 @@ export interface ProcessedAudio {
 
 const MAX_RAW_BASE64_LENGTH = 820000;
 
-/**
- * Reads a File or Blob as a data URL string.
- */
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -32,10 +31,29 @@ function blobToDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+function dataUrlToBlob(dataUrl: string): Blob {
+  const parts = dataUrl.split(',');
+  const header = parts[0] || '';
+  const base64 = parts[1] || '';
+  const mimeMatch = header.match(/data:([^;]+)/);
+  const mime = mimeMatch ? mimeMatch[1] : 'audio/wav';
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
 /**
- * Encodes a mono Float32Array PCM buffer into a compact 16-bit (or 8-bit if long) WAV Blob.
+ * Encodes a mono Float32Array PCM buffer into a standard 16-bit or 8-bit WAV Blob.
+ * WAV is supported on 100% of Android, iOS Safari, Chrome, Brave, and Desktop browsers.
  */
-function encodeMonoWav(samples: Float32Array, sampleRate: number, bitsPerSample: 8 | 16 = 16): Blob {
+function encodeMonoWav(
+  samples: Float32Array,
+  sampleRate: number,
+  bitsPerSample: 8 | 16 = 16
+): Blob {
   const bytesPerSample = bitsPerSample / 8;
   const blockAlign = bytesPerSample;
   const byteRate = sampleRate * blockAlign;
@@ -53,9 +71,9 @@ function encodeMonoWav(samples: Float32Array, sampleRate: number, bitsPerSample:
   view.setUint32(4, 36 + dataSize, true);
   writeString(8, 'WAVE');
   writeString(12, 'fmt ');
-  view.setUint32(16, 16, true); // PCM chunk size
-  view.setUint16(20, 1, true); // PCM format
-  view.setUint16(22, 1, true); // Mono (1 channel)
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
   view.setUint32(28, byteRate, true);
   view.setUint16(32, blockAlign, true);
@@ -81,18 +99,20 @@ function encodeMonoWav(samples: Float32Array, sampleRate: number, bitsPerSample:
 }
 
 /**
- * Downsamples and normalizes an AudioBuffer to mono so large uploads (up to 10 MB)
- * fit comfortably inside a Firestore document while preserving clear speech.
+ * Normalizes and converts any decoded audio buffer into a universal mono WAV
+ * that plays identically across Android, iOS, and Desktop browsers and fits in Firestore.
  */
 async function transcodeToCompactWav(
   arrayBuffer: ArrayBuffer,
   originalName: string
 ): Promise<ProcessedAudio> {
-  const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
   const audioCtx = new AudioCtx();
   try {
     const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
-    // Trim silence at ends & cap duration at 12 seconds for single word/phrase pronunciation
     const maxDurationSec = Math.min(decoded.duration, 12);
     const targetRate = maxDurationSec <= 4.5 ? 22050 : 16000;
     const targetLength = Math.max(1, Math.floor(maxDurationSec * targetRate));
@@ -106,16 +126,16 @@ async function transcodeToCompactWav(
     const rendered = await offlineCtx.startRendering();
     const channelData = rendered.getChannelData(0);
 
-    // Peak normalize for clear pronunciation playback
+    // Peak normalize so quiet phone or laptop mic recordings sound crisp and loud
     let peak = 0;
     for (let i = 0; i < channelData.length; i++) {
       const abs = Math.abs(channelData[i]);
       if (abs > peak) peak = abs;
     }
-    if (peak > 0.01 && peak < 0.95) {
-      const gain = 0.92 / peak;
+    if (peak > 0.005 && peak < 0.95) {
+      const gain = Math.min(8, 0.92 / peak);
       for (let i = 0; i < channelData.length; i++) {
-        channelData[i] *= gain;
+        channelData[i] = Math.max(-1, Math.min(1, channelData[i] * gain));
       }
     }
 
@@ -141,9 +161,9 @@ async function transcodeToCompactWav(
 }
 
 /**
- * Processes an uploaded audio file (MP3, M4A, OGG, WAV, WebM) up to 10 MB.
- * If the file is already compact (< 550 KB), keeps original encoding and measures duration.
- * If larger, transcodes to a normalized mono WAV that fits inside Firestore.
+ * Processes an uploaded audio file (MP3, M4A, OGG, WAV, WebM) or microphone recording.
+ * Always attempts to normalize & convert to universal WAV first so WebM/OGG recordings
+ * work on iOS/Android mobile browsers without codec errors.
  */
 export async function processAudioBlob(
   blob: Blob,
@@ -153,8 +173,17 @@ export async function processAudioBlob(
     throw new Error('File exceeds the 10 MB maximum size limit.');
   }
 
-  const directDataUrl = await blobToDataUrl(blob);
-  if (directDataUrl.length <= MAX_RAW_BASE64_LENGTH) {
+  try {
+    const arrayBuffer = await blob.arrayBuffer();
+    return await transcodeToCompactWav(arrayBuffer, fileName);
+  } catch {
+    // Fallback if browser AudioContext cannot decode a proprietary container directly
+    const directDataUrl = await blobToDataUrl(blob);
+    if (directDataUrl.length > MAX_RAW_BASE64_LENGTH) {
+      throw new Error(
+        'Audio file is too large for Cloud Sync. Please upload a shorter clip (under 10 seconds).'
+      );
+    }
     const durationMs = await measureAudioDuration(directDataUrl);
     return {
       audioDataUrl: directDataUrl,
@@ -164,10 +193,6 @@ export async function processAudioBlob(
       durationMs,
     };
   }
-
-  // File is larger than ~600 KB -> compress & normalize for cloud storage
-  const arrayBuffer = await blob.arrayBuffer();
-  return transcodeToCompactWav(arrayBuffer, fileName);
 }
 
 function measureAudioDuration(dataUrl: string): Promise<number> {
@@ -191,16 +216,16 @@ function measureAudioDuration(dataUrl: string): Promise<number> {
 }
 
 /**
- * Generates a realistic studio pronunciation audio clip (Data URL) for sample/demo uploads
- * or testing when the user clicks "Sync Sample Recording" on a word.
+ * Generates a studio acoustic pronunciation clip (WAV Data URL) for sample/restored words.
  */
-export async function synthesizeWordAudioDataUrl(word: string): Promise<ProcessedAudio> {
+export async function synthesizeWordAudioDataUrl(
+  word: string
+): Promise<ProcessedAudio> {
   const sampleRate = 16000;
   const durationSec = Math.min(2.2, Math.max(0.9, word.length * 0.11));
   const numSamples = Math.floor(sampleRate * durationSec);
   const samples = new Float32Array(numSamples);
 
-  // Create a gentle, pleasant multi-harmonic chime + envelope unique to the word
   let seed = 0;
   for (let i = 0; i < word.length; i++) {
     seed = (seed * 31 + word.charCodeAt(i)) % 1000;
@@ -209,7 +234,9 @@ export async function synthesizeWordAudioDataUrl(word: string): Promise<Processe
 
   for (let i = 0; i < numSamples; i++) {
     const t = i / sampleRate;
-    const sylIndex = Math.floor((t / durationSec) * Math.max(2, Math.min(5, Math.ceil(word.length / 3))));
+    const sylIndex = Math.floor(
+      (t / durationSec) * Math.max(2, Math.min(5, Math.ceil(word.length / 3)))
+    );
     const freq = baseFreq * (1 + (sylIndex % 3) * 0.12);
     const env = Math.sin((Math.PI * t) / durationSec) * Math.exp(-t * 1.4);
     const mod = 0.75 + 0.25 * Math.sin(2 * Math.PI * 6 * t);
@@ -234,58 +261,121 @@ export async function synthesizeWordAudioDataUrl(word: string): Promise<Processe
 }
 
 /**
- * Plays pronunciation for a word:
- * 1. If a custom uploaded/cloud audioDataUrl exists, plays that exact recording at original speed (or slow speed if requested).
- * 2. Also optionally speaks the word via browser Web Speech API if it is a bundled word or user clicks Preview on a missing word.
+ * Singleton HTMLAudioElement + Blob URL cache for reliable playback on Android & iOS mobile browsers.
  */
-let activeAudio: HTMLAudioElement | null = null;
+let sharedAudioElement: HTMLAudioElement | null = null;
+let currentBlobUrl: string | null = null;
 
+function getSharedAudioElement(): HTMLAudioElement {
+  if (!sharedAudioElement) {
+    sharedAudioElement = new Audio();
+    sharedAudioElement.preload = 'auto';
+  }
+  return sharedAudioElement;
+}
+
+function isSyntheticRestoredPlaceholder(word: string, audioDataUrl: string): boolean {
+  // Synthetic restored placeholders generated by synthesizeWordAudioDataUrl have exact deterministic PCM length
+  const durationSec = Math.min(2.2, Math.max(0.9, word.length * 0.11));
+  const expectedSamples = Math.floor(16000 * durationSec);
+  const expectedByteSize = 44 + expectedSamples * 2;
+  const base64Part = audioDataUrl.split(',')[1] || '';
+  const approxByteSize = Math.floor((base64Part.length * 3) / 4);
+  return Math.abs(approxByteSize - expectedByteSize) <= 8;
+}
+
+/**
+ * Plays pronunciation for a word across Desktop and Mobile (Android/iOS):
+ * 1. If a real user-uploaded or mic-recorded audioDataUrl exists, converts it to a Blob Object URL
+ *    and plays it through the unlocked HTMLAudioElement.
+ * 2. Otherwise (or if it is a synthetic restored placeholder), speaks the word via mobile-compatible
+ *    Web Speech API, with an acoustic fallback if the mobile browser lacks a TTS engine.
+ */
 export async function playWordAudio(options: {
   word: string;
   audioDataUrl?: string | null;
   playbackRate?: number;
-  preferSpeechOnSaved?: boolean;
 }): Promise<void> {
   const { word, audioDataUrl, playbackRate = 1.0 } = options;
 
-  if (activeAudio) {
-    activeAudio.pause();
-    activeAudio = null;
-  }
+  const audioEl = getSharedAudioElement();
+  audioEl.pause();
 
-  if (audioDataUrl) {
+  const isRealCustomAudio =
+    Boolean(audioDataUrl) &&
+    audioDataUrl!.startsWith('data:') &&
+    !isSyntheticRestoredPlaceholder(word, audioDataUrl!);
+
+  if (isRealCustomAudio && audioDataUrl) {
     try {
-      const audio = new Audio(audioDataUrl);
-      audio.playbackRate = playbackRate;
-      activeAudio = audio;
-      await audio.play();
+      if (currentBlobUrl) {
+        URL.revokeObjectURL(currentBlobUrl);
+        currentBlobUrl = null;
+      }
+      const blob = dataUrlToBlob(audioDataUrl);
+      currentBlobUrl = URL.createObjectURL(blob);
+      audioEl.src = currentBlobUrl;
+      audioEl.playbackRate = playbackRate;
+      audioEl.currentTime = 0;
+      await audioEl.play();
       return;
     } catch (err) {
-      console.warn('Custom audio playback fallback to Web Speech API:', err);
+      console.warn('Blob audio playback failed, trying direct Data URL:', err);
+      try {
+        audioEl.src = audioDataUrl;
+        audioEl.playbackRate = playbackRate;
+        await audioEl.play();
+        return;
+      } catch (err2) {
+        console.warn('Direct Data URL playback fallback to speechSynthesis:', err2);
+      }
     }
   }
 
+  // Browser TTS for Bundled / Missing words (Mobile Android & iOS safe)
   if ('speechSynthesis' in window) {
-    window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(word);
-    utterance.lang = 'en-GB';
-    utterance.rate = playbackRate * 0.92;
-    utterance.pitch = 1.0;
-    const voices = window.speechSynthesis.getVoices();
-    const preferredVoice =
-      voices.find((v) => v.lang === 'en-GB' && v.name.toLowerCase().includes('natural')) ||
-      voices.find((v) => v.lang === 'en-GB') ||
-      voices.find((v) => v.lang.startsWith('en'));
-    if (preferredVoice) {
-      utterance.voice = preferredVoice;
+    try {
+      // On Android Chrome, calling cancel() when not speaking can freeze the next speak() call
+      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+        window.speechSynthesis.cancel();
+      }
+      const utterance = new SpeechSynthesisUtterance(word);
+      utterance.lang = 'en-GB';
+      utterance.rate = Math.max(0.5, Math.min(1.5, playbackRate * 0.92));
+      utterance.pitch = 1.0;
+
+      // Only assign a specific voice on desktop; on Android mobile, default system voice is far more reliable
+      const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
+      if (!isMobile) {
+        const voices = window.speechSynthesis.getVoices();
+        const preferredVoice =
+          voices.find(
+            (v) =>
+              v.lang === 'en-GB' && v.name.toLowerCase().includes('natural')
+          ) ||
+          voices.find((v) => v.lang === 'en-GB') ||
+          voices.find((v) => v.lang.startsWith('en'));
+        if (preferredVoice) {
+          utterance.voice = preferredVoice;
+        }
+      }
+
+      window.speechSynthesis.speak(utterance);
+      return;
+    } catch (err) {
+      console.warn('speechSynthesis error on mobile:', err);
     }
-    window.speechSynthesis.speak(utterance);
   }
+
+  // Ultimate fallback if mobile WebView has no speechSynthesis support at all
+  const fallback = await synthesizeWordAudioDataUrl(word);
+  audioEl.src = fallback.audioDataUrl;
+  audioEl.playbackRate = playbackRate;
+  await audioEl.play().catch(() => {});
 }
 
 /**
- * Local IndexedDB cache so recordings also work offline and load instantaneously,
- * while syncing to/from Firebase Firestore for cross-browser and Incognito persistence.
+ * Local IndexedDB cache so recordings work offline and load instantaneously.
  */
 const DB_NAME = 'listen_write_cloud_cache_v1';
 const STORE_NAME = 'recordings';
@@ -319,7 +409,9 @@ export interface CachedRecordingItem {
   syncedToCloud: boolean;
 }
 
-export async function saveRecordingToLocalCache(item: CachedRecordingItem): Promise<void> {
+export async function saveRecordingToLocalCache(
+  item: CachedRecordingItem
+): Promise<void> {
   try {
     const db = await openLocalCacheDb();
     await new Promise<void>((resolve, reject) => {
@@ -333,7 +425,9 @@ export async function saveRecordingToLocalCache(item: CachedRecordingItem): Prom
   }
 }
 
-export async function removeRecordingFromLocalCache(wordId: string): Promise<void> {
+export async function removeRecordingFromLocalCache(
+  wordId: string
+): Promise<void> {
   try {
     const db = await openLocalCacheDb();
     await new Promise<void>((resolve, reject) => {
@@ -347,7 +441,9 @@ export async function removeRecordingFromLocalCache(wordId: string): Promise<voi
   }
 }
 
-export async function getAllLocalCachedRecordings(): Promise<Record<string, CachedRecordingItem>> {
+export async function getAllLocalCachedRecordings(): Promise<
+  Record<string, CachedRecordingItem>
+> {
   try {
     const db = await openLocalCacheDb();
     return await new Promise((resolve, reject) => {

@@ -20,6 +20,8 @@ import {
   LogIn,
   LogOut,
   ArrowLeft,
+  ListMusic,
+  BookOpenCheck,
 } from 'lucide-react';
 import {
   auth,
@@ -342,10 +344,9 @@ export default function App() {
 
         setIsUploading(true);
         try {
-          const ext = (recorder.mimeType || '').includes('mp4') ? 'm4a' : 'webm';
           const processed = await processAudioBlob(
             blob,
-            `${selectedWord.id}-mic.${ext}`
+            `${selectedWord.id}-mic.wav`
           );
           const { syncedToCloud } = await saveWordRecording({
             wordId: selectedWord.id,
@@ -474,7 +475,7 @@ export default function App() {
       <OfflineIndicator />
 
       {/* Top Bar Contract: 3 Zones (Brand Wordmark — 4 Single-line Nav Links — 1 Primary Action) */}
-      <header className="flex items-center justify-between gap-8 px-4 sm:px-8 py-4 border-b border-[#142920] bg-[#08120e]/95 sticky top-0 z-30 backdrop-blur-md">
+      <header className="flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-8 py-3.5 border-b border-[#142920] bg-[#08120e]/95 sticky top-0 z-30 backdrop-blur-md">
         {/* Zone 1: Brand Title */}
         <a
           href="#top"
@@ -482,19 +483,20 @@ export default function App() {
             e.preventDefault();
             setActiveScreen('recordings');
           }}
-          className="flex items-center gap-3 text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0"
+          className="flex items-center gap-2.5 text-base sm:text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
-          <span className="w-9 h-9 rounded-full bg-[#10b981] flex items-center justify-center text-[#051a11] font-extrabold shadow-sm">
-            <Volume2 className="w-5 h-5" />
+          <span className="w-8 h-8 sm:w-9 sm:h-9 rounded-full bg-[#10b981] flex items-center justify-center text-[#051a11] font-extrabold shadow-sm shrink-0">
+            <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
           </span>
           <span>
             Listen <span className="font-normal text-[#8ba89a]">&amp;</span> Write
           </span>
         </a>
 
-        {/* Zone 2: 4 Clean Single-Line Navigation Links */}
+        {/* Zone 2: 4 Clean Single-Line Navigation Links (Desktop) */}
         <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#9bb8aa]">
           <button
+            type="button"
             onClick={() => setActiveScreen('recordings')}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
               activeScreen === 'recordings'
@@ -505,6 +507,7 @@ export default function App() {
             Pronunciation Recordings
           </button>
           <button
+            type="button"
             onClick={() => setActiveScreen('practice')}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
               activeScreen === 'practice'
@@ -515,6 +518,7 @@ export default function App() {
             Spelling Practice
           </button>
           <button
+            type="button"
             onClick={handleRestore14Uploads}
             disabled={isRestoring14}
             className="hover:text-[#fbbf24] transition-colors whitespace-nowrap shrink-0"
@@ -522,6 +526,7 @@ export default function App() {
             {isRestoring14 ? 'Syncing 14 Words...' : 'Restore 14 Uploads'}
           </button>
           <button
+            type="button"
             onClick={() => setIsSyncModalOpen(true)}
             className="hover:text-white transition-colors whitespace-nowrap shrink-0"
           >
@@ -530,24 +535,28 @@ export default function App() {
         </nav>
 
         {/* Zone 3: 1 Primary Action */}
-        <div className="flex items-center gap-3 shrink-0">
+        <div className="flex items-center gap-2 shrink-0">
           {user ? (
             <button
+              type="button"
               onClick={() => signOutUser()}
-              title={`Signed in as ${user.email} — Click to sign out`}
-              className="px-3.5 py-2 text-xs font-semibold text-[#10b981] bg-[#11281e] border border-[#1f4735] rounded-xl hover:bg-[#173528] transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+              title={`Signed in as ${user.email} — Tap to sign out`}
+              className="min-h-[40px] px-3 py-1.5 text-xs font-semibold text-[#10b981] bg-[#11281e] border border-[#1f4735] rounded-xl hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
-              <CloudCheck className="w-4 h-4" />
-              <span>Cloud Synced ({user.displayName || user.email?.split('@')[0]})</span>
-              <LogOut className="w-3.5 h-3.5 text-[#7ea090] ml-1" />
+              <CloudCheck className="w-4 h-4 shrink-0" />
+              <span className="max-w-[130px] sm:max-w-none truncate">
+                {user.displayName || user.email?.split('@')[0] || 'Synced'}
+              </span>
+              <LogOut className="w-3.5 h-3.5 text-[#7ea090] ml-0.5 shrink-0" />
             </button>
           ) : (
             <button
+              type="button"
               onClick={handleSignIn}
-              className="px-4 py-2 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-2 whitespace-nowrap shrink-0"
+              className="min-h-[40px] px-3.5 py-1.5 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
-              <LogIn className="w-4 h-4" />
-              <span>Sign in for Cloud Sync</span>
+              <LogIn className="w-4 h-4 shrink-0" />
+              <span>Sign in</span>
             </button>
           )}
         </div>
@@ -564,12 +573,13 @@ export default function App() {
           recentSessions={recentSessions}
         />
       ) : (
-        <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 py-6 space-y-5">
+        <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-6 space-y-5">
           {/* Top Back Link & Mobile App / Share Link Quick Actions */}
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2.5">
             <button
+              type="button"
               onClick={() => setActiveScreen('practice')}
-              className="text-sm font-medium text-[#10b981] hover:text-[#34d399] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              className="min-h-[42px] text-xs sm:text-sm font-semibold text-[#10b981] hover:text-[#34d399] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
             >
               <ArrowLeft className="w-4 h-4" />
               <span>Back to home (IELTS Practice)</span>
@@ -583,32 +593,33 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleCopyQuickLink}
-                className="px-3 py-2 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#214233] text-xs font-semibold text-[#d2e5dc] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#214233] text-xs font-semibold text-[#d2e5dc] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 {copiedQuickLink ? (
                   <>
                     <Check className="w-3.5 h-3.5 text-[#10b981]" />
-                    <span className="text-[#10b981]">App Link Copied!</span>
+                    <span className="text-[#10b981]">Link Copied!</span>
                   </>
                 ) : (
                   <>
                     <Copy className="w-3.5 h-3.5 text-[#10b981]" />
-                    <span>Copy App Link</span>
+                    <span>Copy Link</span>
                   </>
                 )}
               </button>
 
               {counts.uploads === 0 && (
                 <button
+                  type="button"
                   onClick={handleRestore14Uploads}
                   disabled={isRestoring14}
-                  className="px-3 py-2 rounded-xl bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 border border-[#fbbf24]/40 text-xs font-semibold text-[#fbbf24] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 border border-[#fbbf24]/40 text-xs font-semibold text-[#fbbf24] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
                 >
                   <Sparkles className="w-3.5 h-3.5" />
                   <span>
                     {isRestoring14
-                      ? restoreProgressText || 'Restoring 14 Uploads...'
-                      : 'Restore My 14 Screenshot Uploads'}
+                      ? restoreProgressText || 'Restoring 14...'
+                      : 'Restore 14 Uploads'}
                   </span>
                 </button>
               )}
@@ -628,6 +639,7 @@ export default function App() {
             >
               <span>{statusBanner.text}</span>
               <button
+                type="button"
                 onClick={() => setStatusBanner(null)}
                 className="text-xs underline opacity-80 hover:opacity-100 shrink-0"
               >
@@ -643,8 +655,9 @@ export default function App() {
                 You have <strong>{unsyncedLocalCount}</strong> recording(s) saved only in this browser. Sign in with Google to sync them to <strong>Firebase Cloud</strong> so they appear on your Mobile App and Incognito!
               </div>
               <button
+                type="button"
                 onClick={handleSignIn}
-                className="px-3 py-1.5 rounded-lg bg-[#fbbf24] text-[#08120e] text-xs font-bold hover:bg-[#f59e0b] transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[#fbbf24] text-[#08120e] text-xs font-bold hover:bg-[#f59e0b] transition-colors whitespace-nowrap shrink-0"
               >
                 Sign in &amp; Sync to Cloud
               </button>
@@ -652,62 +665,62 @@ export default function App() {
           )}
 
           {/* Main Pronunciation Recordings Card */}
-          <section className="rounded-3xl bg-[#0d1b15] border border-[#1c3529] p-5 sm:p-7 space-y-5 shadow-2xl">
+          <section className="rounded-3xl bg-[#0d1b15] border border-[#1c3529] p-4 sm:p-7 space-y-4 sm:space-y-5 shadow-2xl">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
                   Pronunciation recordings
                 </h1>
-                <p className="mt-1.5 text-sm text-[#8ca89a] leading-relaxed">
+                <p className="mt-1 text-xs sm:text-sm text-[#8ca89a] leading-relaxed">
                   Upload or record any word on Web or Mobile. Your recording syncs in real time via Firebase Cloud across your Mobile App, Web browsers, and Incognito.
                 </p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsSyncModalOpen(true)}
-                className="self-start sm:self-center px-3 py-2 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                className="self-start sm:self-center min-h-[40px] px-3 py-2 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
               >
                 <Smartphone className="w-3.5 h-3.5" />
-                <span>Web &harr; Mobile Link</span>
+                <span>Web &harr; Mobile Sync</span>
               </button>
             </div>
 
             {/* 3-Column KPI Counter Strip: 782 BUNDLED | YOUR UPLOADS | MISSING */}
             <div className="grid grid-cols-3 rounded-2xl bg-[#0a1611] border border-[#1d362a] divide-x divide-[#1d362a] overflow-hidden">
-              <div className="py-4 px-3 text-center">
-                <div className="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-[#10b981]">
+              <div className="py-3.5 sm:py-4 px-2 text-center">
+                <div className="text-xl sm:text-3xl font-bold font-mono tabular-nums text-[#10b981]">
                   {counts.bundled}
                 </div>
-                <div className="mt-1 text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
+                <div className="mt-1 text-[10px] sm:text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
                   BUNDLED
                 </div>
               </div>
 
-              <div className="py-4 px-3 text-center">
-                <div className="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-[#fbbf24]">
+              <div className="py-3.5 sm:py-4 px-2 text-center">
+                <div className="text-xl sm:text-3xl font-bold font-mono tabular-nums text-[#fbbf24]">
                   {counts.uploads}
                 </div>
-                <div className="mt-1 text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
+                <div className="mt-1 text-[10px] sm:text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
                   YOUR UPLOADS
                 </div>
               </div>
 
-              <div className="py-4 px-3 text-center">
-                <div className="text-2xl sm:text-3xl font-bold font-mono tabular-nums text-[#f87171]">
+              <div className="py-3.5 sm:py-4 px-2 text-center">
+                <div className="text-xl sm:text-3xl font-bold font-mono tabular-nums text-[#f87171]">
                   {counts.missing}
                 </div>
-                <div className="mt-1 text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
+                <div className="mt-1 text-[10px] sm:text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
                   MISSING
                 </div>
               </div>
             </div>
 
             {/* 3-Tab Segmented Filter Bar: Missing | My uploads | All 921 */}
-            <div className="grid grid-cols-3 gap-1.5 p-1.5 rounded-2xl bg-[#09140f] border border-[#193025]">
+            <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-[#09140f] border border-[#193025]">
               <button
                 type="button"
                 onClick={() => handleSelectTab('missing')}
-                className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${
+                className={`min-h-[44px] py-2 px-2 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
                   activeTab === 'missing'
                     ? 'bg-[#152e23] text-white border border-[#244c3a]'
                     : 'text-[#8ca89a] hover:text-white'
@@ -722,7 +735,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => handleSelectTab('uploads')}
-                className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${
+                className={`min-h-[44px] py-2 px-2 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
                   activeTab === 'uploads'
                     ? 'bg-[#152e23] text-white border border-[#244c3a]'
                     : 'text-[#8ca89a] hover:text-white'
@@ -737,7 +750,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => handleSelectTab('all')}
-                className={`py-2.5 px-3 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-2 whitespace-nowrap shrink-0 ${
+                className={`min-h-[44px] py-2 px-2 rounded-xl text-xs sm:text-sm font-semibold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 ${
                   activeTab === 'all'
                     ? 'bg-[#152e23] text-white border border-[#244c3a]'
                     : 'text-[#8ca89a] hover:text-white'
@@ -758,7 +771,7 @@ export default function App() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search words..."
-                className="w-full pl-10 pr-4 py-3 rounded-2xl bg-[#0a1611] border border-[#1d362a] focus:border-[#10b981] focus:outline-none text-sm text-white placeholder-[#668576]"
+                className="w-full min-h-[46px] pl-10 pr-4 py-2.5 rounded-2xl bg-[#0a1611] border border-[#1d362a] focus:border-[#10b981] focus:outline-none text-sm text-white placeholder-[#668576]"
               />
             </div>
 
@@ -773,12 +786,13 @@ export default function App() {
                   </p>
                   {activeTab === 'uploads' && (
                     <button
+                      type="button"
                       onClick={handleRestore14Uploads}
                       disabled={isRestoring14}
-                      className="px-4 py-2 rounded-xl bg-[#fbbf24] text-[#09140f] text-xs font-bold hover:bg-[#f59e0b] transition-colors inline-flex items-center gap-2"
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#09140f] text-xs font-bold hover:bg-[#f59e0b] transition-colors inline-flex items-center gap-2"
                     >
                       <Sparkles className="w-4 h-4" />
-                      <span>Restore &amp; Cloud-Sync Your 14 Screenshot Uploads</span>
+                      <span>Restore &amp; Cloud-Sync Your 14 Uploads</span>
                     </button>
                   )}
                 </div>
@@ -791,13 +805,13 @@ export default function App() {
                       key={item.id}
                       type="button"
                       onClick={() => setSelectedWordId(item.id)}
-                      className={`w-full px-4 py-3.5 text-left flex items-center justify-between transition-colors ${
+                      className={`w-full min-h-[48px] px-4 py-3 text-left flex items-center justify-between transition-colors ${
                         isSelected
                           ? 'bg-[#143325] text-[#10b981] font-semibold'
                           : 'text-[#b5cfc2] hover:bg-[#10241b] hover:text-white'
                       }`}
                     >
-                      <div className="flex items-center gap-3 min-w-0">
+                      <div className="flex items-center gap-2 min-w-0">
                         <span className="truncate text-sm">{item.word}</span>
                         {rec && (
                           <span className="text-xs text-[#7ea090] truncate hidden sm:inline">
@@ -806,10 +820,10 @@ export default function App() {
                         )}
                       </div>
 
-                      <div className="shrink-0 ml-3 text-xs font-medium">
+                      <div className="shrink-0 ml-3 text-xs font-medium whitespace-nowrap">
                         {rec ? (
                           <span className="text-[#fbbf24]">
-                            {rec.source === 'cloud' ? 'Your upload · Cloud' : 'Your upload · Local'}
+                            {rec.source === 'cloud' ? 'Your upload' : 'Local upload'}
                           </span>
                         ) : item.hasBundledAudio ? (
                           <span className="text-[#10b981]">Bundled</span>
@@ -825,15 +839,15 @@ export default function App() {
           </section>
 
           {/* Bottom Active Word Inspector & Upload / Record Panel */}
-          <section className="rounded-3xl bg-[#0d1b15] border border-[#1f3b2e] p-5 sm:p-7 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between gap-4">
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-white tracking-tight">
+          <section className="rounded-3xl bg-[#0d1b15] border border-[#1f3b2e] p-4 sm:p-7 space-y-4 shadow-2xl">
+            <div className="flex items-center justify-between gap-3">
+              <h2 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight truncate">
                 {selectedWord.word}
               </h2>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-2 shrink-0">
                 <span
-                  className={`text-xs font-semibold ${
+                  className={`text-xs font-semibold whitespace-nowrap ${
                     selectedRecording
                       ? 'text-[#fbbf24]'
                       : selectedWord.hasBundledAudio
@@ -843,8 +857,8 @@ export default function App() {
                 >
                   {selectedRecording
                     ? selectedRecording.source === 'cloud'
-                      ? 'Your upload · Synced to Web & Mobile'
-                      : 'Your upload · Saved in browser'
+                      ? 'Your upload · Cloud'
+                      : 'Your upload · Local'
                     : selectedWord.hasBundledAudio
                     ? 'Bundled'
                     : 'Missing'}
@@ -855,7 +869,7 @@ export default function App() {
                     type="button"
                     onClick={handleDeleteRecording}
                     title="Delete custom upload"
-                    className="p-1.5 rounded-lg text-[#8ca89a] hover:text-[#f87171] hover:bg-[#2a1417] transition-colors"
+                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[#8ca89a] hover:text-[#f87171] hover:bg-[#2a1417] transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
@@ -871,7 +885,7 @@ export default function App() {
                 onChange={(e) => setBanglaInput(e.target.value)}
                 onBlur={handleBanglaBlurOrSave}
                 placeholder="বাংলা অর্থ লিখুন..."
-                className="w-full px-4 py-3 rounded-xl bg-[#11241c] border border-[#224535] focus:border-[#10b981] focus:outline-none text-base text-white"
+                className="w-full min-h-[48px] px-4 py-3 rounded-xl bg-[#11241c] border border-[#224535] focus:border-[#10b981] focus:outline-none text-base text-white"
               />
               {banglaSavedToast && (
                 <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#10b981] flex items-center gap-1">
@@ -897,7 +911,7 @@ export default function App() {
             </p>
 
             {/* Action Buttons Row: Preview | Upload Recording | Record Mic */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
               <button
                 type="button"
                 onClick={() =>
@@ -906,14 +920,14 @@ export default function App() {
                     audioDataUrl: selectedRecording?.audioDataUrl,
                   })
                 }
-                className="sm:w-44 py-3.5 px-5 rounded-2xl bg-[#0a1611] hover:bg-[#132920] border border-[#214233] text-sm font-semibold text-[#10b981] flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0"
+                className="min-h-[48px] sm:w-40 py-3 px-5 rounded-2xl bg-[#0a1611] hover:bg-[#132920] border border-[#214233] text-sm font-semibold text-[#10b981] flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0"
               >
                 <Play className="w-4 h-4 fill-current" />
                 <span>Preview</span>
               </button>
 
               <label
-                className={`flex-1 py-3.5 px-6 rounded-2xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2.5 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[48px] flex-1 py-3 px-5 rounded-2xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2 cursor-pointer transition-colors whitespace-nowrap shrink-0 ${
                   isUploading ? 'opacity-60 pointer-events-none' : ''
                 }`}
               >
@@ -937,7 +951,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={handleStartStopMicRecording}
-                className={`py-3.5 px-5 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border transition-colors whitespace-nowrap shrink-0 ${
+                className={`min-h-[48px] py-3 px-5 rounded-2xl font-bold text-xs flex items-center justify-center gap-2 border transition-colors whitespace-nowrap shrink-0 ${
                   isRecordingMic
                     ? 'bg-[#dc2626] border-[#f87171] text-white'
                     : 'bg-[#11241c] hover:bg-[#183328] border-[#244938] text-[#d5e8de]'
@@ -963,6 +977,65 @@ export default function App() {
           </section>
         </main>
       )}
+
+      {/* Fixed Mobile Bottom Navigation Bar (Visible on Phone Viewports) */}
+      <nav
+        aria-label="Mobile navigation"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08120e]/95 backdrop-blur-md border-t border-[#183327] grid grid-cols-4 items-center h-16 px-2"
+      >
+        <button
+          type="button"
+          onClick={() => setActiveScreen('recordings')}
+          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'recordings'
+              ? 'text-[#10b981] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
+        >
+          <ListMusic className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            Recordings ({counts.uploads})
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveScreen('practice')}
+          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'practice'
+              ? 'text-[#10b981] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
+        >
+          <BookOpenCheck className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            Practice
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={handleRestore14Uploads}
+          disabled={isRestoring14}
+          className="flex flex-col items-center justify-center h-full rounded-xl text-[#fbbf24] transition-colors"
+        >
+          <Sparkles className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            {isRestoring14 ? 'Syncing...' : 'Restore 14'}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setIsSyncModalOpen(true)}
+          className="flex flex-col items-center justify-center h-full rounded-xl text-[#8ba89a] hover:text-white transition-colors"
+        >
+          <Smartphone className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            Cloud Sync
+          </span>
+        </button>
+      </nav>
 
       {/* Web <-> Mobile Link & Cloud Sync Modal */}
       <NetlifyFixModal

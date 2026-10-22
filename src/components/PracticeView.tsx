@@ -10,9 +10,13 @@ import {
   EyeOff,
   Award,
   Gauge,
+  ListMusic,
 } from 'lucide-react';
 import { WORDS_CATALOG, CATEGORIES, type WordItem } from '../data/words';
-import type { CloudRecording, PracticeSessionRecord } from '../services/recordingsService';
+import type {
+  CloudRecording,
+  PracticeSessionRecord,
+} from '../services/recordingsService';
 import { savePracticeSession } from '../services/recordingsService';
 import { playWordAudio } from '../utils/audioUtils';
 
@@ -27,7 +31,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   onOpenRecordingsManager,
   recentSessions,
 }) => {
-  const [selectedCategory, setSelectedCategory] = useState<string>('All Categories');
+  const [selectedCategory, setSelectedCategory] =
+    useState<string>('All Categories');
   const [deckMode, setDeckMode] = useState<'all' | 'uploads' | 'missing'>('all');
   const [currentIndex, setCurrentIndex] = useState(0);
   const [userInput, setUserInput] = useState('');
@@ -39,7 +44,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
   const filteredDeck: WordItem[] = useMemo(() => {
     return WORDS_CATALOG.filter((item) => {
-      if (selectedCategory !== 'All Categories' && item.category !== selectedCategory) {
+      if (
+        selectedCategory !== 'All Categories' &&
+        item.category !== selectedCategory
+      ) {
         return false;
       }
       const hasCustom = Boolean(recordingsMap[item.id]);
@@ -53,7 +61,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     filteredDeck[currentIndex % Math.max(1, filteredDeck.length)];
 
   const activeRecording = currentWord ? recordingsMap[currentWord.id] : undefined;
-  const displayBangla = activeRecording?.banglaMeaning || currentWord?.bangla || '';
+  const displayBangla =
+    activeRecording?.banglaMeaning || currentWord?.bangla || '';
 
   useEffect(() => {
     setCurrentIndex(0);
@@ -73,7 +82,6 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     } finally {
       setTimeout(() => setIsPlaying(false), 650);
     }
-    inputRef.current?.focus();
   };
 
   const isCorrect =
@@ -110,9 +118,6 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setUserInput('');
     setCurrentIndex((prev) => (prev + 1) % Math.max(1, filteredDeck.length));
-    setTimeout(() => {
-      inputRef.current?.focus();
-    }, 30);
   };
 
   const accuracyPct =
@@ -121,56 +126,80 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       : 100;
 
   return (
-    <div className="max-w-5xl mx-auto px-4 sm:px-6 py-8 space-y-8">
+    <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-8 space-y-6">
+      {/* Mobile Quick Switch Banner to Pronunciation Recordings Manager */}
+      <div className="flex items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
+        <div className="min-w-0">
+          <div className="text-xs font-bold text-[#10b981]">
+            Want to upload or manage word recordings?
+          </div>
+          <div className="text-[11px] text-[#9ab5a7] truncate">
+            782 Bundled · {Object.keys(recordingsMap).length} Cloud Uploads
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => onOpenRecordingsManager(currentWord?.id)}
+          className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+        >
+          <ListMusic className="w-4 h-4" />
+          <span>Open Recordings</span>
+        </button>
+      </div>
+
       {/* Top Toolbar */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-[#183126]">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-5 border-b border-[#183126]">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-white tracking-tight">
+          <h1 className="text-xl sm:text-3xl font-bold text-white tracking-tight">
             IELTS Listening &amp; Spelling Practice
           </h1>
-          <p className="mt-1 text-sm text-[#8ba89a]">
-            Listen to each word at natural speed and type the exact IELTS spelling. Custom Cloud uploads automatically take priority.
+          <p className="mt-1 text-xs sm:text-sm text-[#8ba89a]">
+            Listen to each word and type the exact IELTS spelling. Custom Cloud uploads automatically take priority.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 p-1 rounded-xl bg-[#0d1d16] border border-[#1c382b]">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5">
+          {/* Segmented Deck Filter */}
+          <div className="grid grid-cols-3 gap-1 p-1 rounded-xl bg-[#0d1d16] border border-[#1c382b]">
             <button
+              type="button"
               onClick={() => setDeckMode('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 deckMode === 'all'
                   ? 'bg-[#183529] text-[#10b981]'
                   : 'text-[#8ba89a] hover:text-white'
               }`}
             >
-              All Words ({WORDS_CATALOG.length})
+              All ({WORDS_CATALOG.length})
             </button>
             <button
+              type="button"
               onClick={() => setDeckMode('uploads')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 deckMode === 'uploads'
                   ? 'bg-[#183529] text-[#fbbf24]'
                   : 'text-[#8ba89a] hover:text-white'
               }`}
             >
-              Cloud Uploads ({Object.keys(recordingsMap).length})
+              Uploads ({Object.keys(recordingsMap).length})
             </button>
             <button
+              type="button"
               onClick={() => setDeckMode('missing')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
+              className={`min-h-[40px] px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 ${
                 deckMode === 'missing'
                   ? 'bg-[#183529] text-[#f87171]'
                   : 'text-[#8ba89a] hover:text-white'
               }`}
             >
-              Missing Audio
+              Missing
             </button>
           </div>
 
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="px-3.5 py-2 rounded-xl bg-[#0d1d16] border border-[#1c382b] text-xs font-medium text-white focus:outline-none focus:border-[#10b981]"
+            className="min-h-[44px] px-3.5 py-2 rounded-xl bg-[#0d1d16] border border-[#1c382b] text-xs font-medium text-white focus:outline-none focus:border-[#10b981]"
           >
             {CATEGORIES.map((cat) => (
               <option key={cat} value={cat}>
@@ -182,118 +211,125 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       </div>
 
       {/* Main Two-Zone Practice Sandbox */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Left Interactive Stage (8 cols) */}
-        <div className="lg:col-span-8 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-6 sm:p-8 space-y-6">
+        <div className="lg:col-span-8 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-8 space-y-5">
           {!currentWord ? (
             <div className="py-12 text-center space-y-3">
               <p className="text-base text-[#9ab5a7]">
                 No words match this filter yet.
               </p>
               <button
+                type="button"
                 onClick={() => {
                   setDeckMode('all');
                   setSelectedCategory('All Categories');
                 }}
-                className="px-4 py-2 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold"
+                className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold"
               >
                 Reset Filter
               </button>
             </div>
           ) : (
             <>
-              {/* Word Metadata & Audio Source Line */}
-              <div className="flex flex-wrap items-center justify-between gap-3 text-xs text-[#8ba89a]">
-                <div className="flex items-center gap-2">
-                  <span className="font-mono tabular-nums text-[#10b981]">
-                    Word {(currentIndex % filteredDeck.length) + 1} of {filteredDeck.length}
+              {/* Word Metadata & Audio Source Line (Clean Mobile Single-Line Layout) */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#162d22] text-xs text-[#8ba89a]">
+                <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                  <span className="font-mono tabular-nums font-semibold text-[#10b981] whitespace-nowrap">
+                    Word {(currentIndex % filteredDeck.length) + 1} of{' '}
+                    {filteredDeck.length}
                   </span>
                   <span aria-hidden="true">·</span>
-                  <span>{currentWord.category}</span>
+                  <span className="whitespace-nowrap">{currentWord.category}</span>
                   <span aria-hidden="true">·</span>
                   <span
-                    className={
+                    className={`whitespace-nowrap ${
                       activeRecording
-                        ? 'text-[#fbbf24] font-medium'
+                        ? 'text-[#fbbf24] font-semibold'
                         : currentWord.hasBundledAudio
                         ? 'text-[#10b981]'
                         : 'text-[#f87171]'
-                    }
+                    }`}
                   >
                     {activeRecording
-                      ? `Cloud Upload (${activeRecording.fileName})`
+                      ? 'Cloud Upload Active'
                       : currentWord.hasBundledAudio
                       ? 'Bundled Voice'
-                      : 'Browser TTS Fallback'}
+                      : 'Browser Voice'}
                   </span>
                 </div>
 
                 <button
+                  type="button"
                   onClick={() => onOpenRecordingsManager(currentWord.id)}
-                  className="text-xs font-medium text-[#10b981] hover:underline flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                  className="self-start sm:self-auto min-h-[36px] text-xs font-semibold text-[#10b981] hover:underline flex items-center gap-1.5 whitespace-nowrap shrink-0"
                 >
                   <Mic className="w-3.5 h-3.5" />
                   <span>
-                    {activeRecording ? 'Replace Recording' : 'Upload Custom Audio'}
+                    {activeRecording ? 'Edit / Replace Audio' : 'Upload Custom Audio'}
                   </span>
                 </button>
               </div>
 
-              {/* Audio Playback Controls */}
-              <div className="flex flex-wrap items-center gap-3 pt-2">
+              {/* Audio Playback Controls (Thumb-Friendly Full Width on Mobile) */}
+              <div className="space-y-2.5">
                 <button
                   type="button"
                   onClick={() => handlePlay(1.0)}
-                  className={`flex-1 min-w-[180px] py-4 px-6 rounded-xl font-bold text-sm flex items-center justify-center gap-3 transition-colors ${
+                  className={`w-full min-h-[52px] py-3.5 px-5 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-colors active:scale-[0.99] ${
                     isPlaying
                       ? 'bg-[#059669] text-white'
                       : 'bg-[#10b981] hover:bg-[#059669] text-[#04120c]'
                   }`}
                 >
-                  <Volume2 className="w-5 h-5" />
-                  <span>Play Pronunciation (1.0x)</span>
+                  <Volume2 className="w-5 h-5 shrink-0" />
+                  <span className="whitespace-nowrap">
+                    Play Pronunciation (1.0x)
+                  </span>
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => handlePlay(0.72)}
-                  className="py-4 px-5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Gauge className="w-4 h-4 text-[#10b981]" />
-                  <span>Slow (0.75x)</span>
-                </button>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => handlePlay(0.72)}
+                    className="min-h-[46px] py-2.5 px-3 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+                  >
+                    <Gauge className="w-4 h-4 text-[#10b981] shrink-0" />
+                    <span>Slow (0.75x)</span>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => setShowBanglaHint((v) => !v)}
-                  className="py-4 px-4 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-                >
-                  {showBanglaHint ? (
-                    <>
-                      <EyeOff className="w-4 h-4 text-[#8ba89a]" />
-                      <span>Hide Meaning</span>
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="w-4 h-4 text-[#10b981]" />
-                      <span>Show Meaning</span>
-                    </>
-                  )}
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowBanglaHint((v) => !v)}
+                    className="min-h-[46px] py-2.5 px-3 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+                  >
+                    {showBanglaHint ? (
+                      <>
+                        <EyeOff className="w-4 h-4 text-[#8ba89a] shrink-0" />
+                        <span>Hide Meaning</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-4 h-4 text-[#10b981] shrink-0" />
+                        <span>Show Meaning</span>
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* Bangla Meaning Box */}
               {showBanglaHint && (
-                <div className="rounded-xl bg-[#11241b] border border-[#1f3d2f] px-4 py-3 flex items-center justify-between">
-                  <div>
+                <div className="rounded-xl bg-[#11241b] border border-[#1f3d2f] px-4 py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
                     <div className="text-[11px] text-[#7ea090]">
                       Bangla Meaning / Clue
                     </div>
-                    <div className="text-base font-medium text-white mt-0.5">
+                    <div className="text-base font-medium text-white mt-0.5 break-words">
                       {displayBangla}
                     </div>
                   </div>
-                  <span className="text-xs font-mono text-[#7ea090]">
+                  <span className="text-xs font-mono tabular-nums text-[#7ea090] whitespace-nowrap shrink-0">
                     {currentWord.word.length} letters
                   </span>
                 </div>
@@ -315,10 +351,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     value={userInput}
                     onChange={(e) => setUserInput(e.target.value)}
                     disabled={submitted}
-                    placeholder="Type spelling here and press Enter..."
+                    placeholder="Type the word you hear..."
                     autoComplete="off"
+                    autoCapitalize="none"
+                    autoCorrect="off"
                     spellCheck={false}
-                    className="w-full px-4 py-3.5 rounded-xl bg-[#08130e] border border-[#224234] focus:border-[#10b981] focus:outline-none text-lg font-medium text-white placeholder-[#4c6b5c]"
+                    enterKeyHint="done"
+                    className="w-full min-h-[50px] px-4 py-3 rounded-xl bg-[#08130e] border border-[#224234] focus:border-[#10b981] focus:outline-none text-base sm:text-lg font-medium text-white placeholder-[#4c6b5c]"
                   />
                 </div>
 
@@ -353,21 +392,21 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   </div>
                 )}
 
-                <div className="flex items-center justify-between gap-3 pt-1">
+                <div className="grid grid-cols-2 sm:flex sm:items-center sm:justify-between gap-3 pt-1">
                   <button
                     type="button"
                     onClick={handleNextWord}
-                    className="px-4 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
+                    className="min-h-[48px] px-4 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
                   >
                     Skip Word
                   </button>
 
                   <button
                     type="submit"
-                    className="px-6 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center gap-2 transition-colors"
+                    className="min-h-[48px] px-6 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
                   >
                     <span>{submitted ? 'Next Word' : 'Check Spelling'}</span>
-                    <ArrowRight className="w-4 h-4" />
+                    <ArrowRight className="w-4 h-4 shrink-0" />
                   </button>
                 </div>
               </form>
@@ -384,8 +423,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <span>Current Session Score</span>
               </h2>
               <button
+                type="button"
                 onClick={() => setSessionStats({ attempted: 0, correct: 0 })}
-                className="text-xs text-[#8ba89a] hover:text-white flex items-center gap-1"
+                className="min-h-[36px] px-2 text-xs text-[#8ba89a] hover:text-white flex items-center gap-1"
               >
                 <RotateCcw className="w-3 h-3" />
                 <span>Reset</span>
