@@ -1,0 +1,158 @@
+{
+  "entities": {
+    "Recording": {
+      "title": "Recording",
+      "description": "A cloud-synced pronunciation audio recording for an IELTS vocabulary word or phrase.",
+      "type": "object",
+      "properties": {
+        "wordId": {
+          "type": "string",
+          "description": "Deterministic slug identifier for the word.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "word": {
+          "type": "string",
+          "description": "The English word or phrase being pronounced.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "banglaMeaning": {
+          "type": "string",
+          "description": "Bangla meaning or translation of the word.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "audioDataUrl": {
+          "type": "string",
+          "description": "Base64 data URL of the recorded or uploaded pronunciation audio.",
+          "minLength": 20,
+          "maxLength": 900000
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "MIME type of the audio recording.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original file name of the uploaded recording.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "Audio payload size in bytes."
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Audio duration in milliseconds."
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user who uploaded the recording.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerName": {
+          "type": "string",
+          "description": "Display name of the uploader.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication status of the recording for cross-browser and incognito availability.",
+          "enum": ["published", "archived"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the recording was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the recording was last updated."
+        }
+      },
+      "required": [
+        "wordId",
+        "word",
+        "banglaMeaning",
+        "audioDataUrl",
+        "mimeType",
+        "fileName",
+        "fileSize",
+        "durationMs",
+        "ownerId",
+        "ownerName",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PracticeSession": {
+      "title": "PracticeSession",
+      "description": "A recorded IELTS spelling practice session for a signed-in user.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the student.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "category": {
+          "type": "string",
+          "description": "Vocabulary category practiced.",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "totalWords": {
+          "type": "number",
+          "description": "Total number of words attempted in the session."
+        },
+        "correctCount": {
+          "type": "number",
+          "description": "Number of words spelled accurately."
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Accuracy percentage (0 to 100)."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the session was completed."
+        }
+      },
+      "required": [
+        "ownerId",
+        "category",
+        "totalWords",
+        "correctCount",
+        "accuracy",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/recordings/{recordingId}": {
+      "schema": {
+        "$ref": "#/entities/Recording"
+      },
+      "description": "Stores shared pronunciation audio recordings indexed by deterministic wordId so they persist across browsers, incognito sessions, and accounts."
+    },
+    "/practiceSessions/{sessionId}": {
+      "schema": {
+        "$ref": "#/entities/PracticeSession"
+      },
+      "description": "Stores user-specific IELTS spelling practice history."
+    }
+  }
+}

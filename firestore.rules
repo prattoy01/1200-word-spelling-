@@ -1,0 +1,200 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Global Hardened Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'prattoy.photos01@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Connection health check endpoint used on boot
+    match /test/connection {
+      allow get: if true;
+      allow list, create, update, delete: if false;
+    }
+
+    // Validation Blueprint for Recording
+    function isValidRecording(data) {
+      return data.keys().hasAll([
+          'wordId',
+          'word',
+          'banglaMeaning',
+          'audioDataUrl',
+          'mimeType',
+          'fileName',
+          'fileSize',
+          'durationMs',
+          'ownerId',
+          'ownerName',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'wordId',
+          'word',
+          'banglaMeaning',
+          'audioDataUrl',
+          'mimeType',
+          'fileName',
+          'fileSize',
+          'durationMs',
+          'ownerId',
+          'ownerName',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.wordId is string && data.wordId.size() >= 1 && data.wordId.size() <= 128 && data.wordId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.word is string && data.word.size() >= 1 && data.word.size() <= 120
+        && data.banglaMeaning is string && data.banglaMeaning.size() >= 0 && data.banglaMeaning.size() <= 200
+        && data.audioDataUrl is string && data.audioDataUrl.size() >= 20 && data.audioDataUrl.size() <= 900000
+        && data.mimeType is string && data.mimeType.size() >= 3 && data.mimeType.size() <= 64
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 160
+        && data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 10485760
+        && data.durationMs is number && data.durationMs >= 0 && data.durationMs <= 120000
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 120
+        && data.status is string && data.status.size() <= 20 && (data.status == 'published' || data.status == 'archived')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Validation Blueprint for PracticeSession
+    function isValidPracticeSession(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'category',
+          'totalWords',
+          'correctCount',
+          'accuracy',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId',
+          'category',
+          'totalWords',
+          'correctCount',
+          'accuracy',
+          'createdAt'
+        ])
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.ownerId == request.auth.uid
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && data.totalWords is number && data.totalWords >= 1 && data.totalWords <= 1000
+        && data.correctCount is number && data.correctCount >= 0 && data.correctCount <= data.totalWords
+        && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100
+        && data.createdAt is timestamp;
+    }
+
+    // Collection: /recordings/{recordingId}
+    match /recordings/{recordingId} {
+      // Allow get when checking if a recording exists (resource == null) or when reading a published recording across Web, Mobile App, and Incognito
+      allow get: if isValidId(recordingId) && (
+        resource == null ||
+        existing().status == 'published' ||
+        (isSignedIn() && existing().ownerId == request.auth.uid) ||
+        isAdmin()
+      );
+
+      allow list: if existing().status == 'published' ||
+        (isSignedIn() && existing().ownerId == request.auth.uid);
+
+      allow create: if isVerifiedUser()
+        && isValidId(recordingId)
+        && isValidRecording(incoming())
+        && incoming().wordId == recordingId
+        && incoming().status == 'published'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser()
+        && isValidId(recordingId)
+        && isValidRecording(incoming())
+        && existing().status != 'archived'
+        && incoming().wordId == existing().wordId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Replace audio or update Bangla translation across Web or Mobile App
+          (
+            incoming().status == 'published'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'word',
+              'banglaMeaning',
+              'audioDataUrl',
+              'mimeType',
+              'fileName',
+              'fileSize',
+              'durationMs',
+              'ownerId',
+              'ownerName',
+              'updatedAt'
+            ])
+          )
+          ||
+          // Action 2: Archive a recording (Terminal state transition)
+          (
+            (existing().ownerId == request.auth.uid || isAdmin())
+            && incoming().ownerId == existing().ownerId
+            && incoming().status == 'archived'
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
+          )
+        );
+
+      allow delete: if isVerifiedUser()
+        && isValidId(recordingId)
+        && (existing().ownerId == request.auth.uid || isAdmin());
+    }
+
+    // Collection: /practiceSessions/{sessionId}
+    match /practiceSessions/{sessionId} {
+      allow get: if isSignedIn()
+        && isValidId(sessionId)
+        && (resource == null || existing().ownerId == request.auth.uid);
+
+      allow list: if isSignedIn()
+        && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser()
+        && isValidId(sessionId)
+        && isValidPracticeSession(incoming())
+        && incoming().createdAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser()
+        && isValidId(sessionId)
+        && existing().ownerId == request.auth.uid;
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "Listen & Write — IELTS Spelling & Pronunciation Cloud Studio",
+  "description": "IELTS Listening spelling practice and pronunciation recording manager with real-time Firebase Cloud Sync across all browsers, Incognito sessions, and devices.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
