@@ -75,11 +75,24 @@ export default defineConfig(() => {
                 },
               },
             },
+            {
+              urlPattern: /^https:\/\/(ssl\.gstatic\.com\/dictionary\/static\/sounds|upload\.wikimedia\.org\/wikipedia\/commons)\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'bundled-audio-mp3-cache',
+                expiration: {
+                  maxEntries: 1000,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
           ],
         },
         devOptions: {
-          enabled: true,
-          type: 'module',
+          enabled: false,
         },
       }),
     ],

@@ -22,6 +22,8 @@ import {
   ArrowLeft,
   ListMusic,
   BookOpenCheck,
+  Timer,
+  Layers,
 } from 'lucide-react';
 import {
   auth,
@@ -54,12 +56,15 @@ import { OfflineIndicator } from './components/OfflineIndicator';
 
 type FilterTab = 'missing' | 'uploads' | 'all';
 type ActiveScreen = 'recordings' | 'practice';
+type RecordingsPageFilter = 'all' | 'page1' | 'page2';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [activeScreen, setActiveScreen] = useState<ActiveScreen>('recordings');
+  const [activeScreen, setActiveScreen] = useState<ActiveScreen>('practice');
+  const [practiceSubMode, setPracticeSubMode] = useState<'practice' | 'test'>('practice');
   const [activeTab, setActiveTab] = useState<FilterTab>('missing');
+  const [recordingsPageFilter, setRecordingsPageFilter] = useState<RecordingsPageFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWordId, setSelectedWordId] = useState<string>('weekdays');
   const [recordingsMap, setRecordingsMap] = useState<Record<string, CloudRecording>>({});
@@ -187,10 +192,12 @@ export default function App() {
     };
   }, [recordingsMap]);
 
-  // Filtered words for the active tab & search bar
+  // Filtered words for the active tab, Page 1/Page 2 filter & search bar
   const filteredWords: WordItem[] = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
     return WORDS_CATALOG.filter((item) => {
+      if (recordingsPageFilter === 'page1' && item.page !== 1) return false;
+      if (recordingsPageFilter === 'page2' && item.page !== 2) return false;
       const hasUpload = Boolean(recordingsMap[item.id]);
       if (activeTab === 'missing' && (item.hasBundledAudio || hasUpload)) {
         return false;
@@ -208,7 +215,7 @@ export default function App() {
       }
       return true;
     });
-  }, [activeTab, searchQuery, recordingsMap]);
+  }, [activeTab, recordingsPageFilter, searchQuery, recordingsMap]);
 
   // Keep selectedWord in sync
   const selectedWord: WordItem = useMemo(() => {
@@ -266,14 +273,6 @@ export default function App() {
     setIsUploading(true);
     setStatusBanner(null);
     try {
-      if (!auth.currentUser) {
-        try {
-          await signInWithGoogle();
-        } catch {
-          // Will save locally if popup was dismissed
-        }
-      }
-
       const processed = await processAudioBlob(file, file.name);
       const { syncedToCloud } = await saveWordRecording({
         wordId: selectedWord.id,
@@ -285,13 +284,14 @@ export default function App() {
       await playWordAudio({
         word: selectedWord.word,
         audioDataUrl: processed.audioDataUrl,
+        bundledAudioFile: selectedWord.bundledAudioFile,
       });
 
       setStatusBanner({
         type: syncedToCloud ? 'success' : 'warning',
         text: syncedToCloud
           ? `Uploaded "${selectedWord.word}" to Firebase Cloud! Immediately available on both Web and Mobile App.`
-          : `Saved "${selectedWord.word}" locally. Sign in with Google (top right) so it also syncs to your Mobile App and Incognito!`,
+          : `Saved "${selectedWord.word}" locally and queued for Cloud Sync.`,
       });
     } catch (err) {
       setStatusBanner({
@@ -316,14 +316,6 @@ export default function App() {
     }
 
     try {
-      if (!auth.currentUser) {
-        try {
-          await signInWithGoogle();
-        } catch {
-          // Continue recording locally if user dismissed sign-in
-        }
-      }
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       recordedChunksRef.current = [];
       const recorder = new MediaRecorder(stream);
@@ -435,22 +427,13 @@ export default function App() {
     setIsRestoring14(true);
     setStatusBanner(null);
     try {
-      if (!auth.currentUser) {
-        try {
-          await signInWithGoogle();
-        } catch {
-          // Will still restore locally if popup closed
-        }
-      }
       const count = await seedScreenshot14RecordingsToCloud((curr, total, w) => {
         setRestoreProgressText(`Syncing ${curr}/${total}: ${w}...`);
       });
       handleSelectTab('uploads');
       setStatusBanner({
-        type: auth.currentUser ? 'success' : 'warning',
-        text: auth.currentUser
-          ? `Restored & Cloud-Synced all ${count} uploads (orienteering, caving, scuba-diving, snorkeling, etc.)! Open the Mobile App or Incognito and all 14 uploads are live!`
-          : `Restored all ${count} uploads locally. Sign in with Google (top right) to sync them to your Mobile App and Incognito!`,
+        type: 'success',
+        text: `Restored & Cloud-Synced all ${count} real MP3 uploads (orienteering, caving, scuba-diving, snorkeling, etc.)! Open the Mobile App or Incognito and all 14 real recordings are live!`,
       });
     } catch (err) {
       setStatusBanner({
@@ -481,7 +464,8 @@ export default function App() {
           href="#top"
           onClick={(e) => {
             e.preventDefault();
-            setActiveScreen('recordings');
+            setActiveScreen('practice');
+            setPracticeSubMode('practice');
           }}
           className="flex items-center gap-2.5 text-base sm:text-lg font-bold tracking-tight text-white whitespace-nowrap shrink-0"
         >
@@ -497,6 +481,34 @@ export default function App() {
         <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#9bb8aa]">
           <button
             type="button"
+            onClick={() => {
+              setActiveScreen('practice');
+              setPracticeSubMode('practice');
+            }}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
+              activeScreen === 'practice' && practiceSubMode === 'practice'
+                ? 'text-[#10b981] underline underline-offset-8 decoration-2'
+                : ''
+            }`}
+          >
+            Practice &amp; Categories
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setActiveScreen('practice');
+              setPracticeSubMode('test');
+            }}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
+              activeScreen === 'practice' && practiceSubMode === 'test'
+                ? 'text-[#fbbf24] underline underline-offset-8 decoration-2'
+                : ''
+            }`}
+          >
+            Take Strict Test
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveScreen('recordings')}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
               activeScreen === 'recordings'
@@ -504,26 +516,7 @@ export default function App() {
                 : ''
             }`}
           >
-            Pronunciation Recordings
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveScreen('practice')}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
-              activeScreen === 'practice'
-                ? 'text-[#10b981] underline underline-offset-8 decoration-2'
-                : ''
-            }`}
-          >
-            Spelling Practice
-          </button>
-          <button
-            type="button"
-            onClick={handleRestore14Uploads}
-            disabled={isRestoring14}
-            className="hover:text-[#fbbf24] transition-colors whitespace-nowrap shrink-0"
-          >
-            {isRestoring14 ? 'Syncing 14 Words...' : 'Restore 14 Uploads'}
+            Recordings ({counts.uploads})
           </button>
           <button
             type="button"
@@ -571,6 +564,8 @@ export default function App() {
             setActiveScreen('recordings');
           }}
           recentSessions={recentSessions}
+          activeSubMode={practiceSubMode}
+          onSubModeChange={(mode) => setPracticeSubMode(mode)}
         />
       ) : (
         <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-6 space-y-5">
@@ -712,6 +707,36 @@ export default function App() {
                 <div className="mt-1 text-[10px] sm:text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
                   MISSING
                 </div>
+              </div>
+            </div>
+
+            {/* Page 1 / Page 2 Selector inside Recordings Manager */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+              <span className="text-xs font-semibold text-[#8ca89a] flex items-center gap-1.5">
+                <Layers className="w-3.5 h-3.5 text-[#10b981]" />
+                <span>Filter by Word Book Page:</span>
+              </span>
+              <div className="inline-flex rounded-xl bg-[#09140f] border border-[#193025] p-1 gap-1">
+                {(
+                  [
+                    { id: 'page1', label: 'Page 1 (447)' },
+                    { id: 'page2', label: 'Page 2 (474)' },
+                    { id: 'all', label: 'All (921)' },
+                  ] as const
+                ).map((pg) => (
+                  <button
+                    key={pg.id}
+                    type="button"
+                    onClick={() => setRecordingsPageFilter(pg.id)}
+                    className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-bold transition-colors whitespace-nowrap ${
+                      recordingsPageFilter === pg.id
+                        ? 'bg-[#10b981] text-[#04120c]'
+                        : 'text-[#8ca89a] hover:text-white'
+                    }`}
+                  >
+                    {pg.label}
+                  </button>
+                ))}
               </div>
             </div>
 
@@ -903,10 +928,18 @@ export default function App() {
                   {Math.max(1, Math.round(selectedRecording.fileSize / 1024))} KB).{' '}
                   {selectedRecording.source === 'cloud'
                     ? 'Synced to Firebase Cloud — immediately available on your Mobile App, Web, and Incognito.'
-                    : 'Saved locally — sign in with Google so it syncs to your Mobile App.'}
+                    : 'Saved locally.'}
+                </>
+              ) : selectedWord.bundledAudioFile ? (
+                <>
+                  Original bundled recording active (
+                  <code className="text-[#10b981] font-mono">
+                    {`audio-${selectedWord.originalId}.${selectedWord.bundledAudioFile.endsWith('.ogg') ? 'ogg' : 'mp3'}`}
+                  </code>
+                  ). Tap Preview to listen, or upload a custom recording to override it.
                 </>
               ) : (
-                'No recording yet. Upload a clear MP3, M4A, OGG or WAV file, or record directly with your phone/PC microphone.'
+                'No custom upload yet (uses dictionary audio fallback). Upload a clear MP3, M4A, OGG or WAV file, or record with your microphone to override.'
               )}
             </p>
 
@@ -918,6 +951,7 @@ export default function App() {
                   playWordAudio({
                     word: selectedWord.word,
                     audioDataUrl: selectedRecording?.audioDataUrl,
+                    bundledAudioFile: selectedWord.bundledAudioFile,
                   })
                 }
                 className="min-h-[48px] sm:w-40 py-3 px-5 rounded-2xl bg-[#0a1611] hover:bg-[#132920] border border-[#214233] text-sm font-semibold text-[#10b981] flex items-center justify-center gap-2 transition-colors whitespace-nowrap shrink-0"
@@ -985,24 +1019,12 @@ export default function App() {
       >
         <button
           type="button"
-          onClick={() => setActiveScreen('recordings')}
+          onClick={() => {
+            setActiveScreen('practice');
+            setPracticeSubMode('practice');
+          }}
           className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
-            activeScreen === 'recordings'
-              ? 'text-[#10b981] font-bold'
-              : 'text-[#8ba89a]'
-          }`}
-        >
-          <ListMusic className="w-5 h-5" />
-          <span className="text-[10px] mt-1 whitespace-nowrap">
-            Recordings ({counts.uploads})
-          </span>
-        </button>
-
-        <button
-          type="button"
-          onClick={() => setActiveScreen('practice')}
-          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
-            activeScreen === 'practice'
+            activeScreen === 'practice' && practiceSubMode === 'practice'
               ? 'text-[#10b981] font-bold'
               : 'text-[#8ba89a]'
           }`}
@@ -1015,13 +1037,34 @@ export default function App() {
 
         <button
           type="button"
-          onClick={handleRestore14Uploads}
-          disabled={isRestoring14}
-          className="flex flex-col items-center justify-center h-full rounded-xl text-[#fbbf24] transition-colors"
+          onClick={() => {
+            setActiveScreen('practice');
+            setPracticeSubMode('test');
+          }}
+          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'practice' && practiceSubMode === 'test'
+              ? 'text-[#fbbf24] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
         >
-          <Sparkles className="w-5 h-5" />
+          <Timer className="w-5 h-5" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            {isRestoring14 ? 'Syncing...' : 'Restore 14'}
+            Take Test
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveScreen('recordings')}
+          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'recordings'
+              ? 'text-[#10b981] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
+        >
+          <ListMusic className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            Recordings ({counts.uploads})
           </span>
         </button>
 

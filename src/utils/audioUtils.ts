@@ -1,10 +1,13 @@
 /**
  * Mobile & Cross-Browser Audio Engine for Listen & Write.
- * - Transcodes microphone recordings and uploads into universal 16-bit PCM WAV
- *   so recordings made on PC Web (WebM/OGG) play on iPhone/Android and vice versa.
- * - Uses Blob Object URLs + persistent unlocked HTMLAudioElement for reliable mobile playback.
- * - Fixes Android Chrome / iOS Safari speechSynthesis quirks for bundled words.
+ * - Plays the 782 original bundled MP3/OGG recordings from the user's Google Drive (/audio-w1.mp3 .. /audio-w926.mp3).
+ * - Plays real user-uploaded / microphone-recorded audio synced via Firebase Cloud.
+ * - Plays real Google Dictionary MP3 fallbacks (/dict-fallback/audio-w*.mp3) for unrecorded words.
+ * - Transcodes microphone recordings and uploads into universal 16-bit PCM WAV or preserves MP3
+ *   so recordings made on PC Web play on iPhone/Android and vice versa.
  */
+
+import { WORDS_CATALOG, toWordId } from '../data/words';
 
 export interface ProcessedAudio {
   audioDataUrl: string;
@@ -16,7 +19,7 @@ export interface ProcessedAudio {
 
 const MAX_RAW_BASE64_LENGTH = 820000;
 
-function blobToDataUrl(blob: Blob): Promise<string> {
+export function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
@@ -36,7 +39,7 @@ function dataUrlToBlob(dataUrl: string): Blob {
   const header = parts[0] || '';
   const base64 = parts[1] || '';
   const mimeMatch = header.match(/data:([^;]+)/);
-  const mime = mimeMatch ? mimeMatch[1] : 'audio/wav';
+  const mime = mimeMatch ? mimeMatch[1] : 'audio/mpeg';
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i++) {
@@ -162,8 +165,6 @@ async function transcodeToCompactWav(
 
 /**
  * Processes an uploaded audio file (MP3, M4A, OGG, WAV, WebM) or microphone recording.
- * Always attempts to normalize & convert to universal WAV first so WebM/OGG recordings
- * work on iOS/Android mobile browsers without codec errors.
  */
 export async function processAudioBlob(
   blob: Blob,
@@ -173,11 +174,32 @@ export async function processAudioBlob(
     throw new Error('File exceeds the 10 MB maximum size limit.');
   }
 
+  // If it's already a compact MP3 file (< 450 KB), keep original high-clarity MP3 directly!
+  const isMp3 =
+    blob.type === 'audio/mpeg' ||
+    blob.type === 'audio/mp3' ||
+    fileName.toLowerCase().endsWith('.mp3');
+
+  if (isMp3 && blob.size > 400 && blob.size <= 450 * 1024) {
+    const mp3Blob =
+      blob.type === 'audio/mpeg' ? blob : new Blob([blob], { type: 'audio/mpeg' });
+    const directDataUrl = await blobToDataUrl(mp3Blob);
+    if (directDataUrl.length <= MAX_RAW_BASE64_LENGTH) {
+      const durationMs = await measureAudioDuration(directDataUrl);
+      return {
+        audioDataUrl: directDataUrl,
+        mimeType: 'audio/mpeg',
+        fileName: fileName.slice(0, 150),
+        fileSize: mp3Blob.size,
+        durationMs,
+      };
+    }
+  }
+
   try {
     const arrayBuffer = await blob.arrayBuffer();
     return await transcodeToCompactWav(arrayBuffer, fileName);
   } catch {
-    // Fallback if browser AudioContext cannot decode a proprietary container directly
     const directDataUrl = await blobToDataUrl(blob);
     if (directDataUrl.length > MAX_RAW_BASE64_LENGTH) {
       throw new Error(
@@ -195,73 +217,87 @@ export async function processAudioBlob(
   }
 }
 
-function measureAudioDuration(dataUrl: string): Promise<number> {
+export function measureAudioDuration(srcUrl: string): Promise<number> {
   return new Promise((resolve) => {
     const audio = new Audio();
-    const timeout = window.setTimeout(() => resolve(1500), 2500);
+    const timeout = window.setTimeout(() => resolve(1400), 2500);
     audio.onloadedmetadata = () => {
       window.clearTimeout(timeout);
       if (Number.isFinite(audio.duration) && audio.duration > 0) {
         resolve(Math.min(120000, Math.round(audio.duration * 1000)));
       } else {
-        resolve(1500);
+        resolve(1400);
       }
     };
     audio.onerror = () => {
       window.clearTimeout(timeout);
-      resolve(1500);
+      resolve(1400);
     };
-    audio.src = dataUrl;
+    audio.src = srcUrl;
   });
 }
 
 /**
- * Generates a studio acoustic pronunciation clip (WAV Data URL) for sample/restored words.
+ * Detects legacy synthetic sine-wave placeholders so they are ignored and never override real audio.
  */
-export async function synthesizeWordAudioDataUrl(
-  word: string
-): Promise<ProcessedAudio> {
-  const sampleRate = 16000;
+export function isSyntheticRestoredPlaceholder(
+  word: string,
+  audioDataUrl?: string | null
+): boolean {
+  if (!audioDataUrl || !audioDataUrl.startsWith('data:audio/wav')) {
+    return false;
+  }
   const durationSec = Math.min(2.2, Math.max(0.9, word.length * 0.11));
-  const numSamples = Math.floor(sampleRate * durationSec);
-  const samples = new Float32Array(numSamples);
+  const expectedSamples = Math.floor(16000 * durationSec);
+  const expectedByteSize = 44 + expectedSamples * 2;
+  const base64Part = audioDataUrl.split(',')[1] || '';
+  const approxByteSize = Math.floor((base64Part.length * 3) / 4);
+  return Math.abs(approxByteSize - expectedByteSize) <= 12;
+}
 
-  let seed = 0;
-  for (let i = 0; i < word.length; i++) {
-    seed = (seed * 31 + word.charCodeAt(i)) % 1000;
+/**
+ * Fetches a real bundled or dictionary MP3 file from /public/ and packages it as a ProcessedAudio
+ * object suitable for saving to Firebase Cloud and local IndexedDB.
+ */
+export async function loadRealAudioFileAsProcessed(
+  word: string,
+  audioFileUrl: string
+): Promise<ProcessedAudio> {
+  const response = await fetch(audioFileUrl);
+  if (!response.ok) {
+    throw new Error(`Could not load audio file: ${audioFileUrl}`);
   }
-  const baseFreq = 220 + (seed % 140);
+  const arrayBuffer = await response.arrayBuffer();
+  const isOgg = audioFileUrl.toLowerCase().endsWith('.ogg');
+  const mimeType = isOgg ? 'audio/ogg' : 'audio/mpeg';
+  const blob = new Blob([arrayBuffer], { type: mimeType });
+  const audioDataUrl = await blobToDataUrl(blob);
+  const durationMs = await measureAudioDuration(audioFileUrl);
+  const ext = isOgg ? 'ogg' : 'mp3';
 
-  for (let i = 0; i < numSamples; i++) {
-    const t = i / sampleRate;
-    const sylIndex = Math.floor(
-      (t / durationSec) * Math.max(2, Math.min(5, Math.ceil(word.length / 3)))
-    );
-    const freq = baseFreq * (1 + (sylIndex % 3) * 0.12);
-    const env = Math.sin((Math.PI * t) / durationSec) * Math.exp(-t * 1.4);
-    const mod = 0.75 + 0.25 * Math.sin(2 * Math.PI * 6 * t);
-    samples[i] =
-      0.45 *
-      env *
-      mod *
-      (0.6 * Math.sin(2 * Math.PI * freq * t) +
-        0.25 * Math.sin(2 * Math.PI * freq * 2 * t) +
-        0.15 * Math.sin(2 * Math.PI * freq * 3 * t));
-  }
-
-  const wavBlob = encodeMonoWav(samples, sampleRate, 16);
-  const audioDataUrl = await blobToDataUrl(wavBlob);
   return {
     audioDataUrl,
-    mimeType: 'audio/wav',
-    fileName: `${word.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.wav`,
-    fileSize: wavBlob.size,
-    durationMs: Math.round(durationSec * 1000),
+    mimeType,
+    fileName: `${toWordId(word)}.${ext}`,
+    fileSize: blob.size,
+    durationMs,
   };
 }
 
 /**
- * Singleton HTMLAudioElement + Blob URL cache for reliable playback on Android & iOS mobile browsers.
+ * Fast lookup index for words in WORDS_CATALOG by lowercase word and by slug id.
+ */
+const wordLookupMap = new Map<
+  string,
+  (typeof WORDS_CATALOG)[number]
+>();
+for (const item of WORDS_CATALOG) {
+  wordLookupMap.set(item.word.toLowerCase().trim(), item);
+  wordLookupMap.set(item.id.toLowerCase().trim(), item);
+}
+
+/**
+ * Singleton HTMLAudioElement + Blob URL cache for reliable playback on Android, iOS & Desktop.
  */
 let sharedAudioElement: HTMLAudioElement | null = null;
 let currentBlobUrl: string | null = null;
@@ -274,37 +310,52 @@ function getSharedAudioElement(): HTMLAudioElement {
   return sharedAudioElement;
 }
 
-function isSyntheticRestoredPlaceholder(word: string, audioDataUrl: string): boolean {
-  // Synthetic restored placeholders generated by synthesizeWordAudioDataUrl have exact deterministic PCM length
-  const durationSec = Math.min(2.2, Math.max(0.9, word.length * 0.11));
-  const expectedSamples = Math.floor(16000 * durationSec);
-  const expectedByteSize = 44 + expectedSamples * 2;
-  const base64Part = audioDataUrl.split(',')[1] || '';
-  const approxByteSize = Math.floor((base64Part.length * 3) / 4);
-  return Math.abs(approxByteSize - expectedByteSize) <= 8;
+async function playUrlWithSharedAudio(
+  url: string,
+  playbackRate: number
+): Promise<boolean> {
+  try {
+    const audioEl = getSharedAudioElement();
+    audioEl.pause();
+    audioEl.src = url;
+    audioEl.playbackRate = playbackRate;
+    audioEl.currentTime = 0;
+    await audioEl.play();
+    return true;
+  } catch (err) {
+    console.warn(`Audio playback failed for ${url}:`, err);
+    return false;
+  }
 }
 
 /**
  * Plays pronunciation for a word across Desktop and Mobile (Android/iOS):
- * 1. If a real user-uploaded or mic-recorded audioDataUrl exists, converts it to a Blob Object URL
- *    and plays it through the unlocked HTMLAudioElement.
- * 2. Otherwise (or if it is a synthetic restored placeholder), speaks the word via mobile-compatible
- *    Web Speech API, with an acoustic fallback if the mobile browser lacks a TTS engine.
+ * 1. Priority 1 (User Cloud/Local Upload): Real user-uploaded or mic-recorded audioDataUrl.
+ * 2. Priority 2 (Original Bundled Audio): The 782 original /audio-w*.mp3 & /audio-w2.ogg files from Google Drive.
+ * 3. Priority 3 (Real Dictionary MP3 Fallback): /dict-fallback/audio-w*.mp3 or /audio-w555.mp3 / /audio-w560.mp3.
+ * 4. Priority 4 (Browser British English TTS): Only if no recorded audio file exists at all.
  */
 export async function playWordAudio(options: {
   word: string;
   audioDataUrl?: string | null;
+  bundledAudioFile?: string | null;
   playbackRate?: number;
 }): Promise<void> {
-  const { word, audioDataUrl, playbackRate = 1.0 } = options;
+  const { word, audioDataUrl, bundledAudioFile, playbackRate = 1.0 } = options;
 
   const audioEl = getSharedAudioElement();
   audioEl.pause();
+  if ('speechSynthesis' in window) {
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+      window.speechSynthesis.cancel();
+    }
+  }
 
+  // 1. Real user-uploaded / recorded audio (ignoring any legacy synthetic sine-wave data)
   const isRealCustomAudio =
     Boolean(audioDataUrl) &&
     audioDataUrl!.startsWith('data:') &&
-    !isSyntheticRestoredPlaceholder(word, audioDataUrl!);
+    !isSyntheticRestoredPlaceholder(word, audioDataUrl);
 
   if (isRealCustomAudio && audioDataUrl) {
     try {
@@ -321,57 +372,72 @@ export async function playWordAudio(options: {
       return;
     } catch (err) {
       console.warn('Blob audio playback failed, trying direct Data URL:', err);
-      try {
-        audioEl.src = audioDataUrl;
-        audioEl.playbackRate = playbackRate;
-        await audioEl.play();
-        return;
-      } catch (err2) {
-        console.warn('Direct Data URL playback fallback to speechSynthesis:', err2);
-      }
+      const playedDirect = await playUrlWithSharedAudio(
+        audioDataUrl,
+        playbackRate
+      );
+      if (playedDirect) return;
     }
   }
 
-  // Browser TTS for Bundled / Missing words (Mobile Android & iOS safe)
+  // 2. Original Bundled MP3/OGG from Google Drive (782 words)
+  const catalogEntry =
+    wordLookupMap.get(word.toLowerCase().trim()) ||
+    wordLookupMap.get(toWordId(word));
+
+  const bundledUrl = bundledAudioFile || catalogEntry?.bundledAudioFile;
+  if (bundledUrl) {
+    const playedBundled = await playUrlWithSharedAudio(
+      bundledUrl,
+      playbackRate
+    );
+    if (playedBundled) return;
+  }
+
+  // 3. Real Google Dictionary MP3 Fallback for Missing words
+  const dictToken = word
+    .toLowerCase()
+    .replace(/\s*\/\s*.*/, '')
+    .trim()
+    .replace(/\s+/g, '_');
+  if (/^[a-z_]+$/.test(dictToken)) {
+    const gbUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_gb_1.mp3`;
+    if (await playUrlWithSharedAudio(gbUrl, playbackRate)) return;
+    const usUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_us_1.mp3`;
+    if (await playUrlWithSharedAudio(usUrl, playbackRate)) return;
+  }
+
+  // 4. Last-resort British English Web Speech API
   if ('speechSynthesis' in window) {
     try {
-      // On Android Chrome, calling cancel() when not speaking can freeze the next speak() call
-      if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
-        window.speechSynthesis.cancel();
-      }
       const utterance = new SpeechSynthesisUtterance(word);
       utterance.lang = 'en-GB';
-      utterance.rate = Math.max(0.5, Math.min(1.5, playbackRate * 0.92));
+      utterance.rate = Math.max(0.5, Math.min(1.5, playbackRate * 0.9));
       utterance.pitch = 1.0;
 
-      // Only assign a specific voice on desktop; on Android mobile, default system voice is far more reliable
       const isMobile = /android|iphone|ipad|ipod/i.test(navigator.userAgent);
       if (!isMobile) {
         const voices = window.speechSynthesis.getVoices();
         const preferredVoice =
           voices.find(
             (v) =>
-              v.lang === 'en-GB' && v.name.toLowerCase().includes('natural')
+              v.lang.replace('_', '-').toLowerCase() === 'en-gb' &&
+              v.localService
           ) ||
-          voices.find((v) => v.lang === 'en-GB') ||
-          voices.find((v) => v.lang.startsWith('en'));
+          voices.find(
+            (v) => v.lang.replace('_', '-').toLowerCase() === 'en-gb'
+          ) ||
+          voices.find((v) => v.lang.toLowerCase().startsWith('en'));
         if (preferredVoice) {
           utterance.voice = preferredVoice;
         }
       }
 
       window.speechSynthesis.speak(utterance);
-      return;
     } catch (err) {
-      console.warn('speechSynthesis error on mobile:', err);
+      console.warn('speechSynthesis error:', err);
     }
   }
-
-  // Ultimate fallback if mobile WebView has no speechSynthesis support at all
-  const fallback = await synthesizeWordAudioDataUrl(word);
-  audioEl.src = fallback.audioDataUrl;
-  audioEl.playbackRate = playbackRate;
-  await audioEl.play().catch(() => {});
 }
 
 /**
@@ -452,6 +518,10 @@ export async function getAllLocalCachedRecordings(): Promise<
       req.onsuccess = () => {
         const map: Record<string, CachedRecordingItem> = {};
         for (const item of req.result as CachedRecordingItem[]) {
+          if (isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
+            void removeRecordingFromLocalCache(item.wordId);
+            continue;
+          }
           map[item.wordId] = item;
         }
         resolve(map);

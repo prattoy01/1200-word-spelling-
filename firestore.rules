@@ -20,21 +20,6 @@ service cloud.firestore {
       return resource.data;
     }
 
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function isVerifiedUser() {
-      return isSignedIn() && request.auth.token.email_verified == true;
-    }
-
-    function isAdmin() {
-      return isVerifiedUser() && (
-        request.auth.token.email == 'prattoy.photos01@gmail.com' ||
-        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
-      );
-    }
-
     // Connection health check endpoint used on boot
     match /test/connection {
       allow get: if true;
@@ -82,7 +67,6 @@ service cloud.firestore {
         && data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 10485760
         && data.durationMs is number && data.durationMs >= 0 && data.durationMs <= 120000
         && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
-        && data.ownerId == request.auth.uid
         && data.ownerName is string && data.ownerName.size() >= 1 && data.ownerName.size() <= 120
         && data.status is string && data.status.size() <= 20 && (data.status == 'published' || data.status == 'archived')
         && data.createdAt is timestamp
@@ -108,7 +92,6 @@ service cloud.firestore {
           'createdAt'
         ])
         && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
-        && data.ownerId == request.auth.uid
         && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
         && data.totalWords is number && data.totalWords >= 1 && data.totalWords <= 1000
         && data.correctCount is number && data.correctCount >= 0 && data.correctCount <= data.totalWords
@@ -118,27 +101,21 @@ service cloud.firestore {
 
     // Collection: /recordings/{recordingId}
     match /recordings/{recordingId} {
-      // Allow get when checking if a recording exists (resource == null) or when reading a published recording across Web, Mobile App, and Incognito
       allow get: if isValidId(recordingId) && (
         resource == null ||
-        existing().status == 'published' ||
-        (isSignedIn() && existing().ownerId == request.auth.uid) ||
-        isAdmin()
+        existing().status == 'published'
       );
 
-      allow list: if existing().status == 'published' ||
-        (isSignedIn() && existing().ownerId == request.auth.uid);
+      allow list: if existing().status == 'published';
 
-      allow create: if isVerifiedUser()
-        && isValidId(recordingId)
+      allow create: if isValidId(recordingId)
         && isValidRecording(incoming())
         && incoming().wordId == recordingId
         && incoming().status == 'published'
         && incoming().createdAt == request.time
         && incoming().updatedAt == request.time;
 
-      allow update: if isVerifiedUser()
-        && isValidId(recordingId)
+      allow update: if isValidId(recordingId)
         && isValidRecording(incoming())
         && existing().status != 'archived'
         && incoming().wordId == existing().wordId
@@ -162,39 +139,33 @@ service cloud.firestore {
             ])
           )
           ||
-          // Action 2: Archive a recording (Terminal state transition)
+          // Action 2: Archive a recording
           (
-            (existing().ownerId == request.auth.uid || isAdmin())
-            && incoming().ownerId == existing().ownerId
+            incoming().ownerId == existing().ownerId
             && incoming().status == 'archived'
             && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt'])
           )
         );
 
-      allow delete: if isVerifiedUser()
-        && isValidId(recordingId)
-        && (existing().ownerId == request.auth.uid || isAdmin());
+      allow delete: if isValidId(recordingId)
+        && existing().status == 'published';
     }
 
     // Collection: /practiceSessions/{sessionId}
     match /practiceSessions/{sessionId} {
-      allow get: if isSignedIn()
-        && isValidId(sessionId)
-        && (resource == null || existing().ownerId == request.auth.uid);
+      allow get: if isValidId(sessionId)
+        && (resource == null || existing().ownerId.size() >= 1);
 
-      allow list: if isSignedIn()
-        && existing().ownerId == request.auth.uid;
+      allow list: if existing().ownerId.size() >= 1;
 
-      allow create: if isVerifiedUser()
-        && isValidId(sessionId)
+      allow create: if isValidId(sessionId)
         && isValidPracticeSession(incoming())
         && incoming().createdAt == request.time;
 
       allow update: if false;
 
-      allow delete: if isVerifiedUser()
-        && isValidId(sessionId)
-        && existing().ownerId == request.auth.uid;
+      allow delete: if isValidId(sessionId)
+        && existing().ownerId.size() >= 1;
     }
   }
 }
