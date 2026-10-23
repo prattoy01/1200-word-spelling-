@@ -109,9 +109,9 @@
         },
         "category": {
           "type": "string",
-          "description": "Vocabulary category practiced.",
+          "description": "Vocabulary category or categories practiced.",
           "minLength": 1,
-          "maxLength": 80
+          "maxLength": 200
         },
         "totalWords": {
           "type": "number",
@@ -124,6 +124,10 @@
         "accuracy": {
           "type": "number",
           "description": "Accuracy percentage (0 to 100)."
+        },
+        "results": {
+          "type": "array",
+          "description": "Detailed per-word answer breakdown for the exam or practice session."
         },
         "createdAt": {
           "type": "string",

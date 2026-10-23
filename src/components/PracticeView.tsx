@@ -18,11 +18,16 @@ import {
   FolderOpen,
   ShieldAlert,
   Trophy,
+  Check,
+  ChevronRight,
+  X,
+  FileText,
 } from 'lucide-react';
 import { WORDS_CATALOG, CATEGORIES, type WordItem } from '../data/words';
 import type {
   CloudRecording,
   PracticeSessionRecord,
+  SessionWordResult,
 } from '../services/recordingsService';
 import { savePracticeSession } from '../services/recordingsService';
 import { playWordAudio } from '../utils/audioUtils';
@@ -121,6 +126,41 @@ function checkSpellingCorrect(answer: string, targetWord: string): boolean {
   return accepted.includes(normAns);
 }
 
+/**
+ * Finds matching catalog words for legacy history entries that were saved before per-word results existed.
+ */
+function findCatalogWordsForSessionCategory(categoryLabel: string): WordItem[] {
+  const clean = categoryLabel
+    .replace(/^Exam\s*\(/i, '')
+    .replace(/\)$/, '')
+    .trim();
+  const parts = clean.split('·').map((s) => s.trim());
+  let pageNum: 1 | 2 | null = null;
+  let catPart = clean;
+
+  if (parts.length >= 2) {
+    if (/^PAGE1$/i.test(parts[0])) pageNum = 1;
+    else if (/^PAGE2$/i.test(parts[0])) pageNum = 2;
+    catPart = parts.slice(1).join(' · ').trim();
+  }
+
+  const selectedCatNames = catPart
+    .split(/\s*\+\s*|\s*,\s*/)
+    .map((s) => s.replace(/\+\d+\s*more$/i, '').trim())
+    .filter((s) => s && s.toLowerCase() !== 'all categories');
+
+  return WORDS_CATALOG.filter((w) => {
+    if (pageNum && w.page !== pageNum) return false;
+    if (
+      selectedCatNames.length > 0 &&
+      !selectedCatNames.some((c) => w.category.toLowerCase() === c.toLowerCase())
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
 export const PracticeView: React.FC<PracticeViewProps> = ({
   recordingsMap,
   onOpenRecordingsManager,
@@ -128,14 +168,46 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   activeSubMode,
   onSubModeChange,
 }) => {
-  // Shared Page 1 / Page 2 & Category Selection
+  // Shared Page 1 / Page 2 & Multi-Category Selection (empty array = All Categories)
   const [pageFilter, setPageFilter] = useState<PageFilter>('page1');
-  const [selectedCategory, setSelectedCategory] =
-    useState<string>('All Categories');
+  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
   const [deckMode, setDeckMode] = useState<'all' | 'uploads' | 'missing'>('all');
   const [subMode, setSubMode] = useState<PracticeSubMode>(
     activeSubMode || 'practice'
   );
+
+  // Selected session for the "Recent Practice & Exam History" Details Modal
+  const [selectedHistorySession, setSelectedHistorySession] =
+    useState<PracticeSessionRecord | null>(null);
+  const [historyFilterMode, setHistoryFilterMode] = useState<
+    'all' | 'mistakes' | 'correct'
+  >('all');
+
+  const toggleCategory = (cat: string) => {
+    setSelectedCategories((prev) =>
+      prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
+    );
+  };
+
+  const handlePageFilterChange = (nextPage: PageFilter) => {
+    setPageFilter(nextPage);
+    if (nextPage === 'all') return;
+    const targetPageNum = nextPage === 'page1' ? 1 : 2;
+    const validCategoriesOnPage = new Set(
+      WORDS_CATALOG.filter((w) => w.page === targetPageNum).map(
+        (w) => w.category
+      )
+    );
+    setSelectedCategories((prev) =>
+      prev.filter((c) => validCategoriesOnPage.has(c))
+    );
+  };
+
+  const selectedCategoriesLabel = useMemo(() => {
+    if (selectedCategories.length === 0) return 'All Categories';
+    if (selectedCategories.length <= 2) return selectedCategories.join(' + ');
+    return `${selectedCategories.slice(0, 2).join(', ')} +${selectedCategories.length - 2} more`;
+  }, [selectedCategories]);
 
   useEffect(() => {
     if (activeSubMode && activeSubMode !== subMode) {
@@ -156,6 +228,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const [submitted, setSubmitted] = useState(false);
   const [showBanglaHint, setShowBanglaHint] = useState(true);
   const [sessionStats, setSessionStats] = useState({ attempted: 0, correct: 0 });
+  const [practiceBatchResults, setPracticeBatchResults] = useState<
+    SessionWordResult[]
+  >([]);
   const [isPlaying, setIsPlaying] = useState(false);
   const practiceInputRef = useRef<HTMLInputElement>(null);
 
@@ -210,14 +285,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     return map;
   }, [pageFilter, deckMode, recordingsMap]);
 
-  // Filtered words matching Page + Category + Audio Source
+  // Filtered words matching Page + Multiple Categories + Audio Source
   const filteredDeck: WordItem[] = useMemo(() => {
     return WORDS_CATALOG.filter((item) => {
       if (pageFilter === 'page1' && item.page !== 1) return false;
       if (pageFilter === 'page2' && item.page !== 2) return false;
       if (
-        selectedCategory !== 'All Categories' &&
-        item.category !== selectedCategory
+        selectedCategories.length > 0 &&
+        !selectedCategories.includes(item.category)
       ) {
         return false;
       }
@@ -226,7 +301,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       if (deckMode === 'missing') return !item.hasBundledAudio && !hasCustom;
       return true;
     });
-  }, [pageFilter, selectedCategory, deckMode, recordingsMap]);
+  }, [pageFilter, selectedCategories, deckMode, recordingsMap]);
 
   const currentWord: WordItem | undefined =
     filteredDeck[currentIndex % Math.max(1, filteredDeck.length)];
@@ -238,7 +313,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setCurrentIndex(0);
     setUserInput('');
     setSubmitted(false);
-  }, [pageFilter, selectedCategory, deckMode]);
+  }, [pageFilter, selectedCategories, deckMode]);
 
   // Free Practice Play Handler
   const handlePlay = async (rate = 1.0) => {
@@ -274,12 +349,28 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       const nextCorrect = sessionStats.correct + (isCorrect ? 1 : 0);
       setSessionStats({ attempted: nextAttempted, correct: nextCorrect });
 
-      if (nextAttempted % 5 === 0) {
+      const newResultItem: SessionWordResult = {
+        wordId: currentWord.id,
+        word: currentWord.word,
+        userAnswer: userInput.trim(),
+        isCorrect,
+        bangla: displayBangla,
+        category: currentWord.category,
+        page: currentWord.page,
+      };
+      const updatedBatch = [...practiceBatchResults, newResultItem];
+
+      if (updatedBatch.length >= 5) {
+        const batchCorrect = updatedBatch.filter((r) => r.isCorrect).length;
         void savePracticeSession({
-          category: `${pageFilter.toUpperCase()} · ${selectedCategory}`,
-          totalWords: 5,
-          correctCount: isCorrect ? 1 : 0,
+          category: `Practice (${pageFilter.toUpperCase()} · ${selectedCategoriesLabel})`,
+          totalWords: updatedBatch.length,
+          correctCount: batchCorrect,
+          results: updatedBatch,
         });
+        setPracticeBatchResults([]);
+      } else {
+        setPracticeBatchResults(updatedBatch);
       }
     } else {
       handleNextPracticeWord();
@@ -328,6 +419,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       ? sourcePool
       : sourcePool.slice(0, requestedExamCount);
 
+    setSelectedHistorySession(null);
+    setSubMode('test');
+    onSubModeChange?.('test');
     setExamDeck(chosen);
     setExamAnswers([]);
     setExamIndex(0);
@@ -361,12 +455,23 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       setExamAnswers((prev) => {
         const updated = [...prev, newEntry];
         if (examIndex + 1 >= examDeck.length) {
-          // Exam finished! Save score to Cloud Firestore
+          // Exam finished! Save score and per-word breakdown to Cloud Firestore + Local Storage
           const correctTotal = updated.filter((a) => a.isCorrect).length;
+          const detailedResults: SessionWordResult[] = updated.map((a) => ({
+            wordId: a.wordItem.id,
+            word: a.wordItem.word,
+            userAnswer: a.userAnswer,
+            isCorrect: a.isCorrect,
+            bangla:
+              recordingsMap[a.wordItem.id]?.banglaMeaning || a.wordItem.bangla,
+            category: a.wordItem.category,
+            page: a.wordItem.page,
+          }));
           void savePracticeSession({
-            category: `Exam (${pageFilter.toUpperCase()} · ${selectedCategory})`,
+            category: `Exam (${pageFilter.toUpperCase()} · ${selectedCategoriesLabel})`,
             totalWords: updated.length,
             correctCount: correctTotal,
+            results: detailedResults,
           });
         }
         return updated;
@@ -386,7 +491,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       recordingsMap,
       baseExamSeconds,
       pageFilter,
-      selectedCategory,
+      selectedCategoriesLabel,
     ]
   );
 
@@ -563,7 +668,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
                 <button
                   type="button"
-                  onClick={() => setPageFilter('page1')}
+                  onClick={() => handlePageFilterChange('page1')}
                   className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     pageFilter === 'page1'
                       ? 'bg-[#10b981] text-[#04120c]'
@@ -578,7 +683,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setPageFilter('page2')}
+                  onClick={() => handlePageFilterChange('page2')}
                   className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     pageFilter === 'page2'
                       ? 'bg-[#10b981] text-[#04120c]'
@@ -593,7 +698,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => setPageFilter('all')}
+                  onClick={() => handlePageFilterChange('all')}
                   className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
                     pageFilter === 'all'
                       ? 'bg-[#10b981] text-[#04120c]'
@@ -651,46 +756,106 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             </div>
           </div>
 
-          {/* Row 2: Visual Category Selection Grid */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
+          {/* Row 2: Visual Multi-Category Selection Grid */}
+          <div className="space-y-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="font-semibold text-[#8ba89a] flex items-center gap-1.5">
                 <FolderOpen className="w-3.5 h-3.5 text-[#10b981]" />
                 <span>
-                  Select Category ({pageFilter === 'page1' ? 'Page 1' : pageFilter === 'page2' ? 'Page 2' : 'All Pages'})
+                  Select Multiple Categories ({pageFilter === 'page1' ? 'Page 1' : pageFilter === 'page2' ? 'Page 2' : 'All Pages'}) — tap one or more:
                 </span>
               </span>
-              <span className="font-mono tabular-nums text-[#10b981]">
-                {filteredDeck.length} words selected
-              </span>
+
+              <div className="flex items-center gap-3">
+                {selectedCategories.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategories([])}
+                    className="text-xs font-semibold text-[#fbbf24] hover:underline"
+                  >
+                    Clear ({selectedCategories.length} selected)
+                  </button>
+                )}
+                <span className="font-mono tabular-nums text-[#10b981] font-semibold">
+                  {filteredDeck.length} words ready
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {CATEGORIES.map((cat) => {
-                const count = categoryStats[cat] || 0;
-                const active = selectedCategory === cat;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setSelectedCategory(cat)}
-                    className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
-                      active
-                        ? 'bg-[#143325] border-[#10b981] text-white font-bold'
-                        : 'bg-[#09140f] border-[#183126] text-[#9ab5a7] hover:border-[#254b3a] hover:text-white'
+              {/* "All Categories" Card */}
+              <button
+                type="button"
+                onClick={() => setSelectedCategories([])}
+                className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
+                  selectedCategories.length === 0
+                    ? 'bg-[#143325] border-[#10b981] text-white font-bold'
+                    : 'bg-[#09140f] border-[#183126] text-[#9ab5a7] hover:border-[#254b3a] hover:text-white'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <span
+                    className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                      selectedCategories.length === 0
+                        ? 'bg-[#10b981] border-[#10b981] text-[#04120c]'
+                        : 'border-[#2d5442]'
                     }`}
                   >
-                    <span className="text-xs truncate">{cat}</span>
-                    <span
-                      className={`text-[11px] font-mono tabular-nums shrink-0 ${
-                        active ? 'text-[#10b981]' : 'text-[#6c8a7b]'
+                    {selectedCategories.length === 0 && (
+                      <Check className="w-3 h-3 stroke-[3]" />
+                    )}
+                  </span>
+                  <span className="text-xs truncate">All Categories</span>
+                </span>
+                <span
+                  className={`text-[11px] font-mono tabular-nums shrink-0 ${
+                    selectedCategories.length === 0
+                      ? 'text-[#10b981]'
+                      : 'text-[#6c8a7b]'
+                  }`}
+                >
+                  {categoryStats['All Categories'] || 0}
+                </span>
+              </button>
+
+              {CATEGORIES.filter((cat) => (categoryStats[cat] || 0) > 0).map(
+                (cat) => {
+                  const count = categoryStats[cat] || 0;
+                  const active = selectedCategories.includes(cat);
+                  return (
+                    <button
+                      key={cat}
+                      type="button"
+                      onClick={() => toggleCategory(cat)}
+                      className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
+                        active
+                          ? 'bg-[#143325] border-[#10b981] text-white font-bold'
+                          : 'bg-[#09140f] border-[#183126] text-[#9ab5a7] hover:border-[#254b3a] hover:text-white'
                       }`}
                     >
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
+                      <span className="flex items-center gap-1.5 min-w-0">
+                        <span
+                          className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
+                            active
+                              ? 'bg-[#10b981] border-[#10b981] text-[#04120c]'
+                              : 'border-[#2d5442]'
+                          }`}
+                        >
+                          {active && <Check className="w-3 h-3 stroke-[3]" />}
+                        </span>
+                        <span className="text-xs truncate">{cat}</span>
+                      </span>
+                      <span
+                        className={`text-[11px] font-mono tabular-nums shrink-0 ${
+                          active ? 'text-[#10b981]' : 'text-[#6c8a7b]'
+                        }`}
+                      >
+                        {count}
+                      </span>
+                    </button>
+                  );
+                }
+              )}
             </div>
           </div>
         </section>
@@ -725,7 +890,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   : pageFilter === 'page2'
                   ? 'Page 2'
                   : 'All Pages'}{' '}
-                · {selectedCategory}:{' '}
+                · {selectedCategoriesLabel}:{' '}
                 <span className="font-mono text-[#10b981]">
                   {filteredDeck.length}
                 </span>
@@ -882,6 +1047,56 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 START STRICT EXAM ({requestedExamCount} WORDS · 3x AUTO-PLAY)
               </span>
             </button>
+
+            {/* Recent Exam History inside Setup View so user can inspect past exams directly */}
+            {recentSessions.length > 0 && (
+              <div className="pt-4 border-t border-[#1b3629] space-y-2.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-semibold text-[#8ba89a] flex items-center gap-1.5">
+                    <FileText className="w-3.5 h-3.5 text-[#10b981]" />
+                    <span>
+                      Recent Practice &amp; Exam History (Tap any exam to see full word details)
+                    </span>
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {recentSessions.slice(0, 6).map((s) => (
+                    <button
+                      key={s.id}
+                      type="button"
+                      onClick={() => {
+                        setHistoryFilterMode('all');
+                        setSelectedHistorySession(s);
+                      }}
+                      className="w-full p-3 rounded-xl bg-[#09140f] hover:bg-[#11261c] border border-[#193327] hover:border-[#10b981]/60 text-left flex items-center justify-between gap-2 transition-colors group"
+                    >
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-[#d2e5dc] truncate group-hover:text-white">
+                          {s.category}
+                        </div>
+                        <div className="text-[11px] text-[#6d8c7d] mt-0.5 flex items-center gap-1.5">
+                          <span>
+                            {s.results && s.results.length > 0
+                              ? `${s.results.length} words reviewed`
+                              : 'Tap to view words & retake'}
+                          </span>
+                          <span>·</span>
+                          <span className="text-[#10b981] font-semibold">
+                            View Details
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="font-mono tabular-nums text-xs font-bold text-[#10b981]">
+                          {s.correctCount}/{s.totalWords} ({s.accuracy}%)
+                        </span>
+                        <ChevronRight className="w-4 h-4 text-[#6d8c7d] group-hover:text-[#10b981]" />
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </section>
         ) : examState === 'running' && activeExamWord ? (
           /* ACTIVE STRICT EXAM STAGE (Write-only, 3x auto-play, no replay, no back button) */
@@ -1038,7 +1253,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     Strict Exam Completed!
                   </h2>
                   <p className="text-xs text-[#8ba89a]">
-                    Score saved to Cloud · Review your answers below
+                    Score &amp; word details saved to History · Review your answers below
                   </p>
                 </div>
               </div>
@@ -1173,7 +1388,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   type="button"
                   onClick={() => {
                     setDeckMode('all');
-                    setSelectedCategory('All Categories');
+                    setSelectedCategories([]);
                   }}
                   className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold"
                 >
@@ -1382,7 +1597,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </h2>
                 <button
                   type="button"
-                  onClick={() => setSessionStats({ attempted: 0, correct: 0 })}
+                  onClick={() => {
+                    setSessionStats({ attempted: 0, correct: 0 });
+                    setPracticeBatchResults([]);
+                  }}
                   className="min-h-[36px] px-2 text-xs text-[#8ba89a] hover:text-white flex items-center gap-1"
                 >
                   <RotateCcw className="w-3 h-3" />
@@ -1412,29 +1630,56 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               </div>
             </div>
 
-            {/* Cloud-Synced Recent Practice & Exam History */}
+            {/* Cloud-Synced Recent Practice & Exam History (Interactive: Click any row for full exam details) */}
             <div className="rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-5 space-y-3">
-              <h3 className="text-xs font-semibold text-[#8ba89a]">
-                Recent Practice &amp; Exam History
-              </h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-xs font-semibold text-[#8ba89a]">
+                  Recent Practice &amp; Exam History
+                </h3>
+                <span className="text-[10px] text-[#10b981] font-semibold">
+                  Tap for Details
+                </span>
+              </div>
               {recentSessions.length === 0 ? (
                 <p className="text-xs text-[#698778]">
                   Complete a Strict Exam or 5 practice words to record your accuracy history.
                 </p>
               ) : (
                 <div className="space-y-2">
-                  {recentSessions.slice(0, 6).map((s) => (
-                    <div
+                  {recentSessions.slice(0, 8).map((s) => (
+                    <button
                       key={s.id}
-                      className="flex items-center justify-between text-xs py-2 border-b border-[#162d22] last:border-0"
+                      type="button"
+                      onClick={() => {
+                        setHistoryFilterMode('all');
+                        setSelectedHistorySession(s);
+                      }}
+                      className="w-full p-2.5 rounded-xl bg-[#09140f] hover:bg-[#12261c] border border-[#173024] hover:border-[#10b981]/60 text-left flex items-center justify-between gap-2 transition-colors group"
                     >
-                      <span className="text-[#d2e5dc] truncate max-w-[175px]">
-                        {s.category}
-                      </span>
-                      <span className="font-mono tabular-nums text-[#10b981]">
-                        {s.correctCount}/{s.totalWords} ({s.accuracy}%)
-                      </span>
-                    </div>
+                      <div className="min-w-0">
+                        <div className="text-xs font-semibold text-[#d2e5dc] truncate group-hover:text-white">
+                          {s.category}
+                        </div>
+                        <div className="text-[10px] text-[#7ea090] mt-0.5 flex items-center gap-1.5">
+                          <span className="text-[#10b981] font-semibold group-hover:underline">
+                            View Exam Details
+                          </span>
+                          <span>·</span>
+                          <span>
+                            {new Date(s.createdAtMs).toLocaleDateString(
+                              undefined,
+                              { month: 'short', day: 'numeric' }
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="font-mono tabular-nums text-xs font-bold text-[#10b981]">
+                          {s.correctCount}/{s.totalWords} ({s.accuracy}%)
+                        </span>
+                        <ChevronRight className="w-4 h-4 text-[#6d8a7b] group-hover:text-[#10b981]" />
+                      </div>
+                    </button>
                   ))}
                 </div>
               )}
@@ -1442,6 +1687,334 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* ===================================================================== */}
+      {/* SESSION HISTORY DETAILS MODAL (Shows full exam/practice review sheet) */}
+      {/* ===================================================================== */}
+      {selectedHistorySession && (() => {
+        const hasDetailedResults =
+          Array.isArray(selectedHistorySession.results) &&
+          selectedHistorySession.results.length > 0;
+        const detailedList = selectedHistorySession.results || [];
+        const mistakeCount = detailedList.filter((r) => !r.isCorrect).length;
+        const correctListCount = detailedList.filter((r) => r.isCorrect).length;
+
+        const filteredDetailedList = detailedList.filter((r) => {
+          if (historyFilterMode === 'mistakes') return !r.isCorrect;
+          if (historyFilterMode === 'correct') return r.isCorrect;
+          return true;
+        });
+
+        const fallbackCategoryWords = !hasDetailedResults
+          ? findCatalogWordsForSessionCategory(selectedHistorySession.category)
+          : [];
+
+        const missedWordItemsForRetake: WordItem[] = hasDetailedResults
+          ? detailedList
+              .filter((r) => !r.isCorrect)
+              .map(
+                (r): WordItem =>
+                  WORDS_CATALOG.find(
+                    (w) =>
+                      w.id === r.wordId ||
+                      w.word.toLowerCase() === r.word.toLowerCase()
+                  ) || {
+                    id: r.wordId || r.word,
+                    originalId: r.wordId || r.word,
+                    word: r.word,
+                    bangla: r.bangla || '',
+                    category: r.category || 'General IELTS',
+                    page: (r.page === 2 ? 2 : 1) as 1 | 2,
+                    example: '',
+                    hasBundledAudio: false,
+                  }
+              )
+          : [];
+
+        const allWordItemsForRetake: WordItem[] = hasDetailedResults
+          ? detailedList.map(
+              (r): WordItem =>
+                WORDS_CATALOG.find(
+                  (w) =>
+                    w.id === r.wordId ||
+                    w.word.toLowerCase() === r.word.toLowerCase()
+                ) || {
+                  id: r.wordId || r.word,
+                  originalId: r.wordId || r.word,
+                  word: r.word,
+                  bangla: r.bangla || '',
+                  category: r.category || 'General IELTS',
+                  page: (r.page === 2 ? 2 : 1) as 1 | 2,
+                  example: '',
+                  hasBundledAudio: false,
+                }
+            )
+          : fallbackCategoryWords.slice(
+              0,
+              Math.max(1, selectedHistorySession.totalWords)
+            );
+
+        return (
+          <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-3 sm:p-6 overflow-y-auto">
+            <div className="w-full max-w-3xl rounded-3xl bg-[#0d1d16] border border-[#244737] p-4 sm:p-7 space-y-5 shadow-2xl max-h-[90vh] flex flex-col">
+              {/* Modal Header */}
+              <div className="flex items-start justify-between gap-3 pb-4 border-b border-[#193327] shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-11 h-11 rounded-2xl bg-[#10b981]/15 border border-[#10b981]/40 flex items-center justify-center text-[#10b981] shrink-0">
+                    <Trophy className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <h2 className="text-base sm:text-xl font-extrabold text-white truncate">
+                      {selectedHistorySession.category}
+                    </h2>
+                    <p className="text-xs text-[#8ba89a] mt-0.5">
+                      Completed on{' '}
+                      {new Date(
+                        selectedHistorySession.createdAtMs
+                      ).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedHistorySession(null)}
+                  className="min-h-[40px] min-w-[40px] rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] text-[#9ab5a7] hover:text-white flex items-center justify-center shrink-0"
+                  aria-label="Close session details"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Score Summary Strip */}
+              <div className="grid grid-cols-3 gap-2.5 text-center shrink-0">
+                <div className="p-3 rounded-2xl bg-[#08130e] border border-[#183126]">
+                  <div className="text-lg sm:text-2xl font-extrabold font-mono tabular-nums text-[#10b981]">
+                    {selectedHistorySession.correctCount} /{' '}
+                    {selectedHistorySession.totalWords}
+                  </div>
+                  <div className="text-[11px] text-[#8ba89a]">Correct Score</div>
+                </div>
+                <div className="p-3 rounded-2xl bg-[#08130e] border border-[#183126]">
+                  <div className="text-lg sm:text-2xl font-extrabold font-mono tabular-nums text-[#f87171]">
+                    {Math.max(
+                      0,
+                      selectedHistorySession.totalWords -
+                        selectedHistorySession.correctCount
+                    )}
+                  </div>
+                  <div className="text-[11px] text-[#8ba89a]">Mistakes</div>
+                </div>
+                <div className="p-3 rounded-2xl bg-[#08130e] border border-[#183126]">
+                  <div className="text-lg sm:text-2xl font-extrabold font-mono tabular-nums text-[#fbbf24]">
+                    {selectedHistorySession.accuracy}%
+                  </div>
+                  <div className="text-[11px] text-[#8ba89a]">Accuracy</div>
+                </div>
+              </div>
+
+              {/* Retake & Filter Bar */}
+              <div className="flex flex-wrap items-center justify-between gap-2.5 shrink-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  {missedWordItemsForRetake.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => startStrictExam(missedWordItemsForRetake)}
+                      className="min-h-[42px] px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center gap-1.5"
+                    >
+                      <Play className="w-3.5 h-3.5 fill-current" />
+                      <span>
+                        Retake Missed Words ({missedWordItemsForRetake.length})
+                      </span>
+                    </button>
+                  )}
+
+                  {allWordItemsForRetake.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => startStrictExam(allWordItemsForRetake)}
+                      className="min-h-[42px] px-4 py-2 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>
+                        Retake Full Exam ({allWordItemsForRetake.length} Words)
+                      </span>
+                    </button>
+                  )}
+                </div>
+
+                {hasDetailedResults && (
+                  <div className="flex items-center gap-1 p-1 rounded-xl bg-[#08130e] border border-[#193327]">
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilterMode('all')}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold ${
+                        historyFilterMode === 'all'
+                          ? 'bg-[#183529] text-[#10b981]'
+                          : 'text-[#8ba89a] hover:text-white'
+                      }`}
+                    >
+                      All ({detailedList.length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilterMode('mistakes')}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold ${
+                        historyFilterMode === 'mistakes'
+                          ? 'bg-[#2a1215] text-[#f87171]'
+                          : 'text-[#8ba89a] hover:text-white'
+                      }`}
+                    >
+                      Mistakes ({mistakeCount})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setHistoryFilterMode('correct')}
+                      className={`px-2.5 py-1.5 rounded-lg text-xs font-bold ${
+                        historyFilterMode === 'correct'
+                          ? 'bg-[#183529] text-[#10b981]'
+                          : 'text-[#8ba89a] hover:text-white'
+                      }`}
+                    >
+                      Correct ({correctListCount})
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Scrollable Word-by-Word Breakdown List */}
+              <div className="rounded-2xl bg-[#08130e] border border-[#1a3327] divide-y divide-[#14291f] overflow-y-auto flex-1 min-h-[220px]">
+                {hasDetailedResults ? (
+                  filteredDetailedList.length === 0 ? (
+                    <div className="p-8 text-center text-xs text-[#8ba89a]">
+                      No words in this filter.
+                    </div>
+                  ) : (
+                    filteredDetailedList.map((item, idx) => {
+                      const catalogMatch = WORDS_CATALOG.find(
+                        (w) =>
+                          w.id === item.wordId ||
+                          w.word.toLowerCase() === item.word.toLowerCase()
+                      );
+                      const rec =
+                        recordingsMap[item.wordId] ||
+                        (catalogMatch ? recordingsMap[catalogMatch.id] : undefined);
+                      const banglaText =
+                        rec?.banglaMeaning ||
+                        item.bangla ||
+                        catalogMatch?.bangla ||
+                        '';
+
+                      return (
+                        <div
+                          key={`${item.wordId}-${idx}`}
+                          className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                        >
+                          <div className="flex items-start gap-3">
+                            {item.isCorrect ? (
+                              <CheckCircle2 className="w-5 h-5 text-[#10b981] shrink-0 mt-0.5" />
+                            ) : (
+                              <XCircle className="w-5 h-5 text-[#f87171] shrink-0 mt-0.5" />
+                            )}
+                            <div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-xs text-[#6d8a7b]">
+                                  #{idx + 1}
+                                </span>
+                                <span className="font-bold text-sm text-white">
+                                  {item.word}
+                                </span>
+                                {banglaText && (
+                                  <span className="text-xs text-[#8ba89a]">
+                                    ({banglaText})
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-xs mt-1">
+                                Your answer:{' '}
+                                <span
+                                  className={`font-mono font-semibold ${
+                                    item.isCorrect
+                                      ? 'text-[#10b981]'
+                                      : 'text-[#f87171] line-through'
+                                  }`}
+                                >
+                                  {item.userAnswer || '(blank / time expired)'}
+                                </span>
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() =>
+                              playWordAudio({
+                                word: item.word,
+                                audioDataUrl: rec?.audioDataUrl,
+                                bundledAudioFile: catalogMatch?.bundledAudioFile,
+                              })
+                            }
+                            className="self-start sm:self-center min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                            <span>Listen</span>
+                          </button>
+                        </div>
+                      );
+                    })
+                  )
+                ) : (
+                  /* Fallback for legacy sessions recorded before per-word history was added */
+                  <>
+                    <div className="p-3.5 sm:px-5 bg-[#10231a] text-xs text-[#9ab5a7]">
+                      This session was recorded before individual typed answers were stored. Below are the{' '}
+                      <strong className="text-white">
+                        {fallbackCategoryWords.length} words
+                      </strong>{' '}
+                      from <strong className="text-[#10b981]">{selectedHistorySession.category}</strong> so you can review and listen to each word or retake the exam:
+                    </div>
+                    {fallbackCategoryWords.map((w, idx) => {
+                      const rec = recordingsMap[w.id];
+                      return (
+                        <div
+                          key={w.id}
+                          className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <span className="font-mono text-xs text-[#6d8a7b]">
+                              #{idx + 1}
+                            </span>
+                            <span className="font-bold text-sm text-white">
+                              {w.word}
+                            </span>
+                            <span className="text-xs text-[#8ba89a]">
+                              ({rec?.banglaMeaning || w.bangla})
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              playWordAudio({
+                                word: w.word,
+                                audioDataUrl: rec?.audioDataUrl,
+                                bundledAudioFile: w.bundledAudioFile,
+                              })
+                            }
+                            className="self-start sm:self-center min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
+                          >
+                            <Volume2 className="w-3.5 h-3.5" />
+                            <span>Listen</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 };

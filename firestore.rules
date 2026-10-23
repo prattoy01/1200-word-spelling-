@@ -89,13 +89,15 @@ service cloud.firestore {
           'totalWords',
           'correctCount',
           'accuracy',
+          'results',
           'createdAt'
         ])
         && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
-        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 200
         && data.totalWords is number && data.totalWords >= 1 && data.totalWords <= 1000
         && data.correctCount is number && data.correctCount >= 0 && data.correctCount <= data.totalWords
         && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100
+        && (!('results' in data) || (data.results is list && data.results.size() <= 500 && (data.results.size() == 0 || data.results[0] is map)))
         && data.createdAt is timestamp;
     }
 

@@ -46,6 +46,16 @@ export interface CloudRecording {
   source: 'cloud' | 'local-unsynced';
 }
 
+export interface SessionWordResult {
+  wordId: string;
+  word: string;
+  userAnswer: string;
+  isCorrect: boolean;
+  bangla: string;
+  category: string;
+  page: number;
+}
+
 export interface PracticeSessionRecord {
   id: string;
   ownerId: string;
@@ -54,10 +64,33 @@ export interface PracticeSessionRecord {
   correctCount: number;
   accuracy: number;
   createdAtMs: number;
+  results?: SessionWordResult[];
 }
 
 const RECORDINGS_PATH = 'recordings';
 const SESSIONS_PATH = 'practiceSessions';
+const LOCAL_SESSIONS_STORAGE_KEY = 'lw_local_practice_sessions_v1';
+
+function readLocalSessionsCache(): PracticeSessionRecord[] {
+  try {
+    const raw = localStorage.getItem(LOCAL_SESSIONS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalSessionToCache(session: PracticeSessionRecord): void {
+  try {
+    const existing = readLocalSessionsCache().filter((s) => s.id !== session.id);
+    const updated = [session, ...existing].slice(0, 30);
+    localStorage.setItem(LOCAL_SESSIONS_STORAGE_KEY, JSON.stringify(updated));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 /**
  * Enforces volumetric boundaries from firebase-blueprint.json before mutating Firestore.
@@ -236,7 +269,6 @@ export async function saveWordRecording(params: {
 
   // 2. Always persist to Firestore Cloud so Web <-> Mobile <-> Incognito stay in sync
   const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
-  const docPath = `${RECORDINGS_PATH}/${clean.wordId}`;
 
   try {
     const existingSnap = await getDoc(docRef);
@@ -380,7 +412,7 @@ export async function syncLocalRecordingsToCloud(): Promise<number> {
 
 /**
  * Seeds the 14 recordings from the user's screenshot ("orienteering", "caving", "scuba-diving", "snorkeling", etc.)
- * using REAL human pronunciation MP3 files from /public/audio-w*.mp3 into Cloud Firestore.
+ * using REAL human pronunciation MP3 files into Cloud Firestore.
  */
 export async function seedScreenshot14RecordingsToCloud(
   onProgress?: (current: number, total: number, word: string) => void
@@ -410,16 +442,22 @@ export async function seedScreenshot14RecordingsToCloud(
 }
 
 /**
- * Records a completed IELTS spelling practice or strict exam session.
+ * Records a completed IELTS spelling practice or strict exam session,
+ * including the per-word answer breakdown so the user can inspect full exam details from history.
  */
 export async function savePracticeSession(params: {
   category: string;
   totalWords: number;
   correctCount: number;
+  results?: SessionWordResult[];
 }): Promise<void> {
   const user = auth.currentUser;
-  const ownerId = (user?.uid || 'cloud_studio_shared').slice(0, 128);
+  const ownerId = (user?.uid || 'cloud_studio_shared')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 128);
 
+  const safeCategory =
+    params.category.trim().slice(0, 200) || 'General IELTS';
   const totalWords = Math.max(1, Math.min(1000, Math.round(params.totalWords)));
   const correctCount = Math.max(
     0,
@@ -427,17 +465,57 @@ export async function savePracticeSession(params: {
   );
   const accuracy = Math.round((correctCount / totalWords) * 100);
 
+  const sanitizedResults: SessionWordResult[] | undefined =
+    params.results && params.results.length > 0
+      ? params.results.slice(0, 500).map((r) => ({
+          wordId: String(r.wordId || '').slice(0, 128),
+          word: String(r.word || '').slice(0, 120),
+          userAnswer: String(r.userAnswer || '').slice(0, 160),
+          isCorrect: Boolean(r.isCorrect),
+          bangla: String(r.bangla || '').slice(0, 200),
+          category: String(r.category || '').slice(0, 100),
+          page: r.page === 2 ? 2 : 1,
+        }))
+      : undefined;
+
+  const nowMs = Date.now();
+  const localTempId = `local_${nowMs}`;
+
   try {
-    await addDoc(collection(db, SESSIONS_PATH), {
+    const payload: Record<string, unknown> = {
       ownerId,
-      category: params.category.trim().slice(0, 80) || 'General IELTS',
+      category: safeCategory,
       totalWords,
       correctCount,
       accuracy,
       createdAt: serverTimestamp(),
+    };
+    if (sanitizedResults) {
+      payload.results = sanitizedResults;
+    }
+    const docRef = await addDoc(collection(db, SESSIONS_PATH), payload);
+    writeLocalSessionToCache({
+      id: docRef.id,
+      ownerId,
+      category: safeCategory,
+      totalWords,
+      correctCount,
+      accuracy,
+      createdAtMs: nowMs,
+      results: sanitizedResults,
     });
   } catch (error) {
-    console.warn('Could not save practice session:', error);
+    console.warn('Could not save practice session to cloud, saved locally:', error);
+    writeLocalSessionToCache({
+      id: localTempId,
+      ownerId,
+      category: safeCategory,
+      totalWords,
+      correctCount,
+      accuracy,
+      createdAtMs: nowMs,
+      results: sanitizedResults,
+    });
   }
 }
 
@@ -445,7 +523,9 @@ export function subscribeToUserPracticeSessions(
   userId: string,
   onUpdate: (sessions: PracticeSessionRecord[]) => void
 ): Unsubscribe {
-  const targetOwnerId = userId || 'cloud_studio_shared';
+  const targetOwnerId = (userId || 'cloud_studio_shared')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 128);
   const q = query(
     collection(db, SESSIONS_PATH),
     where('ownerId', '==', targetOwnerId),
@@ -455,9 +535,20 @@ export function subscribeToUserPracticeSessions(
   return onSnapshot(
     q,
     (snapshot) => {
+      const localCached = readLocalSessionsCache();
+      const localById = new Map<string, PracticeSessionRecord>();
+      for (const loc of localCached) {
+        localById.set(loc.id, loc);
+      }
+
       const list: PracticeSessionRecord[] = [];
+      const seenIds = new Set<string>();
+
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
+        const localMatch = localById.get(docSnap.id);
+        seenIds.add(docSnap.id);
+
         list.push({
           id: docSnap.id,
           ownerId: d.ownerId,
@@ -465,11 +556,23 @@ export function subscribeToUserPracticeSessions(
           totalWords: d.totalWords,
           correctCount: d.correctCount,
           accuracy: d.accuracy,
-          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+          createdAtMs:
+            d.createdAt?.toMillis?.() || localMatch?.createdAtMs || Date.now(),
+          results: Array.isArray(d.results)
+            ? (d.results as SessionWordResult[])
+            : localMatch?.results,
         });
       });
+
+      // Also include any local-only sessions that haven't synced yet
+      for (const loc of localCached) {
+        if (!seenIds.has(loc.id) && loc.id.startsWith('local_')) {
+          list.push(loc);
+        }
+      }
+
       list.sort((a, b) => b.createdAtMs - a.createdAtMs);
-      onUpdate(list.slice(0, 15));
+      onUpdate(list.slice(0, 20));
     },
     (error) => {
       handleFirestoreError(error, OperationType.LIST, SESSIONS_PATH);
