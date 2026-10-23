@@ -143,6 +143,101 @@
         "accuracy",
         "createdAt"
       ]
+    },
+    "AudioContribution": {
+      "title": "AudioContribution",
+      "description": "A user-submitted pronunciation recording sent to the Admin Panel for review to become the general app audio.",
+      "type": "object",
+      "properties": {
+        "wordId": {
+          "type": "string",
+          "description": "Deterministic slug identifier for the word.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "word": {
+          "type": "string",
+          "description": "The English word or phrase being pronounced.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "banglaMeaning": {
+          "type": "string",
+          "description": "Bangla meaning or translation of the word.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "audioDataUrl": {
+          "type": "string",
+          "description": "Base64 data URL of the contributed pronunciation audio.",
+          "minLength": 20,
+          "maxLength": 900000
+        },
+        "mimeType": {
+          "type": "string",
+          "description": "MIME type of the audio recording.",
+          "minLength": 3,
+          "maxLength": 64
+        },
+        "fileName": {
+          "type": "string",
+          "description": "Original file name of the uploaded recording.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "fileSize": {
+          "type": "number",
+          "description": "Audio payload size in bytes."
+        },
+        "durationMs": {
+          "type": "number",
+          "description": "Audio duration in milliseconds."
+        },
+        "contributorId": {
+          "type": "string",
+          "description": "Identifier of the user who submitted the contribution.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "contributorName": {
+          "type": "string",
+          "description": "Display name of the contributor.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Moderation status in the Admin Panel.",
+          "enum": ["pending", "approved", "rejected"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the contribution was submitted."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the contribution was last updated or reviewed."
+        }
+      },
+      "required": [
+        "wordId",
+        "word",
+        "banglaMeaning",
+        "audioDataUrl",
+        "mimeType",
+        "fileName",
+        "fileSize",
+        "durationMs",
+        "contributorId",
+        "contributorName",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -150,7 +245,13 @@
       "schema": {
         "$ref": "#/entities/Recording"
       },
-      "description": "Stores shared pronunciation audio recordings indexed by deterministic wordId so they persist across browsers, incognito sessions, and accounts."
+      "description": "Stores admin-approved general pronunciation audio recordings indexed by deterministic wordId for all users who have not set a personal override."
+    },
+    "/audioContributions/{contributionId}": {
+      "schema": {
+        "$ref": "#/entities/AudioContribution"
+      },
+      "description": "Stores user-submitted audio contributions awaiting admin approval in the Admin Panel."
     },
     "/practiceSessions/{sessionId}": {
       "schema": {

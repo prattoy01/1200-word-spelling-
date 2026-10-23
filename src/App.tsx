@@ -24,6 +24,8 @@ import {
   BookOpenCheck,
   Timer,
   Layers,
+  ShieldCheck,
+  Send,
 } from 'lucide-react';
 import {
   auth,
@@ -35,11 +37,15 @@ import {
 import { WORDS_CATALOG, type WordItem } from './data/words';
 import {
   type CloudRecording,
+  type AudioContributionRecord,
   type PracticeSessionRecord,
   subscribeToPublishedRecordings,
+  subscribeToAudioContributions,
   saveWordRecording,
+  submitAudioContribution,
   updateRecordingBanglaMeaning,
   deleteWordRecording,
+  removePersonalRecordingOverride,
   syncLocalRecordingsToCloud,
   seedScreenshot14RecordingsToCloud,
   subscribeToUserPracticeSessions,
@@ -51,11 +57,12 @@ import {
 } from './utils/audioUtils';
 import { NetlifyFixModal, getActiveAppUrl } from './components/NetlifyFixModal';
 import { PracticeView } from './components/PracticeView';
+import { AdminPanelView } from './components/AdminPanelView';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
 type FilterTab = 'missing' | 'uploads' | 'all';
-type ActiveScreen = 'recordings' | 'practice';
+type ActiveScreen = 'recordings' | 'practice' | 'admin';
 type RecordingsPageFilter = 'all' | 'page1' | 'page2';
 
 export default function App() {
@@ -67,8 +74,19 @@ export default function App() {
   const [recordingsPageFilter, setRecordingsPageFilter] = useState<RecordingsPageFilter>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedWordId, setSelectedWordId] = useState<string>('weekdays');
+
+  // Effective recordingsMap: User's Personal Audio Override > General Cloud Audio
   const [recordingsMap, setRecordingsMap] = useState<Record<string, CloudRecording>>({});
+  // Raw General Cloud Audio Map (Admin-approved general audio for all users)
+  const [generalRecordingsMap, setGeneralRecordingsMap] = useState<Record<string, CloudRecording>>({});
+  // Community contributions queue for Admin Panel
+  const [contributions, setContributions] = useState<AudioContributionRecord[]>([]);
   const [recentSessions, setRecentSessions] = useState<PracticeSessionRecord[]>([]);
+
+  // Contribution options when uploading/recording personal audio
+  const [contributeOnSave, setContributeOnSave] = useState<boolean>(true);
+  const [contributorNameInput, setContributorNameInput] = useState<string>('');
+  const [isSubmittingContribution, setIsSubmittingContribution] = useState<boolean>(false);
 
   // Selected word editable Bangla input
   const [banglaInput, setBanglaInput] = useState<string>('কর্মদিবস');
@@ -93,20 +111,17 @@ export default function App() {
   const [isRestoring14, setIsRestoring14] = useState(false);
   const [restoreProgressText, setRestoreProgressText] = useState('');
 
-  // 1. Track Firebase Auth state and auto-sync any local recordings when user signs in
+  // 1. Track Firebase Auth state
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setAuthReady(true);
       if (currentUser) {
+        if (!contributorNameInput && currentUser.displayName) {
+          setContributorNameInput(currentUser.displayName);
+        }
         try {
-          const syncedCount = await syncLocalRecordingsToCloud();
-          if (syncedCount > 0) {
-            setStatusBanner({
-              type: 'success',
-              text: `Synced ${syncedCount} browser recording(s) to Firebase Cloud! Now available across Web, Mobile App, and Incognito.`,
-            });
-          }
+          await syncLocalRecordingsToCloud();
         } catch (err) {
           console.error('Auto-sync error:', err);
         }
@@ -116,13 +131,16 @@ export default function App() {
   }, []);
 
   // 2. Load initial local IndexedDB cache immediately, then attach real-time Firestore subscription
-  useEffect(() => {
-    let isMounted = true;
-    getAllLocalCachedRecordings().then((localMap) => {
-      if (!isMounted) return;
-      const initial: Record<string, CloudRecording> = {};
-      for (const [id, item] of Object.entries(localMap)) {
-        initial[id] = {
+  const refreshLocalAndCloudState = async (
+    generalSnapshotMap?: Record<string, CloudRecording>
+  ) => {
+    const localMap = await getAllLocalCachedRecordings();
+    const baseGeneral = generalSnapshotMap || generalRecordingsMap;
+    const merged: Record<string, CloudRecording> = { ...baseGeneral };
+
+    for (const [id, item] of Object.entries(localMap)) {
+      if (item.isPersonalOverride || !baseGeneral[id]) {
+        merged[id] = {
           wordId: item.wordId,
           word: item.word,
           banglaMeaning: item.banglaMeaning,
@@ -135,50 +153,80 @@ export default function App() {
           ownerName: item.ownerName,
           status: 'published',
           updatedAtMs: item.updatedAtMs,
-          source: item.syncedToCloud ? 'cloud' : 'local-unsynced',
+          source: item.isPersonalOverride
+            ? 'personal'
+            : item.syncedToCloud
+            ? 'cloud'
+            : 'local-unsynced',
+          isPersonalOverride: Boolean(item.isPersonalOverride),
+          contributedToAdmin: Boolean(item.contributedToAdmin),
         };
       }
-      setRecordingsMap((prev) => ({ ...initial, ...prev }));
-    });
+    }
+    setRecordingsMap(merged);
+  };
 
-    const unsubRecordings = subscribeToPublishedRecordings((cloudAndLocalMap) => {
+  useEffect(() => {
+    let isMounted = true;
+    void refreshLocalAndCloudState();
+
+    const unsubRecordings = subscribeToPublishedRecordings(
+      (cloudAndLocalMap) => {
+        if (isMounted) {
+          setRecordingsMap(cloudAndLocalMap);
+        }
+      },
+      (generalOnlyMap) => {
+        if (isMounted) {
+          setGeneralRecordingsMap(generalOnlyMap);
+        }
+      }
+    );
+
+    const unsubContributions = subscribeToAudioContributions((list) => {
       if (isMounted) {
-        setRecordingsMap(cloudAndLocalMap);
+        setContributions(list);
       }
     });
 
     return () => {
       isMounted = false;
       unsubRecordings();
+      unsubContributions();
     };
   }, []);
 
-  // 3. Subscribe to user's practice history when signed in
+  // 3. Subscribe to user's practice & exam history (works with or without Google login)
   useEffect(() => {
-    if (!authReady || !user) {
-      setRecentSessions([]);
-      return;
-    }
-    const unsubSessions = subscribeToUserPracticeSessions(user.uid, (sessions) => {
-      setRecentSessions(sessions);
-    });
+    if (!authReady) return;
+    const unsubSessions = subscribeToUserPracticeSessions(
+      user?.uid || 'cloud_studio_shared',
+      (sessions) => {
+        setRecentSessions(sessions);
+      }
+    );
     return () => unsubSessions();
   }, [authReady, user]);
 
-  // Compute exact counts matching the user's screenshots:
-  // Total catalog = 921 (782 Bundled + 139 initially Missing)
+  // Compute exact counts:
+  // Total catalog = 921 (782 Bundled + Custom Personal/General Uploads + Missing)
   const counts = useMemo(() => {
     let bundledCount = 0;
     let uploadsCount = 0;
+    let personalCount = 0;
     let missingCount = 0;
 
     for (const item of WORDS_CATALOG) {
-      const hasUpload = Boolean(recordingsMap[item.id]);
+      const rec = recordingsMap[item.id];
+      const hasUpload = Boolean(rec);
       if (item.hasBundledAudio) {
         bundledCount++;
       }
       if (hasUpload) {
         uploadsCount++;
+        if (rec?.isPersonalOverride) {
+          personalCount++;
+        }
       } else if (!item.hasBundledAudio) {
         missingCount++;
       }
@@ -187,10 +235,16 @@ export default function App() {
     return {
       bundled: bundledCount,
       uploads: uploadsCount,
+      personal: personalCount,
       missing: missingCount,
       all: WORDS_CATALOG.length,
     };
   }, [recordingsMap]);
+
+  const pendingContributionsCount = useMemo(
+    () => contributions.filter((c) => c.status === 'pending').length,
+    [contributions]
+  );
 
   // Filtered words for the active tab, Page 1/Page 2 filter & search bar
   const filteredWords: WordItem[] = useMemo(() => {
@@ -225,6 +279,8 @@ export default function App() {
   }, [selectedWordId, filteredWords]);
 
   const selectedRecording: CloudRecording | undefined = recordingsMap[selectedWord.id];
+  const selectedGeneralRecording: CloudRecording | undefined =
+    generalRecordingsMap[selectedWord.id];
 
   // Update Bangla input field whenever selected word changes
   useEffect(() => {
@@ -250,7 +306,7 @@ export default function App() {
       await signInWithGoogle();
       setStatusBanner({
         type: 'success',
-        text: 'Signed in with Google! All recordings you upload on Web or Mobile App now sync in real time.',
+        text: 'Signed in with Google!',
       });
     } catch (err) {
       setStatusBanner({
@@ -274,12 +330,20 @@ export default function App() {
     setStatusBanner(null);
     try {
       const processed = await processAudioBlob(file, file.name);
-      const { syncedToCloud } = await saveWordRecording({
+      const { contributedToAdmin } = await saveWordRecording({
         wordId: selectedWord.id,
         word: selectedWord.word,
         banglaMeaning: banglaInput.trim() || selectedWord.bangla,
         audio: processed,
+        contributeToAdmin: contributeOnSave,
+        contributorName:
+          contributorNameInput.trim() ||
+          user?.displayName ||
+          user?.email?.split('@')[0] ||
+          'Community Member',
       });
+
+      await refreshLocalAndCloudState();
 
       await playWordAudio({
         word: selectedWord.word,
@@ -288,10 +352,10 @@ export default function App() {
       });
 
       setStatusBanner({
-        type: syncedToCloud ? 'success' : 'warning',
-        text: syncedToCloud
-          ? `Uploaded "${selectedWord.word}" to Firebase Cloud! Immediately available on both Web and Mobile App.`
-          : `Saved "${selectedWord.word}" locally and queued for Cloud Sync.`,
+        type: 'success',
+        text: contributedToAdmin
+          ? `Saved "${selectedWord.word}" as your Personal Audio AND submitted to the Admin Panel for review!`
+          : `Saved "${selectedWord.word}" as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
       });
     } catch (err) {
       setStatusBanner({
@@ -340,12 +404,20 @@ export default function App() {
             blob,
             `${selectedWord.id}-mic.wav`
           );
-          const { syncedToCloud } = await saveWordRecording({
+          const { contributedToAdmin } = await saveWordRecording({
             wordId: selectedWord.id,
             word: selectedWord.word,
             banglaMeaning: banglaInput.trim() || selectedWord.bangla,
             audio: processed,
+            contributeToAdmin: contributeOnSave,
+            contributorName:
+              contributorNameInput.trim() ||
+              user?.displayName ||
+              user?.email?.split('@')[0] ||
+              'Community Member',
           });
+
+          await refreshLocalAndCloudState();
 
           await playWordAudio({
             word: selectedWord.word,
@@ -353,10 +425,10 @@ export default function App() {
           });
 
           setStatusBanner({
-            type: syncedToCloud ? 'success' : 'warning',
-            text: syncedToCloud
-              ? `Recorded & synced "${selectedWord.word}" to Firebase Cloud! Available across Web, Mobile App, and Incognito.`
-              : `Recorded "${selectedWord.word}" locally. Sign in with Google to sync across Web and Mobile App.`,
+            type: 'success',
+            text: contributedToAdmin
+              ? `Recorded "${selectedWord.word}" as your Personal Audio AND sent to the Admin Panel for review!`
+              : `Recorded "${selectedWord.word}" as your Personal Audio! It will never be overwritten by general updates.`,
           });
         } catch (err) {
           setStatusBanner({
@@ -392,6 +464,47 @@ export default function App() {
     }
   };
 
+  const handleSubmitExistingPersonalToAdmin = async () => {
+    if (!selectedRecording) return;
+    setIsSubmittingContribution(true);
+    setStatusBanner(null);
+    try {
+      await submitAudioContribution({
+        wordId: selectedWord.id,
+        word: selectedWord.word,
+        banglaMeaning: banglaInput.trim() || selectedRecording.banglaMeaning || selectedWord.bangla,
+        audio: {
+          audioDataUrl: selectedRecording.audioDataUrl,
+          mimeType: selectedRecording.mimeType,
+          fileName: selectedRecording.fileName,
+          fileSize: selectedRecording.fileSize,
+          durationMs: selectedRecording.durationMs,
+        },
+        contributorNameOverride:
+          contributorNameInput.trim() ||
+          user?.displayName ||
+          user?.email?.split('@')[0] ||
+          selectedRecording.ownerName ||
+          'Community Member',
+      });
+      await refreshLocalAndCloudState();
+      setStatusBanner({
+        type: 'success',
+        text: `Submitted "${selectedWord.word}" to the Admin Panel! Once Admin accepts it, it will update the General Audio for all users who don't have their own personal audio.`,
+      });
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to submit contribution to Admin Panel.',
+      });
+    } finally {
+      setIsSubmittingContribution(false);
+    }
+  };
+
   const handleBanglaBlurOrSave = async () => {
     if (!selectedRecording) return;
     if (banglaInput.trim() === selectedRecording.banglaMeaning) return;
@@ -400,6 +513,7 @@ export default function App() {
         recording: selectedRecording,
         newBanglaMeaning: banglaInput,
       });
+      await refreshLocalAndCloudState();
       setBanglaSavedToast(true);
       setTimeout(() => setBanglaSavedToast(false), 1800);
     } catch (err) {
@@ -410,11 +524,21 @@ export default function App() {
   const handleDeleteRecording = async () => {
     if (!selectedRecording) return;
     try {
-      await deleteWordRecording(selectedWord.id, selectedRecording.ownerId);
-      setStatusBanner({
-        type: 'success',
-        text: `Removed custom recording for "${selectedWord.word}".`,
-      });
+      if (selectedRecording.isPersonalOverride) {
+        await removePersonalRecordingOverride(selectedWord.id);
+        await refreshLocalAndCloudState();
+        setStatusBanner({
+          type: 'success',
+          text: `Removed your Personal Audio override for "${selectedWord.word}". Now using General App Audio.`,
+        });
+      } else {
+        await deleteWordRecording(selectedWord.id, selectedRecording.ownerId, true);
+        await refreshLocalAndCloudState();
+        setStatusBanner({
+          type: 'success',
+          text: `Removed General Audio for "${selectedWord.word}".`,
+        });
+      }
     } catch (err) {
       setStatusBanner({
         type: 'error',
@@ -433,7 +557,7 @@ export default function App() {
       handleSelectTab('uploads');
       setStatusBanner({
         type: 'success',
-        text: `Restored & Cloud-Synced all ${count} real MP3 uploads (orienteering, caving, scuba-diving, snorkeling, etc.)! Open the Mobile App or Incognito and all 14 real recordings are live!`,
+        text: `Restored & Cloud-Synced all ${count} General Audios (orienteering, caving, scuba-diving, snorkeling, etc.)!`,
       });
     } catch (err) {
       setStatusBanner({
@@ -446,18 +570,11 @@ export default function App() {
     }
   };
 
-  const unsyncedLocalCount = useMemo(
-    () =>
-      Object.values(recordingsMap).filter((r) => r.source === 'local-unsynced')
-        .length,
-    [recordingsMap]
-  );
-
   return (
     <div className="min-h-screen bg-[#08120e] text-[#e6f2ed] flex flex-col">
       <OfflineIndicator />
 
-      {/* Top Bar Contract: 3 Zones (Brand Wordmark — 4 Single-line Nav Links — 1 Primary Action) */}
+      {/* Top Bar Contract: 3 Zones (Brand Wordmark — Single-line Nav Links — Primary Action) */}
       <header className="flex items-center justify-between gap-4 sm:gap-8 px-4 sm:px-8 py-3.5 border-b border-[#142920] bg-[#08120e]/95 sticky top-0 z-30 backdrop-blur-md">
         {/* Zone 1: Brand Title */}
         <a
@@ -477,8 +594,8 @@ export default function App() {
           </span>
         </a>
 
-        {/* Zone 2: 4 Clean Single-Line Navigation Links (Desktop) */}
-        <nav className="hidden md:flex items-center gap-7 text-sm font-medium text-[#9bb8aa]">
+        {/* Zone 2: Clean Single-Line Navigation Links (Desktop) */}
+        <nav className="hidden md:flex items-center gap-6 text-sm font-medium text-[#9bb8aa]">
           <button
             type="button"
             onClick={() => {
@@ -517,6 +634,23 @@ export default function App() {
             }`}
           >
             Recordings ({counts.uploads})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveScreen('admin')}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+              activeScreen === 'admin'
+                ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'
+                : ''
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-[#10b981]" />
+            <span>Admin Panel</span>
+            {pendingContributionsCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-[#fbbf24] text-[#08120e] text-[10px] font-extrabold font-mono">
+                {pendingContributionsCount}
+              </span>
+            )}
           </button>
           <button
             type="button"
@@ -567,9 +701,19 @@ export default function App() {
           activeSubMode={practiceSubMode}
           onSubModeChange={(mode) => setPracticeSubMode(mode)}
         />
+      ) : activeScreen === 'admin' ? (
+        <AdminPanelView
+          contributions={contributions}
+          generalRecordingsMap={generalRecordingsMap}
+          personalRecordingsMap={recordingsMap}
+          userEmail={user?.email}
+          onBackToPractice={() => setActiveScreen('practice')}
+          onRestore14General={handleRestore14Uploads}
+          isRestoring14={isRestoring14}
+        />
       ) : (
         <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-6 space-y-5">
-          {/* Top Back Link & Mobile App / Share Link Quick Actions */}
+          {/* Top Back Link & Admin Panel / Mobile App Quick Actions */}
           <div className="flex flex-wrap items-center justify-between gap-2.5">
             <button
               type="button"
@@ -581,6 +725,20 @@ export default function App() {
             </button>
 
             <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setActiveScreen('admin')}
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>
+                  Admin Panel
+                  {pendingContributionsCount > 0
+                    ? ` (${pendingContributionsCount} Pending)`
+                    : ''}
+                </span>
+              </button>
+
               <PWAInstallButton
                 onOpenMobileLinkModal={() => setIsSyncModalOpen(true)}
               />
@@ -602,22 +760,6 @@ export default function App() {
                   </>
                 )}
               </button>
-
-              {counts.uploads === 0 && (
-                <button
-                  type="button"
-                  onClick={handleRestore14Uploads}
-                  disabled={isRestoring14}
-                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 border border-[#fbbf24]/40 text-xs font-semibold text-[#fbbf24] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <Sparkles className="w-3.5 h-3.5" />
-                  <span>
-                    {isRestoring14
-                      ? restoreProgressText || 'Restoring 14...'
-                      : 'Restore 14 Uploads'}
-                  </span>
-                </button>
-              )}
             </div>
           </div>
 
@@ -643,31 +785,15 @@ export default function App() {
             </div>
           )}
 
-          {/* Unsynced Local Recordings Prompt */}
-          {!user && unsyncedLocalCount > 0 && (
-            <div className="rounded-xl bg-[#1a2412] border border-[#fbbf24]/40 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
-              <div className="text-xs text-[#fde68a]">
-                You have <strong>{unsyncedLocalCount}</strong> recording(s) saved only in this browser. Sign in with Google to sync them to <strong>Firebase Cloud</strong> so they appear on your Mobile App and Incognito!
-              </div>
-              <button
-                type="button"
-                onClick={handleSignIn}
-                className="min-h-[40px] px-3 py-1.5 rounded-lg bg-[#fbbf24] text-[#08120e] text-xs font-bold hover:bg-[#f59e0b] transition-colors whitespace-nowrap shrink-0"
-              >
-                Sign in &amp; Sync to Cloud
-              </button>
-            </div>
-          )}
-
           {/* Main Pronunciation Recordings Card */}
           <section className="rounded-3xl bg-[#0d1b15] border border-[#1c3529] p-4 sm:p-7 space-y-4 sm:space-y-5 shadow-2xl">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h1 className="text-xl sm:text-2xl font-bold text-white tracking-tight">
-                  Pronunciation recordings
+                  Personal Audio &amp; Community Contributions
                 </h1>
                 <p className="mt-1 text-xs sm:text-sm text-[#8ca89a] leading-relaxed">
-                  Upload or record any word on Web or Mobile. Your recording syncs in real time via Firebase Cloud across your Mobile App, Web browsers, and Incognito.
+                  Upload or record any word for <strong>yourself</strong> (your personal audio will never be overwritten by general updates), and optionally <strong>contribute it to the Admin Panel</strong> to help update the General Audio for other users!
                 </p>
               </div>
               <button
@@ -680,7 +806,7 @@ export default function App() {
               </button>
             </div>
 
-            {/* 3-Column KPI Counter Strip: 782 BUNDLED | YOUR UPLOADS | MISSING */}
+            {/* 3-Column KPI Counter Strip: 782 BUNDLED | CUSTOM / GENERAL | MISSING */}
             <div className="grid grid-cols-3 rounded-2xl bg-[#0a1611] border border-[#1d362a] divide-x divide-[#1d362a] overflow-hidden">
               <div className="py-3.5 sm:py-4 px-2 text-center">
                 <div className="text-xl sm:text-3xl font-bold font-mono tabular-nums text-[#10b981]">
@@ -696,7 +822,7 @@ export default function App() {
                   {counts.uploads}
                 </div>
                 <div className="mt-1 text-[10px] sm:text-[11px] font-semibold tracking-wider text-[#6e8c7d]">
-                  YOUR UPLOADS
+                  CUSTOM ({counts.personal} PERSONAL)
                 </div>
               </div>
 
@@ -740,7 +866,7 @@ export default function App() {
               </div>
             </div>
 
-            {/* 3-Tab Segmented Filter Bar: Missing | My uploads | All 921 */}
+            {/* 3-Tab Segmented Filter Bar: Missing | Custom & General | All 921 */}
             <div className="grid grid-cols-3 gap-1 p-1 rounded-2xl bg-[#09140f] border border-[#193025]">
               <button
                 type="button"
@@ -766,7 +892,7 @@ export default function App() {
                     : 'text-[#8ca89a] hover:text-white'
                 }`}
               >
-                <span>My uploads</span>
+                <span>Custom / General</span>
                 <span className="font-mono tabular-nums text-xs text-[#10b981]">
                   {counts.uploads}
                 </span>
@@ -806,7 +932,7 @@ export default function App() {
                 <div className="py-10 px-4 text-center space-y-3">
                   <p className="text-sm text-[#8ca89a]">
                     {activeTab === 'uploads'
-                      ? 'No custom recordings uploaded yet.'
+                      ? 'No custom or general recordings uploaded yet.'
                       : 'No words match your search.'}
                   </p>
                   {activeTab === 'uploads' && (
@@ -817,7 +943,7 @@ export default function App() {
                       className="min-h-[44px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#09140f] text-xs font-bold hover:bg-[#f59e0b] transition-colors inline-flex items-center gap-2"
                     >
                       <Sparkles className="w-4 h-4" />
-                      <span>Restore &amp; Cloud-Sync Your 14 Uploads</span>
+                      <span>Restore 14 Default General Uploads</span>
                     </button>
                   )}
                 </div>
@@ -847,9 +973,15 @@ export default function App() {
 
                       <div className="shrink-0 ml-3 text-xs font-medium whitespace-nowrap">
                         {rec ? (
-                          <span className="text-[#fbbf24]">
-                            {rec.source === 'cloud' ? 'Your upload' : 'Local upload'}
-                          </span>
+                          rec.isPersonalOverride ? (
+                            <span className="text-[#38bdf8] font-bold">
+                              My Personal Audio
+                            </span>
+                          ) : (
+                            <span className="text-[#fbbf24]">
+                              General App Audio
+                            </span>
+                          )
                         ) : item.hasBundledAudio ? (
                           <span className="text-[#10b981]">Bundled</span>
                         ) : (
@@ -863,7 +995,7 @@ export default function App() {
             </div>
           </section>
 
-          {/* Bottom Active Word Inspector & Upload / Record Panel */}
+          {/* Bottom Active Word Inspector & Personal Upload + Contribute to Admin Panel */}
           <section className="rounded-3xl bg-[#0d1b15] border border-[#1f3b2e] p-4 sm:p-7 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between gap-3">
               <h2 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight truncate">
@@ -873,7 +1005,9 @@ export default function App() {
               <div className="flex items-center gap-2 shrink-0">
                 <span
                   className={`text-xs font-semibold whitespace-nowrap ${
-                    selectedRecording
+                    selectedRecording?.isPersonalOverride
+                      ? 'text-[#38bdf8]'
+                      : selectedRecording
                       ? 'text-[#fbbf24]'
                       : selectedWord.hasBundledAudio
                       ? 'text-[#10b981]'
@@ -881,9 +1015,9 @@ export default function App() {
                   }`}
                 >
                   {selectedRecording
-                    ? selectedRecording.source === 'cloud'
-                      ? 'Your upload · Cloud'
-                      : 'Your upload · Local'
+                    ? selectedRecording.isPersonalOverride
+                      ? 'My Personal Audio (Locked for You)'
+                      : 'General App Audio (Admin Approved)'
                     : selectedWord.hasBundledAudio
                     ? 'Bundled'
                     : 'Missing'}
@@ -893,7 +1027,11 @@ export default function App() {
                   <button
                     type="button"
                     onClick={handleDeleteRecording}
-                    title="Delete custom upload"
+                    title={
+                      selectedRecording.isPersonalOverride
+                        ? 'Remove Personal Audio override (revert to General Audio)'
+                        : 'Remove General Audio'
+                    }
                     className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[#8ca89a] hover:text-[#f87171] hover:bg-[#2a1417] transition-colors"
                   >
                     <Trash2 className="w-4 h-4" />
@@ -920,26 +1058,97 @@ export default function App() {
               )}
             </div>
 
+            {/* Contribute to Admin Panel Toggle Box */}
+            <div className="rounded-2xl bg-[#09140f] border border-[#1c382b] p-3.5 space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    checked={contributeOnSave}
+                    onChange={(e) => setContributeOnSave(e.target.checked)}
+                    className="mt-0.5 w-4 h-4 accent-[#10b981] rounded"
+                  />
+                  <div className="text-xs">
+                    <span className="font-bold text-white block">
+                      Contribute new recording to Admin Panel for General Audio
+                    </span>
+                    <span className="text-[#8ca89a]">
+                      Your recording is always saved as <strong>your Personal Audio</strong> first. If checked, it is also sent to the Admin Panel so the Admin can accept it for users who haven&apos;t set a personal audio.
+                    </span>
+                  </div>
+                </label>
+
+                {selectedRecording?.isPersonalOverride && (
+                  <button
+                    type="button"
+                    disabled={isSubmittingContribution}
+                    onClick={handleSubmitExistingPersonalToAdmin}
+                    className="self-start sm:self-center min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    <span>
+                      {isSubmittingContribution
+                        ? 'Sending...'
+                        : selectedRecording.contributedToAdmin
+                        ? 'Resend to Admin Panel'
+                        : 'Contribute to Admin Panel'}
+                    </span>
+                  </button>
+                )}
+              </div>
+
+              {contributeOnSave && (
+                <div className="flex flex-col sm:flex-row sm:items-center gap-2 pt-1 border-t border-[#152b21]">
+                  <label className="text-[11px] font-semibold text-[#8ca89a] shrink-0">
+                    Your Name (shown to Admin):
+                  </label>
+                  <input
+                    type="text"
+                    value={contributorNameInput}
+                    onChange={(e) => setContributorNameInput(e.target.value)}
+                    placeholder={
+                      user?.displayName ||
+                      user?.email?.split('@')[0] ||
+                      'Enter your name (optional)...'
+                    }
+                    className="flex-1 min-h-[36px] px-3 py-1 rounded-lg bg-[#0d1b15] border border-[#1f3d2f] text-xs text-white focus:outline-none focus:border-[#10b981]"
+                  />
+                </div>
+              )}
+            </div>
+
             {/* Recording Metadata Description */}
             <p className="text-xs text-[#8ca89a]">
               {selectedRecording ? (
-                <>
-                  Custom recording active ({selectedRecording.fileName} ·{' '}
-                  {Math.max(1, Math.round(selectedRecording.fileSize / 1024))} KB).{' '}
-                  {selectedRecording.source === 'cloud'
-                    ? 'Synced to Firebase Cloud — immediately available on your Mobile App, Web, and Incognito.'
-                    : 'Saved locally.'}
-                </>
+                selectedRecording.isPersonalOverride ? (
+                  <>
+                    <strong className="text-[#38bdf8]">Personal Audio Active</strong> (
+                    {selectedRecording.fileName} ·{' '}
+                    {Math.max(1, Math.round(selectedRecording.fileSize / 1024))} KB). Your app will always play this personal recording for you, even if the Admin updates the General Audio.
+                    {selectedGeneralRecording && (
+                      <>
+                        {' '}
+                        (A General App Audio also exists — click the trash icon if you ever want to switch back to General Audio.)
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <strong className="text-[#fbbf24]">General App Audio Active</strong> (
+                    {selectedRecording.fileName} ·{' '}
+                    {Math.max(1, Math.round(selectedRecording.fileSize / 1024))} KB · Approved by Admin). Upload or record below if you want to set your own Personal Audio for this word.
+                  </>
+                )
               ) : selectedWord.bundledAudioFile ? (
                 <>
                   Original bundled recording active (
                   <code className="text-[#10b981] font-mono">
                     {`audio-${selectedWord.originalId}.${selectedWord.bundledAudioFile.endsWith('.ogg') ? 'ogg' : 'mp3'}`}
                   </code>
-                  ). Tap Preview to listen, or upload a custom recording to override it.
+                  ). Tap Preview to listen, or upload/record to set your Personal Audio &amp; contribute to Admin.
                 </>
               ) : (
-                'No custom upload yet (uses dictionary audio fallback). Upload a clear MP3, M4A, OGG or WAV file, or record with your microphone to override.'
+                'No custom upload yet (uses dictionary audio fallback). Upload a clear MP3, M4A, OGG or WAV file, or record with your microphone to set your Personal Audio & contribute to Admin.'
               )}
             </p>
 
@@ -968,10 +1177,10 @@ export default function App() {
                 <Upload className="w-4 h-4 stroke-[2.5]" />
                 <span>
                   {isUploading
-                    ? 'UPLOADING & SYNCING...'
-                    : selectedRecording
-                    ? 'REPLACE RECORDING'
-                    : 'UPLOAD RECORDING'}
+                    ? 'SAVING AUDIO...'
+                    : selectedRecording?.isPersonalOverride
+                    ? 'REPLACE PERSONAL AUDIO'
+                    : 'SET PERSONAL AUDIO'}
                 </span>
                 <input
                   ref={fileInputRef}
@@ -1004,10 +1213,6 @@ export default function App() {
                 )}
               </button>
             </div>
-
-            <p className="text-[11px] text-[#6d8a7b] leading-relaxed">
-              MP3, M4A, OGG or WAV · max 10 MB. Two-way Web &harr; Mobile App sync via Firebase Cloud — upload on Web and play on Mobile, or record on Mobile and play on Web.
-            </p>
           </section>
         </main>
       )}
@@ -1070,12 +1275,16 @@ export default function App() {
 
         <button
           type="button"
-          onClick={() => setIsSyncModalOpen(true)}
-          className="flex flex-col items-center justify-center h-full rounded-xl text-[#8ba89a] hover:text-white transition-colors"
+          onClick={() => setActiveScreen('admin')}
+          className={`relative flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'admin'
+              ? 'text-[#10b981] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
         >
-          <Smartphone className="w-5 h-5" />
+          <ShieldCheck className="w-5 h-5" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            Cloud Sync
+            Admin {pendingContributionsCount > 0 ? `(${pendingContributionsCount})` : ''}
           </span>
         </button>
       </nav>

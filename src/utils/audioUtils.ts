@@ -473,6 +473,8 @@ export interface CachedRecordingItem {
   ownerName: string;
   updatedAtMs: number;
   syncedToCloud: boolean;
+  isPersonalOverride?: boolean;
+  contributedToAdmin?: boolean;
 }
 
 export async function saveRecordingToLocalCache(

@@ -101,6 +101,53 @@ service cloud.firestore {
         && data.createdAt is timestamp;
     }
 
+    // Validation Blueprint for AudioContribution
+    function isValidAudioContribution(data) {
+      return data.keys().hasAll([
+          'wordId',
+          'word',
+          'banglaMeaning',
+          'audioDataUrl',
+          'mimeType',
+          'fileName',
+          'fileSize',
+          'durationMs',
+          'contributorId',
+          'contributorName',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'wordId',
+          'word',
+          'banglaMeaning',
+          'audioDataUrl',
+          'mimeType',
+          'fileName',
+          'fileSize',
+          'durationMs',
+          'contributorId',
+          'contributorName',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.wordId is string && data.wordId.size() >= 1 && data.wordId.size() <= 128 && data.wordId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.word is string && data.word.size() >= 1 && data.word.size() <= 120
+        && data.banglaMeaning is string && data.banglaMeaning.size() >= 0 && data.banglaMeaning.size() <= 200
+        && data.audioDataUrl is string && data.audioDataUrl.size() >= 20 && data.audioDataUrl.size() <= 900000
+        && data.mimeType is string && data.mimeType.size() >= 3 && data.mimeType.size() <= 64
+        && data.fileName is string && data.fileName.size() >= 1 && data.fileName.size() <= 160
+        && data.fileSize is number && data.fileSize >= 0 && data.fileSize <= 10485760
+        && data.durationMs is number && data.durationMs >= 0 && data.durationMs <= 120000
+        && data.contributorId is string && data.contributorId.size() >= 1 && data.contributorId.size() <= 128 && data.contributorId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.contributorName is string && data.contributorName.size() >= 1 && data.contributorName.size() <= 120
+        && data.status is string && data.status.size() <= 20 && (data.status == 'pending' || data.status == 'approved' || data.status == 'rejected')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
     // Collection: /recordings/{recordingId}
     match /recordings/{recordingId} {
       allow get: if isValidId(recordingId) && (
@@ -151,6 +198,35 @@ service cloud.firestore {
 
       allow delete: if isValidId(recordingId)
         && existing().status == 'published';
+    }
+
+    // Collection: /audioContributions/{contributionId}
+    match /audioContributions/{contributionId} {
+      allow get: if isValidId(contributionId) && (
+        resource == null ||
+        existing().status in ['pending', 'approved', 'rejected']
+      );
+
+      allow list: if existing().status in ['pending', 'approved', 'rejected'];
+
+      allow create: if isValidId(contributionId)
+        && isValidAudioContribution(incoming())
+        && incoming().status == 'pending'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(contributionId)
+        && isValidAudioContribution(incoming())
+        && existing().status == 'pending'
+        && incoming().wordId == existing().wordId
+        && incoming().contributorId == existing().contributorId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (incoming().status == 'approved' || incoming().status == 'rejected')
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'banglaMeaning']);
+
+      allow delete: if isValidId(contributionId)
+        && existing().status in ['pending', 'approved', 'rejected'];
     }
 
     // Collection: /practiceSessions/{sessionId}
