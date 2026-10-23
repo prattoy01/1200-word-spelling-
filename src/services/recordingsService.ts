@@ -241,12 +241,19 @@ export function subscribeToPublishedRecordings(
       });
 
       // Step 2: Overlay User's Personal Audio Overrides so personal audio NEVER changes when General Audio updates!
+      const activeUserId = auth.currentUser?.uid;
       for (const [wordId, item] of Object.entries(localMap)) {
         if (isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
           void removeRecordingFromLocalCache(wordId);
           continue;
         }
-        if (item.isPersonalOverride || !item.syncedToCloud) {
+        const belongsToCurrentUser =
+          !activeUserId ||
+          !item.ownerId ||
+          item.ownerId === 'personal_user' ||
+          item.ownerId === activeUserId;
+
+        if ((item.isPersonalOverride && belongsToCurrentUser) || !item.syncedToCloud) {
           merged[wordId] = {
             wordId: item.wordId,
             word: item.word,
@@ -840,9 +847,13 @@ export function subscribeToUserPracticeSessions(
         });
       });
 
-      // Also include any local-only sessions that haven't synced yet
+      // Also include any local-only sessions for this user that haven't synced yet
       for (const loc of localCached) {
-        if (!seenIds.has(loc.id) && loc.id.startsWith('local_')) {
+        if (
+          !seenIds.has(loc.id) &&
+          loc.id.startsWith('local_') &&
+          loc.ownerId === targetOwnerId
+        ) {
           list.push(loc);
         }
       }

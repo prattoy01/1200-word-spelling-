@@ -30,7 +30,6 @@ import {
 import {
   auth,
   onAuthStateChanged,
-  signInWithGoogle,
   signOutUser,
   type User,
 } from './firebase';
@@ -58,6 +57,7 @@ import {
 import { NetlifyFixModal, getActiveAppUrl } from './components/NetlifyFixModal';
 import { PracticeView } from './components/PracticeView';
 import { AdminPanelView } from './components/AdminPanelView';
+import { SignInModal } from './components/SignInModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
@@ -106,26 +106,28 @@ export default function App() {
   const timerIntervalRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Cloud Sync & Migration Modal
+  // Cloud Sync & Migration Modal + Sign-In Modal
   const [isSyncModalOpen, setIsSyncModalOpen] = useState(false);
+  const [isSignInModalOpen, setIsSignInModalOpen] = useState(false);
   const [isRestoring14, setIsRestoring14] = useState(false);
   const [restoreProgressText, setRestoreProgressText] = useState('');
 
-  // 1. Track Firebase Auth state
+  // 1. Track Auth state across Chrome profiles
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setAuthReady(true);
       if (currentUser) {
-        if (!contributorNameInput && currentUser.displayName) {
-          setContributorNameInput(currentUser.displayName);
-        }
+        setContributorNameInput(currentUser.displayName || '');
         try {
           await syncLocalRecordingsToCloud();
         } catch (err) {
           console.error('Auto-sync error:', err);
         }
+      } else {
+        setContributorNameInput('');
       }
+      void refreshLocalAndCloudState();
     });
     return () => unsubAuth();
   }, []);
@@ -137,9 +139,16 @@ export default function App() {
     const localMap = await getAllLocalCachedRecordings();
     const baseGeneral = generalSnapshotMap || generalRecordingsMap;
     const merged: Record<string, CloudRecording> = { ...baseGeneral };
+    const activeUserId = auth.currentUser?.uid;
 
     for (const [id, item] of Object.entries(localMap)) {
-      if (item.isPersonalOverride || !baseGeneral[id]) {
+      const belongsToCurrentUser =
+        !activeUserId ||
+        !item.ownerId ||
+        item.ownerId === 'personal_user' ||
+        item.ownerId === activeUserId;
+
+      if ((item.isPersonalOverride && belongsToCurrentUser) || !baseGeneral[id]) {
         merged[id] = {
           wordId: item.wordId,
           word: item.word,
@@ -302,18 +311,7 @@ export default function App() {
   };
 
   const handleSignIn = async () => {
-    try {
-      await signInWithGoogle();
-      setStatusBanner({
-        type: 'success',
-        text: 'Signed in with Google!',
-      });
-    } catch (err) {
-      setStatusBanner({
-        type: 'error',
-        text: `Google Sign-In did not complete: ${err instanceof Error ? err.message : 'Popup closed'}`,
-      });
-    }
+    setIsSignInModalOpen(true);
   };
 
   const handleCopyQuickLink = () => {
@@ -662,20 +660,35 @@ export default function App() {
         </nav>
 
         {/* Zone 3: 1 Primary Action */}
-        <div className="flex items-center gap-2 shrink-0">
+        <div className="flex items-center gap-1.5 shrink-0">
           {user ? (
-            <button
-              type="button"
-              onClick={() => signOutUser()}
-              title={`Signed in as ${user.email} — Tap to sign out`}
-              className="min-h-[40px] px-3 py-1.5 text-xs font-semibold text-[#10b981] bg-[#11281e] border border-[#1f4735] rounded-xl hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
-            >
-              <CloudCheck className="w-4 h-4 shrink-0" />
-              <span className="max-w-[130px] sm:max-w-none truncate">
-                {user.displayName || user.email?.split('@')[0] || 'Synced'}
-              </span>
-              <LogOut className="w-3.5 h-3.5 text-[#7ea090] ml-0.5 shrink-0" />
-            </button>
+            <div className="flex items-center bg-[#11281e] border border-[#1f4735] rounded-xl overflow-hidden">
+              <button
+                type="button"
+                onClick={() => setIsSignInModalOpen(true)}
+                title={`Signed in as ${user.email} — Click to switch account`}
+                className="min-h-[38px] pl-3 pr-2 py-1.5 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              >
+                <CloudCheck className="w-4 h-4 shrink-0" />
+                <span className="max-w-[130px] sm:max-w-none truncate">
+                  {user.displayName || user.email?.split('@')[0] || 'Synced'}
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  await signOutUser();
+                  setStatusBanner({
+                    type: 'success',
+                    text: 'Signed out. You can now sign in with another account.',
+                  });
+                }}
+                title="Sign out"
+                className="min-h-[38px] px-2.5 py-1.5 text-[#7ea090] hover:text-[#fda4af] hover:bg-[#2a1215] border-l border-[#1f4735] transition-colors flex items-center justify-center"
+              >
+                <LogOut className="w-3.5 h-3.5 shrink-0" />
+              </button>
+            </div>
           ) : (
             <button
               type="button"
@@ -1299,6 +1312,25 @@ export default function App() {
         onRestore14Uploads={handleRestore14Uploads}
         isRestoring14={isRestoring14}
         restoreProgressText={restoreProgressText}
+      />
+
+      {/* Sign In & Switch User Modal */}
+      <SignInModal
+        isOpen={isSignInModalOpen}
+        onClose={() => setIsSignInModalOpen(false)}
+        currentUser={user}
+        onSignedIn={(signedInUser) => {
+          setStatusBanner({
+            type: 'success',
+            text: `Signed in as ${signedInUser.displayName} (${signedInUser.email})`,
+          });
+        }}
+        onSignedOut={() => {
+          setStatusBanner({
+            type: 'success',
+            text: 'Signed out successfully.',
+          });
+        }}
       />
     </div>
   );
