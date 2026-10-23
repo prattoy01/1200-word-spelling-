@@ -23,6 +23,7 @@ import {
   deleteWordRecording,
 } from '../services/recordingsService';
 import { playWordAudio } from '../utils/audioUtils';
+import { auth, isAdminUser, updateAdminPassword, ADMIN_EMAIL } from '../firebase';
 
 interface AdminPanelViewProps {
   contributions: AudioContributionRecord[];
@@ -34,13 +35,10 @@ interface AdminPanelViewProps {
   isRestoring14: boolean;
 }
 
-const ADMIN_OWNER_EMAIL = 'prattoy.photos01@gmail.com';
-
 export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   contributions,
   generalRecordingsMap,
   personalRecordingsMap,
-  userEmail,
   onBackToPractice,
   onRestore14General,
   isRestoring14,
@@ -48,7 +46,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const [activeAdminTab, setActiveAdminTab] = useState<
     'pending' | 'reviewed' | 'general'
   >('pending');
-  const [adminUnlocked, setAdminUnlocked] = useState<boolean>(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [editedBanglaMap, setEditedBanglaMap] = useState<Record<string, string>>(
     {}
@@ -59,8 +56,13 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     text: string;
   } | null>(null);
 
-  const isRecognizedOwner =
-    userEmail?.trim().toLowerCase() === ADMIN_OWNER_EMAIL.toLowerCase();
+  // Admin password change states
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
+  const [currentAdminPwd, setCurrentAdminPwd] = useState('');
+  const [newAdminPwd, setNewAdminPwd] = useState('');
+  const [isUpdatingPwd, setIsUpdatingPwd] = useState(false);
+
+  const isRecognizedOwner = isAdminUser(auth.currentUser);
 
   const pendingList = useMemo(
     () => contributions.filter((c) => c.status === 'pending'),
@@ -97,7 +99,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             Admin Access Restricted
           </h1>
           <p className="text-xs sm:text-sm text-[#9bb8aa] leading-relaxed">
-            Only the designated Admin (<strong className="text-white">{ADMIN_OWNER_EMAIL}</strong>) can access the Admin Panel and approve or modify General App Audio.
+            Only the verified Admin (<strong className="text-white">{ADMIN_EMAIL}</strong> authenticated with the Admin Password or Verified Google OAuth) can access the Admin Panel.
           </p>
           <button
             type="button"
@@ -111,6 +113,35 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       </main>
     );
   }
+
+  const handleUpdateAdminPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsUpdatingPwd(true);
+    setFeedbackBanner(null);
+    try {
+      await updateAdminPassword({
+        currentPassword: currentAdminPwd,
+        newPassword: newAdminPwd,
+      });
+      setCurrentAdminPwd('');
+      setNewAdminPwd('');
+      setShowPasswordChange(false);
+      setFeedbackBanner({
+        type: 'success',
+        text: 'Admin Password updated! Only someone with your new Admin Password can sign in as Admin.',
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Could not update Admin password.',
+      });
+    } finally {
+      setIsUpdatingPwd(false);
+    }
+  };
 
   const handleApprove = async (item: AudioContributionRecord) => {
     setProcessingId(item.id);
@@ -201,12 +232,79 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         </button>
 
         <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowPasswordChange((prev) => !prev)}
+            className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-xs font-semibold text-[#d2e5dc] flex items-center gap-1.5 transition-colors"
+          >
+            <Lock className="w-3.5 h-3.5 text-[#fbbf24]" />
+            <span>Change Admin Password</span>
+          </button>
+
           <span className="px-3 py-1.5 rounded-xl bg-[#10b981]/15 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4" />
-            <span>Admin ({ADMIN_OWNER_EMAIL})</span>
+            <span>Verified Admin ({ADMIN_EMAIL})</span>
           </span>
         </div>
       </div>
+
+      {/* Change Admin Password Card */}
+      {showPasswordChange && (
+        <form
+          onSubmit={handleUpdateAdminPassword}
+          className="rounded-2xl bg-[#0a1712] border border-[#244c3a] p-4 sm:p-5 space-y-3.5"
+        >
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Lock className="w-4 h-4 text-[#fbbf24]" />
+              <span>Update Admin Password ({ADMIN_EMAIL})</span>
+            </h3>
+            <button
+              type="button"
+              onClick={() => setShowPasswordChange(false)}
+              className="text-xs text-[#8ba89a] hover:text-white"
+            >
+              Cancel
+            </button>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-bold text-[#9bb8aa] mb-1">
+                Current Admin Password
+              </label>
+              <input
+                type="password"
+                required
+                value={currentAdminPwd}
+                onChange={(e) => setCurrentAdminPwd(e.target.value)}
+                placeholder="Enter current password..."
+                className="w-full px-3.5 py-2 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-xs text-white focus:outline-none focus:border-[#10b981]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-bold text-[#9bb8aa] mb-1">
+                New Admin Password (min 6 chars)
+              </label>
+              <input
+                type="password"
+                required
+                minLength={6}
+                value={newAdminPwd}
+                onChange={(e) => setNewAdminPwd(e.target.value)}
+                placeholder="Enter new secret password..."
+                className="w-full px-3.5 py-2 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-xs text-white focus:outline-none focus:border-[#10b981]"
+              />
+            </div>
+          </div>
+          <button
+            type="submit"
+            disabled={isUpdatingPwd}
+            className="px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold transition-colors disabled:opacity-50"
+          >
+            {isUpdatingPwd ? 'Updating...' : 'Save New Admin Password'}
+          </button>
+        </form>
+      )}
 
       {/* Architecture Explanation Card */}
       <section className="rounded-3xl bg-[#0d1d16] border border-[#244737] p-5 sm:p-7 space-y-4 shadow-2xl">
@@ -351,16 +449,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             <h2 className="text-base sm:text-lg font-bold text-white">
               Pending User Audio Contributions ({pendingList.length})
             </h2>
-            {!adminUnlocked && (
-              <button
-                type="button"
-                onClick={() => setAdminUnlocked(true)}
-                className="px-3 py-1.5 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-bold flex items-center gap-1.5"
-              >
-                <Lock className="w-3.5 h-3.5" />
-                <span>Unlock Admin Controls</span>
-              </button>
-            )}
           </div>
 
           {pendingList.length === 0 ? (

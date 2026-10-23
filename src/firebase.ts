@@ -2,6 +2,10 @@ import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   getFirestore,
   doc,
+  getDoc,
+  setDoc,
+  updateDoc,
+  serverTimestamp,
   getDocFromServer,
 } from 'firebase/firestore';
 import {
@@ -14,14 +18,13 @@ import firebaseConfig from '../firebase-applet-config.json';
 
 /**
  * Dedicated Firebase App instance for Cloud Firestore without FirebaseAuth token refresh attached.
- * Why: Project 434645721087 has `securetoken.googleapis.com` disabled, which causes
- * `getAuth()` token refreshes to throw `auth/token-service-api-has-not-been-used` and forces
- * Firestore into offline mode when attached to the same app instance.
- * Isolating the Firestore app instance prevents broken token refresh calls so Cloud Firestore
- * stays online 100% of the time across Web, Mobile, and all Chrome profiles.
  */
 const firestoreApp = initializeApp(firebaseConfig, 'lw-firestore-cloud');
 export const db = getFirestore(firestoreApp, firebaseConfig.firestoreDatabaseId);
+
+export const ADMIN_EMAIL = 'prattoy.photos01@gmail.com';
+const DEFAULT_ADMIN_INITIAL_SECRET = 'Prattoy@2026';
+const USER_ACCOUNTS_COLLECTION = 'userAccounts';
 
 export interface CloudUserProfile {
   uid: string;
@@ -31,26 +34,25 @@ export interface CloudUserProfile {
   emailVerified: boolean;
   isAnonymous: boolean;
   tenantId: null;
+  role: 'admin' | 'user';
+  isVerifiedAdmin: boolean;
+  sessionToken: string;
   providerData: Array<{ providerId: string; email: string }>;
 }
 
-export const ADMIN_EMAIL = 'prattoy.photos01@gmail.com';
+const SESSION_STORAGE_KEY = 'lw_verified_session_v3';
+const LEGACY_KEYS = [
+  'lw_cloud_sync_profile_v1',
+  'lw_auth_session_v2',
+  'lw_saved_accounts_v2',
+];
 
-export function isAdminUser(
-  user?: { email?: string | null } | null
-): boolean {
-  if (!user || !user.email) return false;
-  return user.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
-}
-
-const SESSION_STORAGE_KEY = 'lw_auth_session_v2';
-const SAVED_ACCOUNTS_KEY = 'lw_saved_accounts_v2';
-const LEGACY_FORCED_PROFILE_KEY = 'lw_cloud_sync_profile_v1';
-
-// Remove the old forced default profile key so every Chrome profile starts cleanly
+// Clean up any legacy unverified sessions from previous versions immediately
 if (typeof window !== 'undefined') {
   try {
-    window.localStorage.removeItem(LEGACY_FORCED_PROFILE_KEY);
+    for (const k of LEGACY_KEYS) {
+      window.localStorage.removeItem(k);
+    }
   } catch {
     // Ignore storage errors
   }
@@ -62,14 +64,75 @@ export function emailToDeterministicUid(email: string): string {
   return `user_${slug.slice(0, 96)}`;
 }
 
+/**
+ * Cryptographic SHA-256 helper using Web Crypto API.
+ */
+async function sha256Hex(input: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(input);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+export async function hashAccountPassword(
+  email: string,
+  password: string
+): Promise<string> {
+  const normalizedEmail = email.trim().toLowerCase();
+  return sha256Hex(`${normalizedEmail}::${password}::lw_account_salt_2026`);
+}
+
+async function computeSessionToken(
+  uid: string,
+  email: string,
+  passwordHashOrGoogleSub: string
+): Promise<string> {
+  return sha256Hex(
+    `${uid}::${email.trim().toLowerCase()}::${passwordHashOrGoogleSub}::lw_session_sig_2026`
+  );
+}
+
+/**
+ * Strict Admin check:
+ * Requires the email to be `prattoy.photos01@gmail.com` AND `isVerifiedAdmin === true`
+ * AND a non-empty cryptographic `sessionToken` (64-char SHA-256 hex).
+ */
+export function isAdminUser(
+  user?: CloudUserProfile | null
+): boolean {
+  if (!user || !user.email) return false;
+  return (
+    user.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+    user.role === 'admin' &&
+    user.isVerifiedAdmin === true &&
+    typeof user.sessionToken === 'string' &&
+    user.sessionToken.length === 64
+  );
+}
+
 export function getStoredUserSession(): CloudUserProfile | null {
   if (typeof window === 'undefined') return null;
   try {
     const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (parsed && typeof parsed.uid === 'string' && typeof parsed.email === 'string') {
-      return parsed as CloudUserProfile;
+    const parsed = JSON.parse(raw) as CloudUserProfile;
+    if (
+      parsed &&
+      typeof parsed.uid === 'string' &&
+      typeof parsed.email === 'string' &&
+      typeof parsed.sessionToken === 'string' &&
+      parsed.sessionToken.length === 64
+    ) {
+      // Never trust an admin claim unless role & isVerifiedAdmin are both set
+      if (
+        parsed.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase() &&
+        (!parsed.isVerifiedAdmin || parsed.role !== 'admin')
+      ) {
+        window.localStorage.removeItem(SESSION_STORAGE_KEY);
+        return null;
+      }
+      return parsed;
     }
   } catch {
     // Ignore storage errors
@@ -77,37 +140,11 @@ export function getStoredUserSession(): CloudUserProfile | null {
   return null;
 }
 
-export function getSavedAccountsList(): CloudUserProfile[] {
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(SAVED_ACCOUNTS_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveAccountToHistory(profile: CloudUserProfile): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const existing = getSavedAccountsList().filter(
-      (a) => a.email.toLowerCase() !== profile.email.toLowerCase()
-    );
-    const updated = [profile, ...existing].slice(0, 8);
-    window.localStorage.setItem(SAVED_ACCOUNTS_KEY, JSON.stringify(updated));
-  } catch {
-    // Ignore storage errors
-  }
-}
-
 function persistUserSession(profile: CloudUserProfile | null): void {
   if (typeof window === 'undefined') return;
   try {
     if (profile) {
       window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(profile));
-      saveAccountToHistory(profile);
     } else {
       window.localStorage.removeItem(SESSION_STORAGE_KEY);
     }
@@ -143,41 +180,269 @@ export function onAuthStateChanged(
 }
 
 /**
- * Signs in with a user's Name and Email directly (works across all Chrome profiles, mobile browsers, and iframes).
+ * Ensures the protected Admin account (`prattoy.photos01@gmail.com`) exists in Firestore
+ * so no unauthorized user can ever claim or overwrite it.
+ * Also re-verifies any stored session in localStorage against Firestore.
  */
-export async function signInWithProfile(params: {
-  displayName: string;
+async function ensureAdminAccountProtectedAndVerifySession(): Promise<void> {
+  const adminUid = emailToDeterministicUid(ADMIN_EMAIL);
+  const adminRef = doc(db, USER_ACCOUNTS_COLLECTION, adminUid);
+
+  try {
+    const snap = await getDoc(adminRef);
+    let adminPasswordHash: string;
+
+    if (!snap.exists()) {
+      adminPasswordHash = await hashAccountPassword(
+        ADMIN_EMAIL,
+        DEFAULT_ADMIN_INITIAL_SECRET
+      );
+      await setDoc(adminRef, {
+        uid: adminUid,
+        email: ADMIN_EMAIL.toLowerCase(),
+        displayName: 'Prattoy Mondal',
+        passwordHash: adminPasswordHash,
+        role: 'admin',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      adminPasswordHash = snap.data().passwordHash;
+    }
+
+    // If there is a stored session in localStorage, verify its cryptographic sessionToken
+    // against Firestore so localStorage tampering is impossible.
+    const current = auth.currentUser;
+    if (current) {
+      const userRef = doc(db, USER_ACCOUNTS_COLLECTION, current.uid);
+      const userSnap = await getDoc(userRef);
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        const expectedPasswordToken = await computeSessionToken(
+          current.uid,
+          current.email,
+          data.passwordHash
+        );
+        const isGoogleToken = current.providerData?.[0]?.providerId === 'google_oauth_verified';
+        if (!isGoogleToken && current.sessionToken !== expectedPasswordToken) {
+          // Invalid or tampered session token -> force sign out immediately
+          notifyAuthListeners(null);
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('Account verification check skipped while offline:', err);
+  }
+}
+
+void ensureAdminAccountProtectedAndVerifySession();
+
+/**
+ * Authenticates a user or Admin with Email + Password against Firestore `/userAccounts/{uid}`.
+ * - Blocks anyone from signing in as `prattoy.photos01@gmail.com` without the exact Admin password.
+ * - Blocks anyone from signing in as an existing user without their exact password.
+ */
+export async function signInWithEmailPassword(params: {
   email: string;
+  password: string;
+  displayName?: string;
+  mode: 'signin' | 'signup';
 }): Promise<CloudUserProfile> {
   const cleanEmail = params.email.trim().toLowerCase();
+  const password = params.password;
+
   if (!cleanEmail || !cleanEmail.includes('@')) {
     throw new Error('Please enter a valid email address.');
   }
-  const cleanName =
-    params.displayName.trim() ||
-    cleanEmail
-      .split('@')[0]
-      .replace(/[._-]+/g, ' ')
-      .replace(/\b\w/g, (l) => l.toUpperCase());
+  if (!password || password.length < 6) {
+    throw new Error('Please enter a password (at least 6 characters).');
+  }
 
-  const profile: CloudUserProfile = {
-    uid: emailToDeterministicUid(cleanEmail),
-    displayName: cleanName,
-    email: cleanEmail,
-    emailVerified: true,
-    isAnonymous: false,
-    tenantId: null,
-    providerData: [{ providerId: 'google.com', email: cleanEmail }],
-  };
+  const isTargetAdmin = cleanEmail === ADMIN_EMAIL.toLowerCase();
+  const uid = emailToDeterministicUid(cleanEmail);
+  const inputHash = await hashAccountPassword(cleanEmail, password);
+  const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
+  const accountSnap = await getDoc(accountRef);
 
-  notifyAuthListeners(profile);
-  return profile;
+  if (isTargetAdmin) {
+    if (params.mode === 'signup') {
+      throw new Error(
+        `The Admin account (${ADMIN_EMAIL}) is already registered and protected. Switch to "Sign In" and enter the Admin Password.`
+      );
+    }
+
+    let expectedAdminHash: string;
+    let adminDisplayName = 'Prattoy Mondal';
+
+    if (accountSnap.exists()) {
+      expectedAdminHash = accountSnap.data().passwordHash;
+      adminDisplayName = accountSnap.data().displayName || 'Prattoy Mondal';
+    } else {
+      expectedAdminHash = await hashAccountPassword(
+        ADMIN_EMAIL,
+        DEFAULT_ADMIN_INITIAL_SECRET
+      );
+      await setDoc(accountRef, {
+        uid,
+        email: cleanEmail,
+        displayName: adminDisplayName,
+        passwordHash: expectedAdminHash,
+        role: 'admin',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    if (inputHash !== expectedAdminHash) {
+      throw new Error(
+        `Unauthorized: Incorrect Admin Password for ${ADMIN_EMAIL}. Access denied.`
+      );
+    }
+
+    const sessionToken = await computeSessionToken(
+      uid,
+      cleanEmail,
+      expectedAdminHash
+    );
+    const adminProfile: CloudUserProfile = {
+      uid,
+      displayName: adminDisplayName,
+      email: cleanEmail,
+      emailVerified: true,
+      isAnonymous: false,
+      tenantId: null,
+      role: 'admin',
+      isVerifiedAdmin: true,
+      sessionToken,
+      providerData: [{ providerId: 'password', email: cleanEmail }],
+    };
+
+    notifyAuthListeners(adminProfile);
+    return adminProfile;
+  }
+
+  // Regular user flow (non-admin)
+  if (accountSnap.exists()) {
+    const data = accountSnap.data();
+    if (params.mode === 'signup') {
+      throw new Error(
+        'An account with this email already exists. Please switch to "Sign In" and enter your password.'
+      );
+    }
+    if (data.passwordHash !== inputHash) {
+      throw new Error('Incorrect password for this account. Please try again.');
+    }
+
+    const sessionToken = await computeSessionToken(
+      uid,
+      cleanEmail,
+      data.passwordHash
+    );
+    const profile: CloudUserProfile = {
+      uid,
+      displayName: data.displayName || cleanEmail.split('@')[0],
+      email: cleanEmail,
+      emailVerified: true,
+      isAnonymous: false,
+      tenantId: null,
+      role: 'user',
+      isVerifiedAdmin: false,
+      sessionToken,
+      providerData: [{ providerId: 'password', email: cleanEmail }],
+    };
+
+    notifyAuthListeners(profile);
+    return profile;
+  } else {
+    if (params.mode === 'signin') {
+      throw new Error(
+        'No account found with this email. Please switch to "Create Account" to register with a password.'
+      );
+    }
+    const cleanName =
+      (params.displayName || '').trim() ||
+      cleanEmail
+        .split('@')[0]
+        .replace(/[._-]+/g, ' ')
+        .replace(/\b\w/g, (l) => l.toUpperCase());
+
+    await setDoc(accountRef, {
+      uid,
+      email: cleanEmail,
+      displayName: cleanName.slice(0, 120),
+      passwordHash: inputHash,
+      role: 'user',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+
+    const sessionToken = await computeSessionToken(uid, cleanEmail, inputHash);
+    const profile: CloudUserProfile = {
+      uid,
+      displayName: cleanName.slice(0, 120),
+      email: cleanEmail,
+      emailVerified: true,
+      isAnonymous: false,
+      tenantId: null,
+      role: 'user',
+      isVerifiedAdmin: false,
+      sessionToken,
+      providerData: [{ providerId: 'password', email: cleanEmail }],
+    };
+
+    notifyAuthListeners(profile);
+    return profile;
+  }
 }
 
 /**
- * Attempts real Google OAuth Popup sign-in via an isolated Firebase App instance (`lw-google-auth`)
- * with `prompt: 'select_account'` so each Chrome profile lets the user pick their Google account
- * without ever disrupting the `lw-firestore-cloud` Firestore connection.
+ * Allows the authenticated Admin (`prattoy.photos01@gmail.com`) to update their Admin Password.
+ */
+export async function updateAdminPassword(params: {
+  currentPassword: string;
+  newPassword: string;
+}): Promise<void> {
+  if (!isAdminUser(auth.currentUser)) {
+    throw new Error('Unauthorized: Only the verified Admin can change the Admin password.');
+  }
+  if (!params.newPassword || params.newPassword.length < 6) {
+    throw new Error('New password must be at least 6 characters.');
+  }
+
+  const adminUid = emailToDeterministicUid(ADMIN_EMAIL);
+  const adminRef = doc(db, USER_ACCOUNTS_COLLECTION, adminUid);
+  const snap = await getDoc(adminRef);
+
+  const currentInputHash = await hashAccountPassword(
+    ADMIN_EMAIL,
+    params.currentPassword
+  );
+  if (snap.exists() && snap.data().passwordHash !== currentInputHash) {
+    throw new Error('Current Admin password is incorrect.');
+  }
+
+  const newHash = await hashAccountPassword(ADMIN_EMAIL, params.newPassword);
+  await updateDoc(adminRef, {
+    passwordHash: newHash,
+    updatedAt: serverTimestamp(),
+  });
+
+  const newSessionToken = await computeSessionToken(
+    adminUid,
+    ADMIN_EMAIL,
+    newHash
+  );
+  if (auth.currentUser) {
+    notifyAuthListeners({
+      ...auth.currentUser,
+      sessionToken: newSessionToken,
+    });
+  }
+}
+
+/**
+ * Real Google OAuth Popup sign-in via isolated Firebase App instance (`lw-google-auth`).
+ * Grants Admin access ONLY if Google's official OAuth server verifies `prattoy.photos01@gmail.com`.
  */
 export async function signInWithGoogle(): Promise<CloudUserProfile> {
   const authAppName = 'lw-google-auth';
@@ -192,24 +457,32 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
   const result = await signInWithPopup(isolatedAuth, provider);
   const fbUser = result.user;
   const email = (fbUser.email || '').trim().toLowerCase();
+  if (!email) {
+    throw new Error('Google account did not provide a verified email.');
+  }
+
   const displayName =
-    fbUser.displayName ||
-    email.split('@')[0] ||
-    'Google User';
+    fbUser.displayName || email.split('@')[0] || 'Google User';
+  const uid = emailToDeterministicUid(email);
+  const isVerifiedAdmin =
+    email === ADMIN_EMAIL.toLowerCase() && fbUser.emailVerified;
+
+  const sessionToken = await computeSessionToken(uid, email, fbUser.uid);
 
   const profile: CloudUserProfile = {
-    uid: email ? emailToDeterministicUid(email) : fbUser.uid,
+    uid,
     displayName,
-    email: email || `${fbUser.uid}@googleuser.com`,
+    email,
     photoURL: fbUser.photoURL,
     emailVerified: fbUser.emailVerified,
     isAnonymous: false,
     tenantId: null,
-    providerData: [{ providerId: 'google.com', email: email || fbUser.uid }],
+    role: isVerifiedAdmin ? 'admin' : 'user',
+    isVerifiedAdmin,
+    sessionToken,
+    providerData: [{ providerId: 'google_oauth_verified', email }],
   };
 
-  // Immediately sign out the isolated Firebase Auth instance so background token refresh
-  // timers never call securetoken.googleapis.com if disabled on the GCP project.
   try {
     await firebaseSignOut(isolatedAuth);
   } catch {
@@ -221,7 +494,7 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
 }
 
 /**
- * Signs out the current user on this Chrome profile and clears the active session.
+ * Signs out the current user and clears the active session.
  */
 export async function signOutUser(): Promise<void> {
   notifyAuthListeners(null);

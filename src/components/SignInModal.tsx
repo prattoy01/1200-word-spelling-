@@ -5,17 +5,20 @@ import {
   LogOut,
   UserCheck,
   Mail,
+  Lock,
   User as UserIcon,
   Sparkles,
   CheckCircle2,
   AlertCircle,
+  ShieldCheck,
+  UserPlus,
 } from 'lucide-react';
 import {
   type User,
+  ADMIN_EMAIL,
   signInWithGoogle,
-  signInWithProfile,
+  signInWithEmailPassword,
   signOutUser,
-  getSavedAccountsList,
 } from '../firebase';
 
 interface SignInModalProps {
@@ -33,20 +36,25 @@ export const SignInModal: React.FC<SignInModalProps> = ({
   onSignedIn,
   onSignedOut,
 }) => {
-  const [displayName, setDisplayName] = useState(currentUser?.displayName || '');
-  const [email, setEmail] = useState(currentUser?.email || '');
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [displayName, setDisplayName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const savedAccounts = getSavedAccountsList();
+  const isTypingAdminEmail =
+    email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
 
   const handleGooglePopup = async () => {
     setErrorMsg(null);
     setIsLoadingGoogle(true);
     try {
       const profile = await signInWithGoogle();
+      setPassword('');
       onSignedIn(profile);
       onClose();
     } catch (err) {
@@ -58,13 +66,13 @@ export const SignInModal: React.FC<SignInModalProps> = ({
         rawMsg.includes('operation-not-allowed')
       ) {
         setErrorMsg(
-          'Google popup is restricted on this preview URL/browser. Please enter your Name & Email below to sign in immediately on this Chrome profile.'
+          'Google popup is restricted on this preview URL/browser. Please sign in using your Email & Password above.'
         );
       } else if (rawMsg.includes('popup-closed-by-user')) {
-        setErrorMsg('Google sign-in popup was closed. You can also sign in with your Name & Email below.');
+        setErrorMsg('Google sign-in popup was closed.');
       } else {
         setErrorMsg(
-          'Could not complete Google popup sign-in. Please enter your Name & Email below to sign in directly.'
+          'Could not complete Google popup sign-in. Please use Email & Password above.'
         );
       }
     } finally {
@@ -72,35 +80,32 @@ export const SignInModal: React.FC<SignInModalProps> = ({
     }
   };
 
-  const handleDirectSignIn = async (e: React.FormEvent) => {
+  const handlePasswordSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
+    setIsSubmitting(true);
     try {
-      const profile = await signInWithProfile({
-        displayName,
+      const profile = await signInWithEmailPassword({
         email,
+        password,
+        displayName,
+        mode: isTypingAdminEmail ? 'signin' : authMode,
       });
+      setPassword('');
       onSignedIn(profile);
       onClose();
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Please enter a valid name and email.'
+        err instanceof Error ? err.message : 'Authentication failed.'
       );
+    } finally {
+      setIsSubmitting(false);
     }
-  };
-
-  const handleQuickSwitch = async (acc: User) => {
-    setErrorMsg(null);
-    const profile = await signInWithProfile({
-      displayName: acc.displayName,
-      email: acc.email,
-    });
-    onSignedIn(profile);
-    onClose();
   };
 
   const handleSignOut = async () => {
     await signOutUser();
+    setPassword('');
     onSignedOut();
     onClose();
   };
@@ -119,7 +124,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                 {currentUser ? 'Account & Switch User' : 'Sign In to Listen & Write'}
               </h3>
               <p className="text-[11px] text-[#7ea090]">
-                Each Chrome profile &amp; user gets their own Personal Audio &amp; Exam History
+                Password-protected accounts across all Chrome profiles
               </p>
             </div>
           </div>
@@ -132,7 +137,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
           </button>
         </div>
 
-        <div className="p-5 space-y-5 max-h-[82vh] overflow-y-auto">
+        <div className="p-5 space-y-4 max-h-[84vh] overflow-y-auto">
           {/* Active User Banner (if signed in) */}
           {currentUser && (
             <div className="p-3.5 rounded-xl bg-[#0a1712] border border-[#1f4735] flex items-center justify-between gap-3">
@@ -142,6 +147,11 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                   <span className="text-xs font-bold text-white truncate">
                     {currentUser.displayName}
                   </span>
+                  {currentUser.isVerifiedAdmin && (
+                    <span className="px-1.5 py-0.5 rounded bg-[#10b981]/20 border border-[#10b981]/40 text-[10px] font-bold text-[#10b981]">
+                      ADMIN
+                    </span>
+                  )}
                 </div>
                 <p className="text-[11px] text-[#7ea090] truncate mt-0.5">
                   {currentUser.email}
@@ -158,6 +168,40 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </div>
           )}
 
+          {/* Mode Toggle: Sign In vs Create Account */}
+          <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#07120e] border border-[#183327]">
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('signin');
+                setErrorMsg(null);
+              }}
+              className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
+                authMode === 'signin'
+                  ? 'bg-[#10b981] text-[#04120c]'
+                  : 'text-[#8ca89a] hover:text-white'
+              }`}
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              <span>Sign In</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setAuthMode('signup');
+                setErrorMsg(null);
+              }}
+              className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
+                authMode === 'signup'
+                  ? 'bg-[#10b981] text-[#04120c]'
+                  : 'text-[#8ca89a] hover:text-white'
+              }`}
+            >
+              <UserPlus className="w-3.5 h-3.5" />
+              <span>Create Account</span>
+            </button>
+          </div>
+
           {errorMsg && (
             <div className="p-3 rounded-xl bg-[#2a1215] border border-[#5c2026] text-xs text-[#fda4af] flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-[#f43f5e] shrink-0 mt-0.5" />
@@ -165,28 +209,41 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </div>
           )}
 
-          {/* Direct Email & Name Sign-In Form */}
-          <form onSubmit={handleDirectSignIn} className="space-y-3.5">
-            <div>
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                Your Name
-              </label>
-              <div className="relative">
-                <UserIcon className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="text"
-                  required
-                  value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="e.g. Prattoy Mondal or Student Name"
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
-                />
-              </div>
+          {isTypingAdminEmail && (
+            <div className="p-3 rounded-xl bg-[#0e291e] border border-[#10b981]/40 text-xs text-[#a7f3d0] flex items-start gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#10b981] shrink-0 mt-0.5" />
+              <span>
+                <strong>Protected Admin Account:</strong> Entering{' '}
+                <code className="font-mono">{ADMIN_EMAIL}</code> requires the authorized{' '}
+                <strong>Admin Password</strong> (or verified Google OAuth).
+              </span>
             </div>
+          )}
+
+          {/* Email & Password Form */}
+          <form onSubmit={handlePasswordSubmit} className="space-y-3.5">
+            {authMode === 'signup' && !isTypingAdminEmail && (
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
+                  Your Full Name
+                </label>
+                <div className="relative">
+                  <UserIcon className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    required
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    placeholder="e.g. Student Name"
+                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
+                  />
+                </div>
+              </div>
+            )}
 
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                Email Address (Google / Personal Email)
+                Email Address
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -201,12 +258,43 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               </div>
             </div>
 
+            <div>
+              <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
+                {isTypingAdminEmail ? 'Admin Password' : 'Password'}
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder={
+                    isTypingAdminEmail
+                      ? 'Enter Admin Password...'
+                      : 'Enter password (min 6 characters)...'
+                  }
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
+                />
+              </div>
+            </div>
+
             <button
               type="submit"
-              className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm transition-colors flex items-center justify-center gap-2 shadow-sm"
+              disabled={isSubmitting}
+              className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
             >
               <LogIn className="w-4 h-4" />
-              <span>{currentUser ? 'Switch to This Account' : 'Sign In'}</span>
+              <span>
+                {isSubmitting
+                  ? 'Verifying...'
+                  : isTypingAdminEmail
+                  ? 'Verify & Sign In as Admin'
+                  : authMode === 'signup'
+                  ? 'Create Account & Sign In'
+                  : 'Sign In'}
+              </span>
             </button>
           </form>
 
@@ -230,48 +318,9 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             <span>
               {isLoadingGoogle
                 ? 'Opening Google Account Chooser...'
-                : 'Continue with Google Popup'}
+                : 'Continue with Verified Google Popup'}
             </span>
           </button>
-
-          {/* Previously Saved Accounts on this Chrome Profile */}
-          {savedAccounts.length > 0 && (
-            <div className="pt-2 border-t border-[#183327] space-y-2">
-              <p className="text-[11px] font-bold uppercase tracking-wider text-[#7ea090]">
-                Recent Accounts on this Browser
-              </p>
-              <div className="space-y-1.5">
-                {savedAccounts.map((acc) => {
-                  const isCurrent =
-                    currentUser?.email.toLowerCase() === acc.email.toLowerCase();
-                  return (
-                    <button
-                      key={acc.uid}
-                      type="button"
-                      onClick={() => handleQuickSwitch(acc)}
-                      className={`w-full px-3 py-2 rounded-xl border text-left transition-colors flex items-center justify-between gap-2 ${
-                        isCurrent
-                          ? 'bg-[#11281e] border-[#10b981]/50 text-white'
-                          : 'bg-[#091410] border-[#183327] text-[#b5cfc2] hover:border-[#2a5441]'
-                      }`}
-                    >
-                      <div className="min-w-0">
-                        <div className="text-xs font-bold truncate">
-                          {acc.displayName}
-                        </div>
-                        <div className="text-[11px] text-[#7ea090] truncate">
-                          {acc.email}
-                        </div>
-                      </div>
-                      <span className="text-[10px] font-semibold px-2 py-0.5 rounded-md bg-[#132a20] text-[#10b981] shrink-0">
-                        {isCurrent ? 'Active' : 'Use'}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          )}
         </div>
       </div>
     </div>
