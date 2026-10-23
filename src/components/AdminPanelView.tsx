@@ -60,7 +60,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   } | null>(null);
 
   const isRecognizedOwner =
-    userEmail?.toLowerCase() === ADMIN_OWNER_EMAIL.toLowerCase();
+    userEmail?.trim().toLowerCase() === ADMIN_OWNER_EMAIL.toLowerCase();
 
   const pendingList = useMemo(
     () => contributions.filter((c) => c.status === 'pending'),
@@ -85,6 +85,32 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         r.ownerName.toLowerCase().includes(q)
     );
   }, [generalRecordingsMap, searchGeneral]);
+
+  if (!isRecognizedOwner) {
+    return (
+      <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 pt-12 pb-28 text-center space-y-5">
+        <div className="rounded-3xl bg-[#0d1d16] border border-[#3d1d24] p-7 space-y-4 shadow-2xl">
+          <div className="w-14 h-14 rounded-2xl bg-[#2a1215] border border-[#5c2026] flex items-center justify-center text-[#f43f5e] mx-auto">
+            <Lock className="w-7 h-7" />
+          </div>
+          <h1 className="text-xl font-extrabold text-white">
+            Admin Access Restricted
+          </h1>
+          <p className="text-xs sm:text-sm text-[#9bb8aa] leading-relaxed">
+            Only the designated Admin (<strong className="text-white">{ADMIN_OWNER_EMAIL}</strong>) can access the Admin Panel and approve or modify General App Audio.
+          </p>
+          <button
+            type="button"
+            onClick={onBackToPractice}
+            className="min-h-[42px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-2 transition-colors"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Practice</span>
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   const handleApprove = async (item: AudioContributionRecord) => {
     setProcessingId(item.id);
@@ -177,11 +203,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         <div className="flex items-center gap-2">
           <span className="px-3 py-1.5 rounded-xl bg-[#10b981]/15 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5">
             <ShieldCheck className="w-4 h-4" />
-            <span>
-              {isRecognizedOwner
-                ? `Admin (${userEmail})`
-                : 'Audio Moderation Admin Panel'}
-            </span>
+            <span>Admin ({ADMIN_OWNER_EMAIL})</span>
           </span>
         </div>
       </div>

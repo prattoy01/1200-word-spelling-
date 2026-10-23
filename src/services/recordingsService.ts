@@ -16,6 +16,8 @@ import {
 import {
   db,
   auth,
+  isAdminUser,
+  ADMIN_EMAIL,
   OperationType,
   handleFirestoreError,
 } from '../firebase';
@@ -296,6 +298,11 @@ export async function publishGeneralCloudRecording(params: {
   ownerName?: string;
 }): Promise<void> {
   const user = auth.currentUser;
+  if (!isAdminUser(user)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can publish or update General App Audio.`
+    );
+  }
   const ownerId =
     params.ownerId || user?.uid || 'admin_general_audio';
   const ownerName =
@@ -549,6 +556,11 @@ export async function approveAudioContribution(
   contribution: AudioContributionRecord,
   customBanglaMeaning?: string
 ): Promise<void> {
+  if (!isAdminUser(auth.currentUser)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can accept contributions.`
+    );
+  }
   const finalBangla =
     customBanglaMeaning !== undefined
       ? customBanglaMeaning.trim().slice(0, 200)
@@ -585,6 +597,11 @@ export async function approveAudioContribution(
 export async function rejectAudioContribution(
   contributionId: string
 ): Promise<void> {
+  if (!isAdminUser(auth.currentUser)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can reject contributions.`
+    );
+  }
   const contribRef = doc(db, CONTRIBUTIONS_PATH, contributionId);
   await updateDoc(contribRef, {
     status: 'rejected',
@@ -598,6 +615,11 @@ export async function rejectAudioContribution(
 export async function deleteAudioContribution(
   contributionId: string
 ): Promise<void> {
+  if (!isAdminUser(auth.currentUser)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can delete contributions.`
+    );
+  }
   await deleteDoc(doc(db, CONTRIBUTIONS_PATH, contributionId));
 }
 
@@ -628,7 +650,7 @@ export async function updateRecordingBanglaMeaning(params: {
     contributedToAdmin: recording.contributedToAdmin,
   });
 
-  if (!recording.isPersonalOverride) {
+  if (!recording.isPersonalOverride && isAdminUser(auth.currentUser)) {
     const docRef = doc(db, RECORDINGS_PATH, recording.wordId);
     try {
       await updateDoc(docRef, {
@@ -670,6 +692,11 @@ export async function deleteWordRecording(
   _ownerId?: string,
   alsoDeleteFromGeneralCloud = false
 ): Promise<void> {
+  if (alsoDeleteFromGeneralCloud && !isAdminUser(auth.currentUser)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can delete General App Audio.`
+    );
+  }
   await removeRecordingFromLocalCache(wordId);
   if (alsoDeleteFromGeneralCloud) {
     const docRef = doc(db, RECORDINGS_PATH, wordId);

@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import {
   auth,
+  isAdminUser,
   onAuthStateChanged,
   signOutUser,
   type User,
@@ -111,6 +112,15 @@ export default function App() {
   const [isSignInModalOpen, setIsSignInModalOpen] = useState(false);
   const [isRestoring14, setIsRestoring14] = useState(false);
   const [restoreProgressText, setRestoreProgressText] = useState('');
+
+  const isAdmin = isAdminUser(user);
+
+  // Redirect away from Admin Panel if user is not prattoy.photos01@gmail.com
+  useEffect(() => {
+    if (authReady && !isAdmin && activeScreen === 'admin') {
+      setActiveScreen('practice');
+    }
+  }, [authReady, isAdmin, activeScreen]);
 
   // 1. Track Auth state across Chrome profiles
   useEffect(() => {
@@ -633,23 +643,25 @@ export default function App() {
           >
             Recordings ({counts.uploads})
           </button>
-          <button
-            type="button"
-            onClick={() => setActiveScreen('admin')}
-            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-              activeScreen === 'admin'
-                ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'
-                : ''
-            }`}
-          >
-            <ShieldCheck className="w-4 h-4 text-[#10b981]" />
-            <span>Admin Panel</span>
-            {pendingContributionsCount > 0 && (
-              <span className="px-1.5 py-0.5 rounded-full bg-[#fbbf24] text-[#08120e] text-[10px] font-extrabold font-mono">
-                {pendingContributionsCount}
-              </span>
-            )}
-          </button>
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => setActiveScreen('admin')}
+              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                activeScreen === 'admin'
+                  ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'
+                  : ''
+              }`}
+            >
+              <ShieldCheck className="w-4 h-4 text-[#10b981]" />
+              <span>Admin Panel</span>
+              {pendingContributionsCount > 0 && (
+                <span className="px-1.5 py-0.5 rounded-full bg-[#fbbf24] text-[#08120e] text-[10px] font-extrabold font-mono">
+                  {pendingContributionsCount}
+                </span>
+              )}
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setIsSyncModalOpen(true)}
@@ -738,19 +750,21 @@ export default function App() {
             </button>
 
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setActiveScreen('admin')}
-                className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>
-                  Admin Panel
-                  {pendingContributionsCount > 0
-                    ? ` (${pendingContributionsCount} Pending)`
-                    : ''}
-                </span>
-              </button>
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => setActiveScreen('admin')}
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+                >
+                  <ShieldCheck className="w-3.5 h-3.5" />
+                  <span>
+                    Admin Panel
+                    {pendingContributionsCount > 0
+                      ? ` (${pendingContributionsCount} Pending)`
+                      : ''}
+                  </span>
+                </button>
+              )}
 
               <PWAInstallButton
                 onOpenMobileLinkModal={() => setIsSyncModalOpen(true)}
@@ -948,7 +962,7 @@ export default function App() {
                       ? 'No custom or general recordings uploaded yet.'
                       : 'No words match your search.'}
                   </p>
-                  {activeTab === 'uploads' && (
+                  {activeTab === 'uploads' && isAdmin && (
                     <button
                       type="button"
                       onClick={handleRestore14Uploads}
@@ -1036,20 +1050,21 @@ export default function App() {
                     : 'Missing'}
                 </span>
 
-                {selectedRecording && (
-                  <button
-                    type="button"
-                    onClick={handleDeleteRecording}
-                    title={
-                      selectedRecording.isPersonalOverride
-                        ? 'Remove Personal Audio override (revert to General Audio)'
-                        : 'Remove General Audio'
-                    }
-                    className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[#8ca89a] hover:text-[#f87171] hover:bg-[#2a1417] transition-colors"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
+                {selectedRecording &&
+                  (selectedRecording.isPersonalOverride || isAdmin) && (
+                    <button
+                      type="button"
+                      onClick={handleDeleteRecording}
+                      title={
+                        selectedRecording.isPersonalOverride
+                          ? 'Remove Personal Audio override (revert to General Audio)'
+                          : 'Remove General Audio (Admin Only)'
+                      }
+                      className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-[#8ca89a] hover:text-[#f87171] hover:bg-[#2a1417] transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
               </div>
             </div>
 
@@ -1233,7 +1248,9 @@ export default function App() {
       {/* Fixed Mobile Bottom Navigation Bar (Visible on Phone Viewports) */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08120e]/95 backdrop-blur-md border-t border-[#183327] grid grid-cols-4 items-center h-16 px-2"
+        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08120e]/95 backdrop-blur-md border-t border-[#183327] grid ${
+          isAdmin ? 'grid-cols-4' : 'grid-cols-3'
+        } items-center h-16 px-2`}
       >
         <button
           type="button"
@@ -1286,20 +1303,22 @@ export default function App() {
           </span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveScreen('admin')}
-          className={`relative flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
-            activeScreen === 'admin'
-              ? 'text-[#10b981] font-bold'
-              : 'text-[#8ba89a]'
-          }`}
-        >
-          <ShieldCheck className="w-5 h-5" />
-          <span className="text-[10px] mt-1 whitespace-nowrap">
-            Admin {pendingContributionsCount > 0 ? `(${pendingContributionsCount})` : ''}
-          </span>
-        </button>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setActiveScreen('admin')}
+            className={`relative flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+              activeScreen === 'admin'
+                ? 'text-[#10b981] font-bold'
+                : 'text-[#8ba89a]'
+            }`}
+          >
+            <ShieldCheck className="w-5 h-5" />
+            <span className="text-[10px] mt-1 whitespace-nowrap">
+              Admin {pendingContributionsCount > 0 ? `(${pendingContributionsCount})` : ''}
+            </span>
+          </button>
+        )}
       </nav>
 
       {/* Web <-> Mobile Link & Cloud Sync Modal */}

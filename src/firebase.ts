@@ -34,6 +34,15 @@ export interface CloudUserProfile {
   providerData: Array<{ providerId: string; email: string }>;
 }
 
+export const ADMIN_EMAIL = 'prattoy.photos01@gmail.com';
+
+export function isAdminUser(
+  user?: { email?: string | null } | null
+): boolean {
+  if (!user || !user.email) return false;
+  return user.email.trim().toLowerCase() === ADMIN_EMAIL.toLowerCase();
+}
+
 const SESSION_STORAGE_KEY = 'lw_auth_session_v2';
 const SAVED_ACCOUNTS_KEY = 'lw_saved_accounts_v2';
 const LEGACY_FORCED_PROFILE_KEY = 'lw_cloud_sync_profile_v1';
