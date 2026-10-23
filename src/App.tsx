@@ -1106,23 +1106,30 @@ export default function App() {
                   </div>
                 </label>
 
-                {selectedRecording?.isPersonalOverride && (
-                  <button
-                    type="button"
-                    disabled={isSubmittingContribution}
-                    onClick={handleSubmitExistingPersonalToAdmin}
-                    className="self-start sm:self-center min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5 shrink-0 disabled:opacity-50"
-                  >
-                    <Send className="w-3.5 h-3.5" />
-                    <span>
-                      {isSubmittingContribution
-                        ? 'Sending...'
-                        : selectedRecording.contributedToAdmin
-                        ? 'Resend to Admin Panel'
-                        : 'Contribute to Admin Panel'}
+                {selectedRecording?.isPersonalOverride &&
+                  (selectedRecording.contributedToAdmin ||
+                  contributions.some(
+                    (c) => c.wordId === selectedWord.id && c.status === 'pending'
+                  ) ? (
+                    <span className="self-start sm:self-center min-h-[36px] px-3 py-1.5 rounded-xl bg-[#10b981]/15 border border-[#10b981]/40 text-[#10b981] text-xs font-bold flex items-center gap-1.5 shrink-0">
+                      <Check className="w-3.5 h-3.5" />
+                      <span>Sent to Admin Panel</span>
                     </span>
-                  </button>
-                )}
+                  ) : (
+                    <button
+                      type="button"
+                      disabled={isSubmittingContribution}
+                      onClick={handleSubmitExistingPersonalToAdmin}
+                      className="self-start sm:self-center min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5 shrink-0 disabled:opacity-50"
+                    >
+                      <Send className="w-3.5 h-3.5" />
+                      <span>
+                        {isSubmittingContribution
+                          ? 'Sending...'
+                          : 'Contribute to Admin Panel'}
+                      </span>
+                    </button>
+                  ))}
               </div>
 
               {contributeOnSave && (

@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -382,7 +383,29 @@ export async function submitAudioContribution(params: {
     ownerName: contributorName,
   });
 
-  const contributionDocId = `${clean.wordId}_${Date.now()}`
+  // Remove any previous pending contributions for this wordId so a word never appears twice
+  try {
+    const existingPendingSnap = await getDocs(
+      query(
+        collection(db, CONTRIBUTIONS_PATH),
+        where('wordId', '==', clean.wordId)
+      )
+    );
+    const deletePromises: Promise<void>[] = [];
+    existingPendingSnap.forEach((docSnap) => {
+      if (docSnap.data().status === 'pending') {
+        deletePromises.push(deleteDoc(docSnap.ref));
+      }
+    });
+    if (deletePromises.length > 0) {
+      await Promise.all(deletePromises);
+    }
+  } catch (err) {
+    console.warn('Pre-clean of existing pending contribution skipped:', err);
+  }
+
+  // Use a deterministic document ID per wordId for pending contributions so concurrent calls never duplicate
+  const contributionDocId = `pending_${clean.wordId}`
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 120);
 
@@ -515,13 +538,13 @@ export function subscribeToAudioContributions(
   return onSnapshot(
     q,
     (snapshot) => {
-      const list: AudioContributionRecord[] = [];
+      const rawList: AudioContributionRecord[] = [];
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
         if (isSyntheticRestoredPlaceholder(d.word || docSnap.id, d.audioDataUrl)) {
           return;
         }
-        list.push({
+        rawList.push({
           id: docSnap.id,
           wordId: d.wordId,
           word: d.word,
@@ -538,8 +561,35 @@ export function subscribeToAudioContributions(
           updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
         });
       });
-      list.sort((a, b) => b.createdAtMs - a.createdAtMs);
-      onUpdate(list);
+
+      // Sort newest first
+      rawList.sort((a, b) => b.createdAtMs - a.createdAtMs);
+
+      // Deduplicate pending contributions by wordId (keep newest, auto-delete older duplicates in Firestore)
+      const seenPendingWords = new Set<string>();
+      const seenReviewedWords = new Set<string>();
+      const dedupedList: AudioContributionRecord[] = [];
+
+      for (const item of rawList) {
+        if (item.status === 'pending') {
+          if (seenPendingWords.has(item.wordId)) {
+            // Automatically remove duplicate pending document from Firestore
+            void deleteDoc(doc(db, CONTRIBUTIONS_PATH, item.id)).catch(() => {});
+            continue;
+          }
+          seenPendingWords.add(item.wordId);
+          dedupedList.push(item);
+        } else {
+          const revKey = `${item.wordId}_${item.status}`;
+          if (seenReviewedWords.has(revKey)) {
+            continue;
+          }
+          seenReviewedWords.add(revKey);
+          dedupedList.push(item);
+        }
+      }
+
+      onUpdate(dedupedList);
     },
     (error) => {
       handleFirestoreError(error, OperationType.LIST, CONTRIBUTIONS_PATH);

@@ -31,6 +31,7 @@ import type {
 } from '../services/recordingsService';
 import { savePracticeSession } from '../services/recordingsService';
 import { playWordAudio } from '../utils/audioUtils';
+import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
 
 interface PracticeViewProps {
   recordingsMap: Record<string, CloudRecording>;
@@ -1206,19 +1207,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 >
                   Write your answer before the timer reaches 0.0s:
                 </label>
-                <input
+                <NoSuggestSpellingInput
                   id="strict-exam-input"
-                  ref={examInputRef}
-                  type="text"
+                  inputRef={examInputRef}
                   value={examInput}
-                  onChange={(e) => setExamInput(e.target.value)}
+                  onChange={setExamInput}
                   placeholder="Write spelling here..."
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  autoCorrect="off"
-                  spellCheck={false}
                   enterKeyHint="next"
-                  className="w-full min-h-[54px] px-4 py-3.5 rounded-xl bg-[#07110c] border-2 border-[#264d3b] focus:border-[#fbbf24] focus:outline-none text-lg font-medium text-white placeholder-[#4c6b5c]"
+                  variant="exam"
                 />
               </div>
 
@@ -1517,20 +1513,15 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     >
                       Type the exact word or phrase you hear:
                     </label>
-                    <input
+                    <NoSuggestSpellingInput
                       id="spelling-input"
-                      ref={practiceInputRef}
-                      type="text"
+                      inputRef={practiceInputRef}
                       value={userInput}
-                      onChange={(e) => setUserInput(e.target.value)}
+                      onChange={setUserInput}
                       disabled={submitted}
                       placeholder="Type the word you hear..."
-                      autoComplete="off"
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      spellCheck={false}
                       enterKeyHint="done"
-                      className="w-full min-h-[50px] px-4 py-3 rounded-xl bg-[#08130e] border border-[#224234] focus:border-[#10b981] focus:outline-none text-base sm:text-lg font-medium text-white placeholder-[#4c6b5c]"
+                      variant="practice"
                     />
                   </div>
 
