@@ -8,6 +8,8 @@ interface NoSuggestSpellingInputProps {
   inputRef?: React.RefObject<HTMLInputElement | null>;
   value: string;
   onChange: (newValue: string) => void;
+  onFocus?: () => void;
+  onBlur?: () => void;
   disabled?: boolean;
   placeholder?: string;
   enterKeyHint?: 'done' | 'next' | 'go' | 'send' | 'search';
@@ -32,6 +34,8 @@ export const NoSuggestSpellingInput: React.FC<NoSuggestSpellingInputProps> = ({
   inputRef,
   value,
   onChange,
+  onFocus,
+  onBlur,
   disabled = false,
   placeholder = 'Type the word you hear...',
   enterKeyHint = 'done',
@@ -203,8 +207,12 @@ export const NoSuggestSpellingInput: React.FC<NoSuggestSpellingInputProps> = ({
         onFocus={(e) => {
           setIsFocused(true);
           resetNativeInputToSentinel(e.currentTarget);
+          onFocus?.();
         }}
-        onBlur={() => setIsFocused(false)}
+        onBlur={() => {
+          setIsFocused(false);
+          onBlur?.();
+        }}
         autoComplete="new-password"
         autoCapitalize="none"
         autoCorrect="off"
