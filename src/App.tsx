@@ -338,7 +338,7 @@ export default function App() {
     setStatusBanner(null);
     try {
       const processed = await processAudioBlob(file, file.name);
-      const { contributedToAdmin } = await saveWordRecording({
+      const { contributedToAdmin, contributionError } = await saveWordRecording({
         wordId: selectedWord.id,
         word: selectedWord.word,
         banglaMeaning: banglaInput.trim() || selectedWord.bangla,
@@ -360,8 +360,10 @@ export default function App() {
       });
 
       setStatusBanner({
-        type: 'success',
-        text: contributedToAdmin
+        type: contributionError ? 'warning' : 'success',
+        text: contributionError
+          ? `Saved "${selectedWord.word}" as your Personal Audio, but could not send to Admin Panel (${contributionError}). Click "Send to Admin Panel" below to retry.`
+          : contributedToAdmin
           ? `Saved "${selectedWord.word}" as your Personal Audio AND submitted to the Admin Panel for review!`
           : `Saved "${selectedWord.word}" as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
       });
@@ -412,7 +414,7 @@ export default function App() {
             blob,
             `${selectedWord.id}-mic.wav`
           );
-          const { contributedToAdmin } = await saveWordRecording({
+          const { contributedToAdmin, contributionError } = await saveWordRecording({
             wordId: selectedWord.id,
             word: selectedWord.word,
             banglaMeaning: banglaInput.trim() || selectedWord.bangla,
@@ -433,8 +435,10 @@ export default function App() {
           });
 
           setStatusBanner({
-            type: 'success',
-            text: contributedToAdmin
+            type: contributionError ? 'warning' : 'success',
+            text: contributionError
+              ? `Recorded "${selectedWord.word}" as your Personal Audio, but could not send to Admin Panel (${contributionError}). Click "Send to Admin Panel" below to retry.`
+              : contributedToAdmin
               ? `Recorded "${selectedWord.word}" as your Personal Audio AND sent to the Admin Panel for review!`
               : `Recorded "${selectedWord.word}" as your Personal Audio! It will never be overwritten by general updates.`,
           });
@@ -1107,14 +1111,25 @@ export default function App() {
                 </label>
 
                 {selectedRecording?.isPersonalOverride &&
-                  (selectedRecording.contributedToAdmin ||
-                  contributions.some(
+                  (contributions.some(
                     (c) => c.wordId === selectedWord.id && c.status === 'pending'
                   ) ? (
-                    <span className="self-start sm:self-center min-h-[36px] px-3 py-1.5 rounded-xl bg-[#10b981]/15 border border-[#10b981]/40 text-[#10b981] text-xs font-bold flex items-center gap-1.5 shrink-0">
-                      <Check className="w-3.5 h-3.5" />
-                      <span>Sent to Admin Panel</span>
-                    </span>
+                    <div className="self-start sm:self-center flex items-center gap-2 shrink-0">
+                      <span className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#10b981]/15 border border-[#10b981]/40 text-[#10b981] text-xs font-bold flex items-center gap-1.5">
+                        <Check className="w-3.5 h-3.5" />
+                        <span>Sent to Admin Panel</span>
+                      </span>
+                      <button
+                        type="button"
+                        disabled={isSubmittingContribution}
+                        onClick={handleSubmitExistingPersonalToAdmin}
+                        title="Resend latest audio & Bangla meaning to Admin Panel"
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-[#a7f3d0] text-xs font-semibold flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <Send className="w-3 h-3" />
+                        <span>{isSubmittingContribution ? 'Sending...' : 'Resend'}</span>
+                      </button>
+                    </div>
                   ) : (
                     <button
                       type="button"
@@ -1126,7 +1141,7 @@ export default function App() {
                       <span>
                         {isSubmittingContribution
                           ? 'Sending...'
-                          : 'Contribute to Admin Panel'}
+                          : 'Send to Admin Panel'}
                       </span>
                     </button>
                   ))}

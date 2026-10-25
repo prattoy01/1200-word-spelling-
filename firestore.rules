@@ -246,13 +246,22 @@ service cloud.firestore {
 
       allow update: if isValidId(contributionId)
         && isValidAudioContribution(incoming())
-        && existing().status == 'pending'
         && incoming().wordId == existing().wordId
-        && incoming().contributorId == existing().contributorId
-        && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && (incoming().status == 'approved' || incoming().status == 'rejected')
-        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'banglaMeaning']);
+        && (
+          // Action 1: User submits or updates a pending contribution for this word
+          (
+            incoming().status == 'pending'
+          )
+          ||
+          // Action 2: Admin approves or rejects a contribution
+          (
+            (incoming().status == 'approved' || incoming().status == 'rejected')
+            && incoming().contributorId == existing().contributorId
+            && incoming().createdAt == existing().createdAt
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'banglaMeaning'])
+          )
+        );
 
       allow delete: if isValidId(contributionId)
         && existing().status in ['pending', 'approved', 'rejected'];

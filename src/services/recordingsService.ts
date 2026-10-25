@@ -2,7 +2,6 @@ import {
   collection,
   doc,
   getDoc,
-  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -24,7 +23,6 @@ import {
 } from '../firebase';
 import {
   type ProcessedAudio,
-  type CachedRecordingItem,
   saveRecordingToLocalCache,
   removeRecordingFromLocalCache,
   getAllLocalCachedRecordings,
@@ -383,27 +381,6 @@ export async function submitAudioContribution(params: {
     ownerName: contributorName,
   });
 
-  // Remove any previous pending contributions for this wordId so a word never appears twice
-  try {
-    const existingPendingSnap = await getDocs(
-      query(
-        collection(db, CONTRIBUTIONS_PATH),
-        where('wordId', '==', clean.wordId)
-      )
-    );
-    const deletePromises: Promise<void>[] = [];
-    existingPendingSnap.forEach((docSnap) => {
-      if (docSnap.data().status === 'pending') {
-        deletePromises.push(deleteDoc(docSnap.ref));
-      }
-    });
-    if (deletePromises.length > 0) {
-      await Promise.all(deletePromises);
-    }
-  } catch (err) {
-    console.warn('Pre-clean of existing pending contribution skipped:', err);
-  }
-
   // Use a deterministic document ID per wordId for pending contributions so concurrent calls never duplicate
   const contributionDocId = `pending_${clean.wordId}`
     .replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -425,7 +402,7 @@ export async function submitAudioContribution(params: {
     updatedAt: serverTimestamp(),
   });
 
-  // Mark local personal recording as contributed
+  // Mark local personal recording as contributed only after Firestore write succeeds
   const localMap = await getAllLocalCachedRecordings();
   const existing = localMap[clean.wordId];
   if (existing) {
@@ -454,6 +431,7 @@ export async function saveWordRecording(params: {
   savedPersonal: boolean;
   contributedToAdmin: boolean;
   publishedGeneral: boolean;
+  contributionError?: string;
 }> {
   const user = auth.currentUser;
   const ownerId = user?.uid || 'personal_user';
@@ -472,17 +450,18 @@ export async function saveWordRecording(params: {
     ownerName,
   });
 
-  // 1. Save as User's Personal Audio Override in IndexedDB
+  // 1. Save as User's Personal Audio Override in IndexedDB (contributedToAdmin set to false until Firestore write confirms)
   await saveRecordingToLocalCache({
     ...clean,
     updatedAtMs: Date.now(),
     syncedToCloud: true,
     isPersonalOverride: true,
-    contributedToAdmin: Boolean(params.contributeToAdmin),
+    contributedToAdmin: false,
   });
 
   let contributed = false;
   let publishedGeneral = false;
+  let contributionError: string | undefined;
 
   // 2. If user opted to Contribute to App, send to Admin Panel queue
   if (params.contributeToAdmin) {
@@ -496,7 +475,11 @@ export async function saveWordRecording(params: {
       });
       contributed = true;
     } catch (err) {
-      console.warn('Could not submit contribution to Admin Panel:', err);
+      console.error('Could not submit contribution to Admin Panel:', err);
+      contributionError =
+        err instanceof Error
+          ? err.message
+          : 'Could not send recording to Admin Panel.';
     }
   }
 
@@ -521,8 +504,11 @@ export async function saveWordRecording(params: {
     savedPersonal: true,
     contributedToAdmin: contributed,
     publishedGeneral,
+    contributionError,
   };
 }
+
+let hasAutoSyncedPendingContributions = false;
 
 /**
  * Subscribes to all user-submitted audio contributions for the Admin Panel.
@@ -539,10 +525,15 @@ export function subscribeToAudioContributions(
     q,
     (snapshot) => {
       const rawList: AudioContributionRecord[] = [];
+      const allCloudWordIds = new Set<string>();
+
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
         if (isSyntheticRestoredPlaceholder(d.word || docSnap.id, d.audioDataUrl)) {
           return;
+        }
+        if (d.wordId) {
+          allCloudWordIds.add(d.wordId);
         }
         rawList.push({
           id: docSnap.id,
@@ -590,6 +581,41 @@ export function subscribeToAudioContributions(
       }
 
       onUpdate(dedupedList);
+
+      // Auto-recover any local personal recordings that were marked `contributedToAdmin: true`
+      // locally when a previous Firestore write failed, so they immediately arrive in Admin Panel!
+      if (!hasAutoSyncedPendingContributions) {
+        hasAutoSyncedPendingContributions = true;
+        void (async () => {
+          try {
+            const localMap = await getAllLocalCachedRecordings();
+            for (const item of Object.values(localMap)) {
+              if (
+                item.isPersonalOverride &&
+                item.contributedToAdmin &&
+                !allCloudWordIds.has(item.wordId) &&
+                !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
+              ) {
+                await submitAudioContribution({
+                  wordId: item.wordId,
+                  word: item.word,
+                  banglaMeaning: item.banglaMeaning,
+                  audio: {
+                    audioDataUrl: item.audioDataUrl,
+                    mimeType: item.mimeType,
+                    fileName: item.fileName,
+                    fileSize: item.fileSize,
+                    durationMs: item.durationMs,
+                  },
+                  contributorNameOverride: item.ownerName,
+                });
+              }
+            }
+          } catch (syncErr) {
+            console.warn('Auto-sync of pending contributions warning:', syncErr);
+          }
+        })();
+      }
     },
     (error) => {
       handleFirestoreError(error, OperationType.LIST, CONTRIBUTIONS_PATH);
