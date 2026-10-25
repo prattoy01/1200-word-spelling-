@@ -59,20 +59,28 @@ export const SignInModal: React.FC<SignInModalProps> = ({
       onClose();
     } catch (err) {
       const rawMsg = err instanceof Error ? err.message : String(err);
-      if (
-        rawMsg.includes('unauthorized-domain') ||
+      const currentHost =
+        typeof window !== 'undefined' && window.location?.hostname
+          ? window.location.hostname
+          : '1200-word-spelling.vercel.app';
+
+      if (rawMsg.includes('unauthorized-domain')) {
+        setErrorMsg(
+          `Domain "${currentHost}" is not yet in Firebase Authorized Domains (currently only "1200spelling.netlify.app" is added). Open Firebase Console → Project "protean-sandbox-t01dl" → Authentication → Settings → Authorized domains → click "Add domain" and add "${currentHost}", OR sign in right now using Email & Password above.`
+        );
+      } else if (
         rawMsg.includes('token-service-api') ||
         rawMsg.includes('popup-blocked') ||
         rawMsg.includes('operation-not-allowed')
       ) {
         setErrorMsg(
-          'Google popup is restricted on this preview URL/browser. Please sign in using your Email & Password above.'
+          'Google popup was blocked by the browser. Please allow popups for this site or sign in using your Email & Password above.'
         );
       } else if (rawMsg.includes('popup-closed-by-user')) {
         setErrorMsg('Google sign-in popup was closed.');
       } else {
         setErrorMsg(
-          'Could not complete Google popup sign-in. Please use Email & Password above.'
+          `Google popup error: ${rawMsg}. You can also sign in using Email & Password above.`
         );
       }
     } finally {

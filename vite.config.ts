@@ -76,6 +76,20 @@ export default defineConfig(() => {
               },
             },
             {
+              urlPattern: /\/(audio-w|dict-fallback\/audio-w).*\.(mp3|ogg)$/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'local-bundled-word-audio-cache',
+                expiration: {
+                  maxEntries: 1200,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
               urlPattern: /^https:\/\/(ssl\.gstatic\.com\/dictionary\/static\/sounds|upload\.wikimedia\.org\/wikipedia\/commons)\/.*/i,
               handler: 'CacheFirst',
               options: {

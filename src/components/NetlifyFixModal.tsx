@@ -171,10 +171,10 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">
-                Web &harr; Mobile App Link &amp; Netlify Deployment Guide
+                Move to 100% Free Hosting (Vercel / Cloudflare Pages) &amp; Mobile Link
               </h2>
               <p className="text-xs text-[#8ba89a]">
-                Why the <code className="font-mono">ais-pre</code> link showed 404 — and how to open on Mobile or deploy to Netlify
+                Avoid Netlify&apos;s 300-credit limit — <code className="font-mono text-[#10b981]">vercel.json</code> &amp; Cloudflare configs are now built in with 0 data loss!
               </p>
             </div>
           </div>
@@ -188,18 +188,18 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
         </div>
 
         <div className="p-6 space-y-6 max-h-[78vh] overflow-y-auto">
-          {/* Why ais-pre gave 404 */}
-          <div className="rounded-xl bg-[#1c2410] border border-[#fbbf24]/40 p-4 space-y-2">
-            <div className="flex items-center gap-2 text-xs font-bold text-[#fbbf24]">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>Why did &ldquo;ais-pre-...run.app&rdquo; show &ldquo;Error: Page not found&rdquo;?</span>
+          {/* Zero Data Loss Guarantee Banner */}
+          <div className="rounded-xl bg-[#0d261c] border border-[#10b981]/40 p-4 space-y-2">
+            <div className="flex items-center gap-2 text-xs font-bold text-[#10b981]">
+              <ShieldCheck className="w-4 h-4 shrink-0" />
+              <span>100% Safe Migration: Moving from Netlify to Vercel or Cloudflare Loses ZERO Data!</span>
             </div>
-            <p className="text-xs text-[#e2e8f0] leading-relaxed">
-              In Google AI Studio, the <code className="font-mono text-[#fbbf24]">ais-pre-...</code> (Shared Preview) link only turns on <strong>after</strong> you click the <strong>Share / Publish</strong> button in the top-right corner of the AI Studio page. Until then, use the active link below or deploy directly to your <strong>Netlify</strong> site!
+            <p className="text-xs text-[#d2e5dc] leading-relaxed">
+              All of your uploaded pronunciations, Admin Panel contributions, user accounts, and practice history live in <strong>Google Firebase Cloud</strong> (<code className="font-mono text-[#10b981]">ai-studio-12193dcd-ed1d-43e5-a21f-43c9ec769a10</code>), <strong>not</strong> on Netlify. We also added <code className="font-mono text-[#fbbf24]">vercel.json</code>, <code className="font-mono text-[#fbbf24]">_headers</code>, and 1-year offline audio caching so your 782+ MP3 files don&apos;t drain hosting bandwidth!
             </p>
           </div>
 
-          {/* 1. Active App Link & How to Deploy to Netlify */}
+          {/* Step-by-Step: Move to Vercel or Cloudflare Pages */}
           <div className="rounded-xl bg-[#13281f] border border-[#244a39] p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
@@ -207,7 +207,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                   Current Active App URL
                 </div>
                 <h3 className="text-base font-bold text-white mt-0.5">
-                  Copy Active Link or Install as App
+                  Copy Active Link or Switch to Vercel / Cloudflare Pages
                 </h3>
               </div>
               <PWAInstallButton />
@@ -249,21 +249,55 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs text-[#b7cec2]">
-              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-1.5">
-                <div className="font-bold text-white">
-                  Way 1: Click &ldquo;Share&rdquo; in AI Studio (Top Right)
+              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-2">
+                <div className="font-bold text-white flex items-center justify-between">
+                  <span>Option 1: Vercel (100% Free Hobby Plan)</span>
+                  <span className="px-2 py-0.5 rounded bg-[#10b981]/20 text-[#10b981] text-[10px] font-extrabold">
+                    RECOMMENDED
+                  </span>
                 </div>
-                <p className="text-[#8ba89a] leading-relaxed">
-                  Click the <strong>Share / Publish</strong> icon at the very top-right of Google AI Studio (outside this preview frame) and set visibility to <strong>Public</strong>. That activates your public share link for any phone or browser.
-                </p>
+                <ol className="list-decimal list-inside space-y-1 text-[#8ba89a] leading-relaxed">
+                  <li>
+                    Sync/push this project to your <strong>GitHub</strong> repo (or download ZIP from top-right of AI Studio).
+                  </li>
+                  <li>
+                    Go to <strong>vercel.com/new</strong> &rarr; Sign in with GitHub &rarr; Click <strong>Import</strong> on your repo.
+                  </li>
+                  <li>
+                    Click <strong>Deploy</strong> (<code className="font-mono text-[#d2e5dc]">vercel.json</code> automatically sets Vite + <code className="font-mono text-[#d2e5dc]">dist</code> + audio caching).
+                  </li>
+                </ol>
               </div>
-              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-1.5">
-                <div className="font-bold text-white flex items-center gap-1.5">
-                  <ShieldCheck className="w-4 h-4 text-[#10b981] shrink-0" />
-                  <span>Way 2: Deploy to Your Netlify Site</span>
+              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-2">
+                <div className="font-bold text-white flex items-center justify-between">
+                  <span>Option 2: Cloudflare Pages</span>
+                  <span className="px-2 py-0.5 rounded bg-[#fbbf24]/20 text-[#fbbf24] text-[10px] font-extrabold">
+                    UNLIMITED BANDWIDTH
+                  </span>
                 </div>
-                <p className="text-[#8ba89a] leading-relaxed">
-                  Click the <strong>Download ZIP / Sync to GitHub</strong> icon in the top-right of AI Studio and deploy to Netlify (<code className="font-mono">netlify.toml</code> and <code className="font-mono">firebase-applet-config.json</code> are already included!). Just add your <code className="font-mono">*.netlify.app</code> domain under <strong>Firebase Console &rarr; Authentication &rarr; Settings &rarr; Authorized domains</strong>.
+                <ol className="list-decimal list-inside space-y-1 text-[#8ba89a] leading-relaxed">
+                  <li>
+                    Go to <strong>dash.cloudflare.com</strong> &rarr; <strong>Workers &amp; Pages</strong> &rarr; <strong>Create</strong> &rarr; <strong>Pages</strong>.
+                  </li>
+                  <li>
+                    Connect your GitHub repo or upload the <code className="font-mono text-[#d2e5dc]">dist</code> folder directly.
+                  </li>
+                  <li>
+                    Build command: <code className="font-mono text-[#d2e5dc]">npm run build</code>, Output dir: <code className="font-mono text-[#d2e5dc]">dist</code>. Completely free with <strong>unlimited</strong> bandwidth!
+                  </li>
+                </ol>
+              </div>
+            </div>
+
+            <div className="rounded-lg bg-[#1c2410] border border-[#fbbf24]/30 p-3.5 text-xs text-[#e2e8f0] flex items-start gap-2.5">
+              <AlertCircle className="w-4 h-4 text-[#fbbf24] shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <strong className="text-[#fbbf24] block">
+                  Enable Google Popup Sign-In on Vercel (10-Second Step):
+                </strong>
+                <p className="leading-relaxed">
+                  Right now your Firebase project (<code className="font-mono text-white">protean-sandbox-t01dl</code>) has <code className="font-mono text-[#a7f3d0]">1200spelling.netlify.app</code> in its Authorized Domains, so you just need to add your new Vercel domain too:
+                  Go to <strong>Firebase Console &rarr; Project &ldquo;protean-sandbox-t01dl&rdquo; &rarr; Authentication &rarr; Settings &rarr; Authorized domains &rarr; Add domain</strong> and paste <code className="font-mono text-[#fbbf24]">1200-word-spelling.vercel.app</code>. (Email &amp; Password sign-in above already works immediately without waiting!)
                 </p>
               </div>
             </div>

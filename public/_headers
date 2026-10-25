@@ -1,0 +1,8 @@
+/audio-*
+  Cache-Control: public, max-age=31536000, immutable
+
+/dict-fallback/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/assets/*
+  Cache-Control: public, max-age=31536000, immutable
