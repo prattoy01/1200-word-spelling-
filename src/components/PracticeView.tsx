@@ -229,7 +229,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const [submitted, setSubmitted] = useState(false);
   const [showBanglaHint, setShowBanglaHint] = useState(true);
   const [showStudyWord, setShowStudyWord] = useState(false);
-  const [isPracticingBlur, setIsPracticingBlur] = useState(true);
+  const [isPracticingBlur, setIsPracticingBlur] = useState(false);
   const [playingStudyWordId, setPlayingStudyWordId] = useState<string | null>(
     null
   );
@@ -320,7 +320,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setUserInput('');
     setSubmitted(false);
     setShowStudyWord(false);
-    setIsPracticingBlur(true);
+    setIsPracticingBlur(false);
   }, [pageFilter, selectedCategories, deckMode]);
 
   // Free Practice Play Handler
@@ -417,7 +417,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
-    setIsPracticingBlur(true);
+    setIsPracticingBlur(false);
     setCurrentIndex((prev) =>
       prev - 1 < 0 ? Math.max(0, filteredDeck.length - 1) : prev - 1
     );
@@ -427,7 +427,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
-    setIsPracticingBlur(true);
+    setIsPracticingBlur(false);
     setCurrentIndex((prev) => (prev + 1) % Math.max(1, filteredDeck.length));
   };
 
@@ -1420,16 +1420,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
         /* SUB-MODE 2: FREE PRACTICE BY PAGE & CATEGORY                        */
         /* =================================================================== */
         <div className="space-y-5">
-          {/* Top Side-by-Side Row: Practice Card (Left 6 cols) + Study Words & Pronunciation (Right 6 cols) */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-            {/* LEFT (6 cols): Interactive Spelling Practice Card */}
+          {/* Top Row: Side-by-Side on Tablet & PC (md:grid-cols-12), Stacked Up & Down on Phone (grid-cols-1) */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
+            {/* LEFT (6 cols on Tablet/PC, Full width on Phone): Interactive Spelling Practice Card */}
             <div
               onClick={() => {
                 if (!submitted) {
                   setIsPracticingBlur(true);
                 }
               }}
-              className="lg:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5"
+              className="md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5"
             >
               {!currentWord ? (
                 <div className="py-12 text-center space-y-3">
@@ -1449,10 +1449,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </div>
               ) : (
                 <>
-                  {/* Word Metadata & Audio Source Line */}
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-[#162d22] text-xs text-[#8ba89a]">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                      <span className="font-mono tabular-nums font-semibold text-[#10b981] whitespace-nowrap">
+                  {/* Word Metadata & Audio Source Header */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#162d22] text-xs text-[#8ba89a]">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                      <span className="font-mono tabular-nums font-bold text-[#10b981] whitespace-nowrap">
                         Word {(currentIndex % filteredDeck.length) + 1} of{' '}
                         {filteredDeck.length}
                       </span>
@@ -1461,7 +1461,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         Page {currentWord.page}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span className="whitespace-nowrap">
+                      <span className="text-[#c4d9ce] font-medium">
                         {currentWord.category}
                       </span>
                       <span aria-hidden="true">·</span>
@@ -1488,9 +1488,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         e.stopPropagation();
                         onOpenRecordingsManager(currentWord.id);
                       }}
-                      className="self-start sm:self-auto min-h-[36px] text-xs font-semibold text-[#10b981] hover:underline flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                      className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
                     >
-                      <Mic className="w-3.5 h-3.5" />
+                      <Mic className="w-3.5 h-3.5 shrink-0" />
                       <span>
                         {activeRecording
                           ? 'Edit / Replace Audio'
@@ -1516,14 +1516,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       </span>
                     </button>
 
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                    <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
                         onClick={() => handlePlay(0.72)}
-                        className="min-h-[46px] py-2.5 px-3 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
                       >
-                        <Gauge className="w-4 h-4 text-[#10b981] shrink-0" />
-                        <span>Slow (0.75x)</span>
+                        <Gauge className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                        <span className="truncate">Slow (0.75x)</span>
                       </button>
 
                       <button
@@ -1532,21 +1532,23 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           e.stopPropagation();
                           setShowStudyWord((prev) => {
                             const next = !prev;
-                            setIsPracticingBlur(!next);
+                            if (next) {
+                              setIsPracticingBlur(false);
+                            }
                             return next;
                           });
                         }}
-                        className="min-h-[46px] py-2.5 px-3 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
                       >
                         {showStudyWord ? (
                           <>
-                            <EyeOff className="w-4 h-4 text-[#fbbf24] shrink-0" />
-                            <span>Blur / Hide Word</span>
+                            <EyeOff className="w-3.5 h-3.5 text-[#fbbf24] shrink-0" />
+                            <span className="truncate">Hide Word</span>
                           </>
                         ) : (
                           <>
-                            <Eye className="w-4 h-4 text-[#10b981] shrink-0" />
-                            <span>Show Word for Study</span>
+                            <Eye className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                            <span className="truncate">Show Word</span>
                           </>
                         )}
                       </button>
@@ -1554,17 +1556,17 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowBanglaHint((v) => !v)}
-                        className="min-h-[46px] py-2.5 px-3 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-2 transition-colors whitespace-nowrap"
+                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
                       >
                         {showBanglaHint ? (
                           <>
-                            <EyeOff className="w-4 h-4 text-[#8ba89a] shrink-0" />
-                            <span>Hide Meaning</span>
+                            <EyeOff className="w-3.5 h-3.5 text-[#8ba89a] shrink-0" />
+                            <span className="truncate">Hide Meaning</span>
                           </>
                         ) : (
                           <>
-                            <Eye className="w-4 h-4 text-[#10b981] shrink-0" />
-                            <span>Show Meaning</span>
+                            <Eye className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                            <span className="truncate">Show Meaning</span>
                           </>
                         )}
                       </button>
@@ -1622,7 +1624,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                   {/* Spelling Input Form */}
                   <form onSubmit={handleSubmitPractice} className="space-y-4">
-                    <div>
+                    <div
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowStudyWord(false);
+                        setIsPracticingBlur(true);
+                      }}
+                    >
                       <label
                         htmlFor="spelling-input"
                         className="block text-xs font-medium text-[#8ba89a] mb-2"
@@ -1696,15 +1704,21 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       <div className="flex flex-wrap items-center gap-2">
                         <button
                           type="button"
-                          onClick={handlePrevPracticeWord}
-                          className="min-h-[48px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handlePrevPracticeWord();
+                          }}
+                          className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
                         >
                           Prev Word
                         </button>
                         <button
                           type="button"
-                          onClick={handleNextPracticeWord}
-                          className="min-h-[48px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleNextPracticeWord();
+                          }}
+                          className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
                         >
                           Skip / Next
                         </button>
@@ -1715,7 +1729,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                               e.stopPropagation();
                               handlePracticeAgainWord();
                             }}
-                            className="min-h-[48px] px-3.5 py-2.5 rounded-xl bg-[#163326] hover:bg-[#1f4534] border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
+                            className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#163326] hover:bg-[#1f4534] border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
                             <span>Practice Again</span>
@@ -1725,7 +1739,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                       <button
                         type="submit"
-                        className="min-h-[48px] px-5 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                        className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
                       >
                         <span>{submitted ? 'Next Word' : 'Check Spelling'}</span>
                         <ArrowRight className="w-4 h-4 shrink-0" />
@@ -1736,8 +1750,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               )}
             </div>
 
-            {/* RIGHT (6 cols): Selected Category Study Words & Pronunciation (Side-by-Side) */}
-            <div className="lg:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-4">
+            {/* RIGHT (6 cols on Tablet/PC, Stacked Below on Phone): Selected Category Study Words & Pronunciation */}
+            <div
+              onClick={() => {
+                setIsPracticingBlur(false);
+              }}
+              className="md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-4"
+            >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#162d22]">
                 <div>
                   <div className="flex items-center gap-2">
@@ -1757,7 +1776,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     <span className="text-[#10b981] font-semibold">
                       {selectedCategoriesLabel}
                     </span>{' '}
-                    — Active word blurs automatically while practicing spelling.
+                    — Click any word to select it, or tap 1.0x / 0.75x to listen.
                   </p>
                 </div>
               </div>
@@ -1767,7 +1786,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   No words in the selected filter.
                 </p>
               ) : (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[560px] overflow-y-auto pr-1">
+                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-2.5 max-h-[540px] overflow-y-auto overflow-x-hidden pr-1">
                   {filteredDeck.map((item, idx) => {
                     const rec = recordingsMap[item.id];
                     const itemBangla = rec?.banglaMeaning || item.bangla;
@@ -1786,37 +1805,34 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     return (
                       <div
                         key={item.id}
-                        onClick={() => {
+                        onClick={(e) => {
+                          e.stopPropagation();
                           setCurrentIndex(idx);
                           setSubmitted(false);
                           setUserInput('');
-                          setShowStudyWord(false);
-                          setIsPracticingBlur(true);
-                          setTimeout(() => {
-                            practiceInputRef.current?.focus();
-                          }, 50);
+                          setIsPracticingBlur(false);
                         }}
                         role="button"
                         tabIndex={0}
                         onKeyDown={(e) => {
                           if (e.key === 'Enter' || e.key === ' ') {
                             e.preventDefault();
+                            e.stopPropagation();
                             setCurrentIndex(idx);
                             setSubmitted(false);
                             setUserInput('');
-                            setShowStudyWord(false);
-                            setIsPracticingBlur(true);
+                            setIsPracticingBlur(false);
                           }
                         }}
-                        className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-2.5 ${
+                        className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
                           isSelectedWord
                             ? 'bg-[#122b20] border-[#10b981] ring-1 ring-[#10b981]/30'
                             : 'bg-[#09140f] hover:bg-[#10231a] border-[#173024]'
                         }`}
                       >
-                        <div className="space-y-1">
-                          <div className="flex flex-wrap items-baseline gap-2">
-                            <span className="text-[11px] font-mono tabular-nums text-[#6d8a7b] shrink-0">
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="text-xs font-mono tabular-nums text-[#6d8a7b] shrink-0">
                               #{idx + 1}
                             </span>
                             <span
@@ -1829,57 +1845,58 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                               {item.word}
                             </span>
                             {isSelectedWord && (
-                              <span className="px-1.5 py-0.5 rounded bg-[#10b981]/20 text-[#10b981] text-[10px] font-bold shrink-0">
+                              <span className="px-2 py-0.5 rounded-md bg-[#10b981]/20 text-[#10b981] text-[10px] font-bold shrink-0">
                                 {shouldBlurActiveSpelling
                                   ? 'Active · Blurred'
                                   : 'Active'}
                               </span>
                             )}
                           </div>
-                          <div className="text-xs sm:text-sm text-[#b2cbc0] break-words">
+
+                          <div className="text-xs sm:text-sm text-[#c4d9ce] break-words">
                             {itemBangla}
+                          </div>
+
+                          <div className="text-[11px] text-[#6d8a7b] flex flex-wrap items-center gap-1.5">
+                            <span className="font-mono font-semibold text-[#8ba89a]">
+                              Page {item.page}
+                            </span>
+                            <span>·</span>
+                            <span>{item.category}</span>
                           </div>
                         </div>
 
-                        <div className="flex items-center justify-between gap-2 pt-1.5 border-t border-[#14281e]">
-                          <div className="text-[11px] text-[#6d8a7b] flex flex-wrap items-center gap-1.5">
-                            <span className="font-mono">P{item.page}</span>
-                            <span>·</span>
-                            <span className="break-words">{item.category}</span>
-                          </div>
-
-                          <div
-                            className="flex items-center gap-1.5 shrink-0"
-                            onClick={(e) => e.stopPropagation()}
+                        <div
+                          className="flex items-center gap-1.5 shrink-0"
+                          onClick={(e) => e.stopPropagation()}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => void handlePlayStudyItem(item, 1.0)}
+                            title={`Listen to ${item.word} (1.0x)`}
+                            className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                              isPlayingNormal
+                                ? 'bg-[#10b981] text-[#04120c]'
+                                : 'bg-[#10b981]/15 hover:bg-[#10b981]/30 text-[#10b981] border border-[#10b981]/40'
+                            }`}
                           >
-                            <button
-                              type="button"
-                              onClick={() => void handlePlayStudyItem(item, 1.0)}
-                              title={`Listen to ${item.word} (1.0x)`}
-                              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1 transition-colors ${
-                                isPlayingNormal
-                                  ? 'bg-[#10b981] text-[#04120c]'
-                                  : 'bg-[#10b981]/15 hover:bg-[#10b981]/30 text-[#10b981] border border-[#10b981]/40'
-                              }`}
-                            >
-                              <Volume2 className="w-3.5 h-3.5 shrink-0" />
-                              <span>1.0x</span>
-                            </button>
+                            <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                            <span>1.0x</span>
+                          </button>
 
-                            <button
-                              type="button"
-                              onClick={() => void handlePlayStudyItem(item, 0.72)}
-                              title={`Listen slow to ${item.word} (0.75x)`}
-                              className={`min-h-[36px] px-2 py-1.5 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition-colors ${
-                                isPlayingSlow
-                                  ? 'bg-[#fbbf24] text-[#04120c]'
-                                  : 'bg-[#13291f] hover:bg-[#1a372a] text-[#d2e5dc] border border-[#234435]'
-                              }`}
-                            >
-                              <Gauge className="w-3 h-3 text-[#10b981] shrink-0" />
-                              <span>0.75x</span>
-                            </button>
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handlePlayStudyItem(item, 0.72)}
+                            title={`Listen slow to ${item.word} (0.75x)`}
+                            className={`min-h-[38px] px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors ${
+                              isPlayingSlow
+                                ? 'bg-[#fbbf24] text-[#04120c]'
+                                : 'bg-[#13291f] hover:bg-[#1a372a] text-[#d2e5dc] border border-[#234435]'
+                            }`}
+                          >
+                            <Gauge className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                            <span>0.75x</span>
+                          </button>
                         </div>
                       </div>
                     );
@@ -1890,8 +1907,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           </div>
 
           {/* Bottom Row: Current Session Score (5 cols) + Recent Practice & Exam History (7 cols) */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-            <div className="lg:col-span-5 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-5 space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
+            <div className="md:col-span-5 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-5 space-y-4">
               <div className="flex items-center justify-between">
                 <h2 className="text-sm font-bold text-white flex items-center gap-2">
                   <Award className="w-4 h-4 text-[#10b981]" />
@@ -1933,7 +1950,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             </div>
 
             {/* Cloud-Synced Recent Practice & Exam History (Interactive: Click any row for full exam details) */}
-            <div className="lg:col-span-7 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-5 space-y-3">
+            <div className="md:col-span-7 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-5 space-y-3">
               <div className="flex items-center justify-between gap-2">
                 <h3 className="text-xs font-semibold text-[#8ba89a]">
                   Recent Practice &amp; Exam History
