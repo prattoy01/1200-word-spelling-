@@ -323,20 +323,29 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setIsPracticingBlur(false);
   }, [pageFilter, selectedCategories, deckMode]);
 
+  // Helper to play pronunciation for any specific word item
+  const playSpecificWord = useCallback(
+    async (wordObj: WordItem | undefined, rate = 1.0) => {
+      if (!wordObj) return;
+      const rec = recordingsMap[wordObj.id];
+      setIsPlaying(true);
+      try {
+        await playWordAudio({
+          word: wordObj.word,
+          audioDataUrl: rec?.audioDataUrl,
+          bundledAudioFile: wordObj.bundledAudioFile,
+          playbackRate: rate,
+        });
+      } finally {
+        setTimeout(() => setIsPlaying(false), 650);
+      }
+    },
+    [recordingsMap]
+  );
+
   // Free Practice Play Handler
   const handlePlay = async (rate = 1.0) => {
-    if (!currentWord) return;
-    setIsPlaying(true);
-    try {
-      await playWordAudio({
-        word: currentWord.word,
-        audioDataUrl: activeRecording?.audioDataUrl,
-        bundledAudioFile: currentWord.bundledAudioFile,
-        playbackRate: rate,
-      });
-    } finally {
-      setTimeout(() => setIsPlaying(false), 650);
-    }
+    await playSpecificWord(currentWord, rate);
   };
 
   // Play any word from the Selected Category Study List
@@ -358,6 +367,30 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const isCorrect =
     Boolean(currentWord) &&
     checkSpellingCorrect(userInput, currentWord.word);
+
+  const handlePracticeAgainWord = useCallback(() => {
+    setSubmitted(false);
+    setUserInput('');
+    setShowStudyWord(false);
+    setIsPracticingBlur(true);
+    void playSpecificWord(currentWord, 1.0);
+    setTimeout(() => {
+      practiceInputRef.current?.focus();
+    }, 50);
+  }, [currentWord, playSpecificWord]);
+
+  // When spelling result (Correct / Wrong) is shown, pressing Enter triggers Practice Again
+  useEffect(() => {
+    if (subMode !== 'practice' || !submitted || selectedHistorySession) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        handlePracticeAgainWord();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [subMode, submitted, selectedHistorySession, handlePracticeAgainWord]);
 
   const handleSubmitPractice = (e: React.FormEvent) => {
     e.preventDefault();
@@ -398,37 +431,33 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
         setPracticeBatchResults(updatedBatch);
       }
     } else {
-      handleNextPracticeWord();
+      handlePracticeAgainWord();
     }
   };
 
-  const handlePracticeAgainWord = () => {
-    setSubmitted(false);
-    setUserInput('');
-    setShowStudyWord(false);
-    setIsPracticingBlur(true);
-    void handlePlay(1.0);
-    setTimeout(() => {
-      practiceInputRef.current?.focus();
-    }, 50);
-  };
-
   const handlePrevPracticeWord = () => {
+    if (filteredDeck.length === 0) return;
+    const prevIdx =
+      currentIndex - 1 < 0 ? filteredDeck.length - 1 : currentIndex - 1;
+    const prevWord = filteredDeck[prevIdx];
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
     setIsPracticingBlur(false);
-    setCurrentIndex((prev) =>
-      prev - 1 < 0 ? Math.max(0, filteredDeck.length - 1) : prev - 1
-    );
+    setCurrentIndex(prevIdx);
+    void playSpecificWord(prevWord, 1.0);
   };
 
   const handleNextPracticeWord = () => {
+    if (filteredDeck.length === 0) return;
+    const nextIdx = (currentIndex + 1) % filteredDeck.length;
+    const nextWord = filteredDeck[nextIdx];
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
     setIsPracticingBlur(false);
-    setCurrentIndex((prev) => (prev + 1) % Math.max(1, filteredDeck.length));
+    setCurrentIndex(nextIdx);
+    void playSpecificWord(nextWord, 1.0);
   };
 
   // ============================================================================
@@ -1695,7 +1724,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           className="self-start sm:self-center min-h-[40px] px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] border border-[#2a5440] text-xs font-bold text-[#10b981] hover:text-white flex items-center gap-1.5 shrink-0 transition-colors"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Practice Again</span>
+                          <span>Practice Again (Enter)</span>
                         </button>
                       </div>
                     )}
@@ -1732,18 +1761,32 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#163326] hover:bg-[#1f4534] border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
                           >
                             <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Practice Again</span>
+                            <span>Practice Again (Enter)</span>
                           </button>
                         )}
                       </div>
 
-                      <button
-                        type="submit"
-                        className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
-                      >
-                        <span>{submitted ? 'Next Word' : 'Check Spelling'}</span>
-                        <ArrowRight className="w-4 h-4 shrink-0" />
-                      </button>
+                      {submitted ? (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleNextPracticeWord();
+                          }}
+                          className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                        >
+                          <span>Next Word</span>
+                          <ArrowRight className="w-4 h-4 shrink-0" />
+                        </button>
+                      ) : (
+                        <button
+                          type="submit"
+                          className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                        >
+                          <span>Check Spelling</span>
+                          <ArrowRight className="w-4 h-4 shrink-0" />
+                        </button>
+                      )}
                     </div>
                   </form>
                 </>
@@ -1786,7 +1829,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   No words in the selected filter.
                 </p>
               ) : (
-                <div className="grid grid-cols-1 2xl:grid-cols-2 gap-2.5 max-h-[540px] overflow-y-auto overflow-x-hidden pr-1">
+                <div className="flex flex-col gap-2.5 max-h-[540px] overflow-y-auto overflow-x-hidden pr-1">
                   {filteredDeck.map((item, idx) => {
                     const rec = recordingsMap[item.id];
                     const itemBangla = rec?.banglaMeaning || item.bangla;
@@ -1824,19 +1867,20 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             setIsPracticingBlur(false);
                           }
                         }}
-                        className={`p-3.5 rounded-xl border transition-all cursor-pointer flex items-center justify-between gap-3 ${
+                        className={`w-full p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2 ${
                           isSelectedWord
                             ? 'bg-[#122b20] border-[#10b981] ring-1 ring-[#10b981]/30'
                             : 'bg-[#09140f] hover:bg-[#10231a] border-[#173024]'
                         }`}
                       >
-                        <div className="min-w-0 flex-1 space-y-1">
-                          <div className="flex flex-wrap items-center gap-2">
+                        {/* Top Line: Word Number + Full English Word + Active Badge + Audio Buttons */}
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2 min-w-0">
                             <span className="text-xs font-mono tabular-nums text-[#6d8a7b] shrink-0">
                               #{idx + 1}
                             </span>
                             <span
-                              className={`text-base sm:text-lg font-bold font-mono text-white break-words transition-all duration-200 ${
+                              className={`text-base sm:text-lg font-bold font-mono text-white transition-all duration-200 ${
                                 shouldBlurActiveSpelling
                                   ? 'blur-md select-none'
                                   : ''
@@ -1845,7 +1889,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                               {item.word}
                             </span>
                             {isSelectedWord && (
-                              <span className="px-2 py-0.5 rounded-md bg-[#10b981]/20 text-[#10b981] text-[10px] font-bold shrink-0">
+                              <span className="px-2 py-0.5 rounded-md bg-[#10b981]/20 text-[#10b981] text-[10px] font-bold whitespace-nowrap shrink-0">
                                 {shouldBlurActiveSpelling
                                   ? 'Active · Blurred'
                                   : 'Active'}
@@ -1853,50 +1897,48 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             )}
                           </div>
 
-                          <div className="text-xs sm:text-sm text-[#c4d9ce] break-words">
-                            {itemBangla}
-                          </div>
+                          <div
+                            className="flex items-center gap-1.5 shrink-0"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => void handlePlayStudyItem(item, 1.0)}
+                              title={`Listen to ${item.word} (1.0x)`}
+                              className={`min-h-[36px] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                                isPlayingNormal
+                                  ? 'bg-[#10b981] text-[#04120c]'
+                                  : 'bg-[#10b981]/15 hover:bg-[#10b981]/30 text-[#10b981] border border-[#10b981]/40'
+                              }`}
+                            >
+                              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+                              <span>1.0x</span>
+                            </button>
 
-                          <div className="text-[11px] text-[#6d8a7b] flex flex-wrap items-center gap-1.5">
-                            <span className="font-mono font-semibold text-[#8ba89a]">
-                              Page {item.page}
-                            </span>
-                            <span>·</span>
-                            <span>{item.category}</span>
+                            <button
+                              type="button"
+                              onClick={() => void handlePlayStudyItem(item, 0.72)}
+                              title={`Listen slow to ${item.word} (0.75x)`}
+                              className={`min-h-[36px] px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 whitespace-nowrap transition-colors ${
+                                isPlayingSlow
+                                  ? 'bg-[#fbbf24] text-[#04120c]'
+                                  : 'bg-[#13291f] hover:bg-[#1a372a] text-[#d2e5dc] border border-[#234435]'
+                              }`}
+                            >
+                              <Gauge className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                              <span>0.75x</span>
+                            </button>
                           </div>
                         </div>
 
-                        <div
-                          className="flex items-center gap-1.5 shrink-0"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          <button
-                            type="button"
-                            onClick={() => void handlePlayStudyItem(item, 1.0)}
-                            title={`Listen to ${item.word} (1.0x)`}
-                            className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors ${
-                              isPlayingNormal
-                                ? 'bg-[#10b981] text-[#04120c]'
-                                : 'bg-[#10b981]/15 hover:bg-[#10b981]/30 text-[#10b981] border border-[#10b981]/40'
-                            }`}
-                          >
-                            <Volume2 className="w-3.5 h-3.5 shrink-0" />
-                            <span>1.0x</span>
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => void handlePlayStudyItem(item, 0.72)}
-                            title={`Listen slow to ${item.word} (0.75x)`}
-                            className={`min-h-[38px] px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors ${
-                              isPlayingSlow
-                                ? 'bg-[#fbbf24] text-[#04120c]'
-                                : 'bg-[#13291f] hover:bg-[#1a372a] text-[#d2e5dc] border border-[#234435]'
-                            }`}
-                          >
-                            <Gauge className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
-                            <span>0.75x</span>
-                          </button>
+                        {/* Bottom Line (Full Width): Bangla Meaning + Page & Category */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="text-sm font-medium text-[#d2e5dc]">
+                            {itemBangla}
+                          </span>
+                          <span className="text-[11px] text-[#7ea090] whitespace-nowrap">
+                            Page {item.page} · {item.category}
+                          </span>
                         </div>
                       </div>
                     );
