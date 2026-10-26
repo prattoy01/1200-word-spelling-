@@ -294,6 +294,64 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "PersonalWord": {
+      "title": "PersonalWord",
+      "description": "A user-private struggling spelling word added by a student for their own personal study and practice.",
+      "type": "object",
+      "properties": {
+        "wordId": {
+          "type": "string",
+          "description": "Deterministic slug identifier for the word.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "word": {
+          "type": "string",
+          "description": "The English word or phrase the user is struggling with.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "bangla": {
+          "type": "string",
+          "description": "Bangla meaning or translation of the word.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "example": {
+          "type": "string",
+          "description": "Optional example sentence or spelling memory note.",
+          "minLength": 0,
+          "maxLength": 300
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "Unique identifier of the user who owns this private struggling word.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the personal word was added."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the personal word was last updated."
+        }
+      },
+      "required": [
+        "wordId",
+        "word",
+        "bangla",
+        "example",
+        "ownerId",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -320,6 +378,12 @@
         "$ref": "#/entities/UserAccount"
       },
       "description": "Stores password-protected user and admin accounts."
+    },
+    "/personalWords/{personalWordId}": {
+      "schema": {
+        "$ref": "#/entities/PersonalWord"
+      },
+      "description": "Stores user-private struggling spelling words scoped strictly by ownerId."
     }
   }
 }

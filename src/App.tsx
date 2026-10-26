@@ -26,6 +26,7 @@ import {
   Layers,
   ShieldCheck,
   Send,
+  Bookmark,
 } from 'lucide-react';
 import {
   auth,
@@ -39,6 +40,7 @@ import {
   type CloudRecording,
   type AudioContributionRecord,
   type PracticeSessionRecord,
+  type PersonalWordRecord,
   subscribeToPublishedRecordings,
   subscribeToAudioContributions,
   saveWordRecording,
@@ -49,6 +51,10 @@ import {
   syncLocalRecordingsToCloud,
   seedScreenshot14RecordingsToCloud,
   subscribeToUserPracticeSessions,
+  subscribeToPersonalWords,
+  addOrUpdatePersonalWord,
+  removePersonalWord,
+  personalWordToWordItem,
 } from './services/recordingsService';
 import {
   processAudioBlob,
@@ -59,6 +65,7 @@ import { NetlifyFixModal, getActiveAppUrl } from './components/NetlifyFixModal';
 import { PracticeView } from './components/PracticeView';
 import { AdminPanelView } from './components/AdminPanelView';
 import { SignInModal } from './components/SignInModal';
+import { PersonalWordsModal } from './components/PersonalWordsModal';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
@@ -83,6 +90,10 @@ export default function App() {
   // Community contributions queue for Admin Panel
   const [contributions, setContributions] = useState<AudioContributionRecord[]>([]);
   const [recentSessions, setRecentSessions] = useState<PracticeSessionRecord[]>([]);
+  // User's Private Struggling Spelling Words (visible only to this user)
+  const [personalWords, setPersonalWords] = useState<PersonalWordRecord[]>([]);
+  const [isPersonalWordsModalOpen, setIsPersonalWordsModalOpen] = useState(false);
+  const [focusPersonalTrigger, setFocusPersonalTrigger] = useState(0);
 
   // Contribution options when uploading/recording personal audio
   const [contributeOnSave, setContributeOnSave] = useState<boolean>(true);
@@ -215,7 +226,7 @@ export default function App() {
     };
   }, []);
 
-  // 3. Subscribe to user's practice & exam history (works with or without Google login)
+  // 3. Subscribe to user's practice & exam history + private personal struggling words
   useEffect(() => {
     if (!authReady) return;
     const unsubSessions = subscribeToUserPracticeSessions(
@@ -224,8 +235,43 @@ export default function App() {
         setRecentSessions(sessions);
       }
     );
-    return () => unsubSessions();
+    const unsubPersonalWords = subscribeToPersonalWords(
+      user?.uid,
+      (words) => {
+        setPersonalWords(words);
+      }
+    );
+    return () => {
+      unsubSessions();
+      unsubPersonalWords();
+    };
   }, [authReady, user]);
+
+  const handleTogglePersonalStrugglingWord = async (wordItem: WordItem) => {
+    const exists = personalWords.some((w) => w.wordId === wordItem.id);
+    if (exists) {
+      await removePersonalWord(wordItem.id);
+    } else {
+      const rec = recordingsMap[wordItem.id];
+      await addOrUpdatePersonalWord({
+        word: wordItem.word,
+        bangla: rec?.banglaMeaning || wordItem.bangla,
+        example: wordItem.example,
+      });
+    }
+  };
+
+  // Merge user's private custom words into catalog for Recordings Manager lookup
+  const allCatalogAndPersonalWords: WordItem[] = useMemo(() => {
+    const catalogIds = new Set(WORDS_CATALOG.map((w) => w.id));
+    const customOnly: WordItem[] = [];
+    for (const pw of personalWords) {
+      if (!catalogIds.has(pw.wordId)) {
+        customOnly.push(personalWordToWordItem(pw));
+      }
+    }
+    return [...customOnly, ...WORDS_CATALOG];
+  }, [personalWords]);
 
   // Compute exact counts:
   // Total catalog = 921 (782 Bundled + Custom Personal/General Uploads + Missing)
@@ -268,7 +314,7 @@ export default function App() {
   // Filtered words for the active tab, Page 1/Page 2 filter & search bar
   const filteredWords: WordItem[] = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    return WORDS_CATALOG.filter((item) => {
+    return allCatalogAndPersonalWords.filter((item) => {
       if (recordingsPageFilter === 'page1' && item.page !== 1) return false;
       if (recordingsPageFilter === 'page2' && item.page !== 2) return false;
       const hasUpload = Boolean(recordingsMap[item.id]);
@@ -288,14 +334,14 @@ export default function App() {
       }
       return true;
     });
-  }, [activeTab, recordingsPageFilter, searchQuery, recordingsMap]);
+  }, [activeTab, recordingsPageFilter, searchQuery, recordingsMap, allCatalogAndPersonalWords]);
 
   // Keep selectedWord in sync
   const selectedWord: WordItem = useMemo(() => {
-    const found = WORDS_CATALOG.find((w) => w.id === selectedWordId);
+    const found = allCatalogAndPersonalWords.find((w) => w.id === selectedWordId);
     if (found) return found;
-    return filteredWords[0] || WORDS_CATALOG[0];
-  }, [selectedWordId, filteredWords]);
+    return filteredWords[0] || allCatalogAndPersonalWords[0];
+  }, [selectedWordId, filteredWords, allCatalogAndPersonalWords]);
 
   const selectedRecording: CloudRecording | undefined = recordingsMap[selectedWord.id];
   const selectedGeneralRecording: CloudRecording | undefined =
@@ -638,6 +684,14 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setIsPersonalWordsModalOpen(true)}
+            className="hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-[#7dd3fc]"
+          >
+            <Bookmark className="w-3.5 h-3.5 text-[#38bdf8]" />
+            <span>My Words ({personalWords.length})</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setActiveScreen('recordings')}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 ${
               activeScreen === 'recordings'
@@ -729,6 +783,10 @@ export default function App() {
           recentSessions={recentSessions}
           activeSubMode={practiceSubMode}
           onSubModeChange={(mode) => setPracticeSubMode(mode)}
+          personalWords={personalWords}
+          onOpenPersonalWordsModal={() => setIsPersonalWordsModalOpen(true)}
+          onTogglePersonalStrugglingWord={handleTogglePersonalStrugglingWord}
+          focusPersonalTrigger={focusPersonalTrigger}
         />
       ) : activeScreen === 'admin' ? (
         <AdminPanelView
@@ -1353,6 +1411,25 @@ export default function App() {
         onRestore14Uploads={handleRestore14Uploads}
         isRestoring14={isRestoring14}
         restoreProgressText={restoreProgressText}
+      />
+
+      {/* Personal Struggling Words Modal (Private to Current User Only) */}
+      <PersonalWordsModal
+        isOpen={isPersonalWordsModalOpen}
+        onClose={() => setIsPersonalWordsModalOpen(false)}
+        personalWords={personalWords}
+        recordingsMap={recordingsMap}
+        onSelectPersonalCategoryForPractice={() => {
+          setActiveScreen('practice');
+          setPracticeSubMode('practice');
+          setFocusPersonalTrigger((prev) => prev + 1);
+        }}
+        onSelectPersonalCategoryForTest={() => {
+          setActiveScreen('practice');
+          setPracticeSubMode('test');
+          setFocusPersonalTrigger((prev) => prev + 1);
+        }}
+        onRefreshRecordings={() => refreshLocalAndCloudState()}
       />
 
       {/* Sign In & Switch User Modal */}

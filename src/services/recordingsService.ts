@@ -28,8 +28,21 @@ import {
   getAllLocalCachedRecordings,
   isSyntheticRestoredPlaceholder,
 } from '../utils/audioUtils';
-import { toWordId } from '../data/words';
+import { toWordId, WORDS_CATALOG, type WordItem } from '../data/words';
 import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
+
+export const PERSONAL_STRUGGLING_CATEGORY = 'My Struggling Words';
+
+export interface PersonalWordRecord {
+  id: string;
+  wordId: string;
+  word: string;
+  bangla: string;
+  example: string;
+  ownerId: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
 
 export interface CloudRecording {
   wordId: string;
@@ -969,3 +982,257 @@ export function subscribeToUserPracticeSessions(
     }
   );
 }
+
+// ============================================================================
+// PERSONAL STRUGGLING WORDS (100% PRIVATE TO EACH USER)
+// ============================================================================
+
+const PERSONAL_WORDS_PATH = 'personalWords';
+const DEVICE_PRIVATE_OWNER_KEY = 'lw_private_device_owner_id_v1';
+const LOCAL_PERSONAL_WORDS_PREFIX = 'lw_personal_struggling_words_v1_';
+
+/**
+ * Returns a strictly isolated ownerId for the current user:
+ * - When signed in: uses the user's unique `uid` so their struggling words sync across their own devices.
+ * - When not signed in: generates a unique device-specific ID stored only in this browser's localStorage
+ *   so unsigned-in users never share personal struggling words with anyone else.
+ */
+export function getPrivatePersonalOwnerId(explicitUserId?: string | null): string {
+  const uid = explicitUserId || auth.currentUser?.uid;
+  if (uid) {
+    return uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  }
+  if (typeof window === 'undefined') return 'local_private_user';
+  try {
+    let deviceId = window.localStorage.getItem(DEVICE_PRIVATE_OWNER_KEY);
+    if (!deviceId || !/^[a-zA-Z0-9_-]+$/.test(deviceId)) {
+      const rand = Math.random().toString(36).slice(2, 10);
+      deviceId = `priv_${Date.now().toString(36)}_${rand}`;
+      window.localStorage.setItem(DEVICE_PRIVATE_OWNER_KEY, deviceId);
+    }
+    return deviceId.slice(0, 80);
+  } catch {
+    return 'local_private_user';
+  }
+}
+
+export function readLocalPersonalWordsCache(ownerId: string): PersonalWordRecord[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(`${LOCAL_PERSONAL_WORDS_PREFIX}${ownerId}`);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeLocalPersonalWordsCache(
+  ownerId: string,
+  words: PersonalWordRecord[]
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      `${LOCAL_PERSONAL_WORDS_PREFIX}${ownerId}`,
+      JSON.stringify(words)
+    );
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+export function personalWordToWordItem(rec: PersonalWordRecord): WordItem {
+  const existingCatalogMatch = WORDS_CATALOG.find(
+    (w) =>
+      w.id === rec.wordId ||
+      w.word.trim().toLowerCase() === rec.word.trim().toLowerCase()
+  );
+
+  return {
+    id: rec.wordId,
+    originalId: existingCatalogMatch?.originalId || `pw_${rec.wordId}`,
+    word: rec.word,
+    bangla: rec.bangla || existingCatalogMatch?.bangla || '',
+    category: PERSONAL_STRUGGLING_CATEGORY,
+    example:
+      rec.example ||
+      existingCatalogMatch?.example ||
+      `Personal struggling word: ${rec.word}`,
+    hasBundledAudio: Boolean(existingCatalogMatch?.hasBundledAudio),
+    bundledAudioFile: existingCatalogMatch?.bundledAudioFile,
+    page: existingCatalogMatch?.page || 1,
+  };
+}
+
+/**
+ * Adds or updates a personal struggling word that stays strictly private to the current user.
+ * Optionally saves a private personal pronunciation recording for that word.
+ */
+export async function addOrUpdatePersonalWord(params: {
+  word: string;
+  bangla?: string;
+  example?: string;
+  audio?: ProcessedAudio | null;
+}): Promise<PersonalWordRecord> {
+  const cleanWord = params.word.trim().slice(0, 120);
+  if (!cleanWord) {
+    throw new Error('Please enter a word or phrase.');
+  }
+
+  const ownerId = getPrivatePersonalOwnerId();
+  const catalogMatch = WORDS_CATALOG.find(
+    (w) => w.word.trim().toLowerCase() === cleanWord.toLowerCase()
+  );
+  const rawWordId = catalogMatch ? catalogMatch.id : toWordId(cleanWord);
+  const safeWordId = rawWordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44) || 'word';
+  const docId = `${ownerId}_${safeWordId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+
+  const safeBangla = (params.bangla ?? catalogMatch?.bangla ?? '').trim().slice(0, 200);
+  const safeExample = (
+    params.example ??
+    catalogMatch?.example ??
+    ''
+  )
+    .trim()
+    .slice(0, 300);
+
+  const nowMs = Date.now();
+  const record: PersonalWordRecord = {
+    id: docId,
+    wordId: safeWordId,
+    word: cleanWord,
+    bangla: safeBangla,
+    example: safeExample,
+    ownerId,
+    createdAtMs: nowMs,
+    updatedAtMs: nowMs,
+  };
+
+  // 1. Save immediately in user-scoped local cache
+  const existingList = readLocalPersonalWordsCache(ownerId).filter(
+    (w) => w.wordId !== safeWordId
+  );
+  writeLocalPersonalWordsCache(ownerId, [record, ...existingList]);
+
+  // 2. If user also provided custom pronunciation audio, save it strictly as their Personal Audio (not sent to Admin)
+  if (params.audio) {
+    await saveWordRecording({
+      wordId: safeWordId,
+      word: cleanWord,
+      banglaMeaning: safeBangla,
+      audio: params.audio,
+      contributeToAdmin: false,
+    });
+  }
+
+  // 3. Persist to Cloud Firestore scoped strictly to this user's `ownerId`
+  const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
+  try {
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      await setDoc(docRef, {
+        wordId: safeWordId,
+        word: cleanWord,
+        bangla: safeBangla,
+        example: safeExample,
+        ownerId,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(docRef, {
+        wordId: safeWordId,
+        word: cleanWord,
+        bangla: safeBangla,
+        example: safeExample,
+        ownerId,
+        createdAt: snap.data().createdAt || serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.warn('Saved personal word locally (cloud sync pending):', err);
+  }
+
+  return record;
+}
+
+/**
+ * Removes a personal struggling word from the current user's private list.
+ */
+export async function removePersonalWord(wordId: string): Promise<void> {
+  const ownerId = getPrivatePersonalOwnerId();
+  const safeWordId = wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44);
+  const docId = `${ownerId}_${safeWordId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+
+  const remaining = readLocalPersonalWordsCache(ownerId).filter(
+    (w) => w.wordId !== safeWordId && w.wordId !== wordId
+  );
+  writeLocalPersonalWordsCache(ownerId, remaining);
+
+  try {
+    await deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId));
+  } catch (err) {
+    console.warn('Removed personal word from local cache:', err);
+  }
+}
+
+/**
+ * Subscribes to the current user's private struggling words (`/personalWords` where `ownerId == currentOwnerId`).
+ */
+export function subscribeToPersonalWords(
+  userId: string | undefined | null,
+  onUpdate: (words: PersonalWordRecord[]) => void
+): Unsubscribe {
+  const ownerId = getPrivatePersonalOwnerId(userId);
+
+  // Immediately emit local cached personal words so UI is instant
+  const initialLocal = readLocalPersonalWordsCache(ownerId);
+  onUpdate(initialLocal);
+
+  const q = query(
+    collection(db, PERSONAL_WORDS_PATH),
+    where('ownerId', '==', ownerId)
+  );
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const localList = readLocalPersonalWordsCache(ownerId);
+      const mergedByWordId = new Map<string, PersonalWordRecord>();
+
+      for (const loc of localList) {
+        mergedByWordId.set(loc.wordId, loc);
+      }
+
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        if (!d.wordId || !d.word) return;
+        const item: PersonalWordRecord = {
+          id: docSnap.id,
+          wordId: d.wordId,
+          word: d.word,
+          bangla: d.bangla || '',
+          example: d.example || '',
+          ownerId: d.ownerId || ownerId,
+          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+          updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+        };
+        mergedByWordId.set(item.wordId, item);
+      });
+
+      const finalWords = Array.from(mergedByWordId.values()).sort(
+        (a, b) => b.updatedAtMs - a.updatedAtMs
+      );
+      writeLocalPersonalWordsCache(ownerId, finalWords);
+      onUpdate(finalWords);
+    },
+    (error) => {
+      console.warn('Personal words operating from local private cache:', error);
+      onUpdate(readLocalPersonalWordsCache(ownerId));
+    }
+  );
+}
+

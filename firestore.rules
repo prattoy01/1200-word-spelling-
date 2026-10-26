@@ -310,5 +310,58 @@ service cloud.firestore {
 
       allow delete: if false;
     }
+
+    // Validation Blueprint for PersonalWord
+    function isValidPersonalWord(data) {
+      return data.keys().hasAll([
+          'wordId',
+          'word',
+          'bangla',
+          'example',
+          'ownerId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'wordId',
+          'word',
+          'bangla',
+          'example',
+          'ownerId',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.wordId is string && data.wordId.size() >= 1 && data.wordId.size() <= 128 && data.wordId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.word is string && data.word.size() >= 1 && data.word.size() <= 120
+        && data.bangla is string && data.bangla.size() >= 0 && data.bangla.size() <= 200
+        && data.example is string && data.example.size() >= 0 && data.example.size() <= 300
+        && data.ownerId is string && data.ownerId.size() >= 1 && data.ownerId.size() <= 128 && data.ownerId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /personalWords/{personalWordId}
+    match /personalWords/{personalWordId} {
+      allow get: if isValidId(personalWordId) && (
+        resource == null ||
+        existing().ownerId.size() >= 1
+      );
+
+      allow list: if existing().ownerId.size() >= 1;
+
+      allow create: if isValidId(personalWordId)
+        && isValidPersonalWord(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(personalWordId)
+        && isValidPersonalWord(incoming())
+        && incoming().ownerId == existing().ownerId
+        && incoming().wordId == existing().wordId
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isValidId(personalWordId)
+        && existing().ownerId.size() >= 1;
+    }
   }
 }

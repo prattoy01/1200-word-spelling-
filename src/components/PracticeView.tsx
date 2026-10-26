@@ -22,14 +22,19 @@ import {
   ChevronRight,
   X,
   FileText,
+  Bookmark,
+  Plus,
 } from 'lucide-react';
 import { WORDS_CATALOG, CATEGORIES, type WordItem } from '../data/words';
-import type {
-  CloudRecording,
-  PracticeSessionRecord,
-  SessionWordResult,
+import {
+  type CloudRecording,
+  type PracticeSessionRecord,
+  type SessionWordResult,
+  type PersonalWordRecord,
+  PERSONAL_STRUGGLING_CATEGORY,
+  personalWordToWordItem,
+  savePracticeSession,
 } from '../services/recordingsService';
-import { savePracticeSession } from '../services/recordingsService';
 import { playWordAudio } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
 
@@ -39,9 +44,13 @@ interface PracticeViewProps {
   recentSessions: PracticeSessionRecord[];
   activeSubMode?: 'practice' | 'test';
   onSubModeChange?: (mode: 'practice' | 'test') => void;
+  personalWords: PersonalWordRecord[];
+  onOpenPersonalWordsModal: () => void;
+  onTogglePersonalStrugglingWord: (wordItem: WordItem) => Promise<void>;
+  focusPersonalTrigger?: number;
 }
 
-type PageFilter = 'page1' | 'page2' | 'all';
+type PageFilter = 'page1' | 'page2' | 'all' | 'personal';
 type PracticeSubMode = 'practice' | 'test';
 type ExamState = 'setup' | 'running' | 'finished';
 
@@ -50,6 +59,14 @@ interface ExamAnswerItem {
   userAnswer: string;
   isCorrect: boolean;
   allocatedSec: number;
+}
+
+interface WordAccuracyStats {
+  attempts: number;
+  correct: number;
+  failed: number;
+  accuracyPct: number;
+  lastCorrect: boolean | null;
 }
 
 /**
@@ -168,6 +185,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   recentSessions,
   activeSubMode,
   onSubModeChange,
+  personalWords,
+  onOpenPersonalWordsModal,
+  onTogglePersonalStrugglingWord,
+  focusPersonalTrigger,
 }) => {
   // Shared Page 1 / Page 2 & Multi-Category Selection (empty array = All Categories)
   const [pageFilter, setPageFilter] = useState<PageFilter>('page1');
@@ -184,6 +205,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     'all' | 'mistakes' | 'correct'
   >('all');
 
+  const personalWordItems: WordItem[] = useMemo(
+    () => personalWords.map((rec) => personalWordToWordItem(rec)),
+    [personalWords]
+  );
+
+  const personalWordIdsSet = useMemo(
+    () => new Set(personalWords.map((w) => w.wordId)),
+    [personalWords]
+  );
+
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) =>
       prev.includes(cat) ? prev.filter((c) => c !== cat) : [...prev, cat]
@@ -192,7 +223,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
   const handlePageFilterChange = (nextPage: PageFilter) => {
     setPageFilter(nextPage);
-    if (nextPage === 'all') return;
+    if (nextPage === 'personal') {
+      setSelectedCategories([PERSONAL_STRUGGLING_CATEGORY]);
+      return;
+    }
+    if (nextPage === 'all') {
+      setSelectedCategories((prev) =>
+        prev.filter((c) => c !== PERSONAL_STRUGGLING_CATEGORY)
+      );
+      return;
+    }
     const targetPageNum = nextPage === 'page1' ? 1 : 2;
     const validCategoriesOnPage = new Set(
       WORDS_CATALOG.filter((w) => w.page === targetPageNum).map(
@@ -205,10 +245,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   };
 
   const selectedCategoriesLabel = useMemo(() => {
+    if (pageFilter === 'personal') return PERSONAL_STRUGGLING_CATEGORY;
     if (selectedCategories.length === 0) return 'All Categories';
     if (selectedCategories.length <= 2) return selectedCategories.join(' + ');
     return `${selectedCategories.slice(0, 2).join(', ')} +${selectedCategories.length - 2} more`;
-  }, [selectedCategories]);
+  }, [pageFilter, selectedCategories]);
 
   useEffect(() => {
     if (activeSubMode && activeSubMode !== subMode) {
@@ -216,6 +257,15 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       setExamState('setup');
     }
   }, [activeSubMode]);
+
+  useEffect(() => {
+    if (focusPersonalTrigger && focusPersonalTrigger > 0) {
+      setPageFilter('personal');
+      setSelectedCategories([PERSONAL_STRUGGLING_CATEGORY]);
+      setDeckMode('all');
+      setCurrentIndex(0);
+    }
+  }, [focusPersonalTrigger]);
 
   const handleSwitchSubMode = (nextMode: PracticeSubMode) => {
     setSubMode(nextMode);
@@ -237,6 +287,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const [practiceBatchResults, setPracticeBatchResults] = useState<
     SessionWordResult[]
   >([]);
+  const [studySortMode, setStudySortMode] = useState<
+    'default' | 'weakest' | 'failedOnly'
+  >('default');
   const [isPlaying, setIsPlaying] = useState(false);
   const practiceInputRef = useRef<HTMLInputElement>(null);
 
@@ -272,9 +325,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     return { page1: p1, page2: p2, all: WORDS_CATALOG.length };
   }, []);
 
-  // Compute Category counts within the selected Page (Page 1, Page 2, or All)
+  // Compute Category counts within the selected Page (Page 1, Page 2, All, or Personal)
   const categoryStats = useMemo(() => {
-    const map: Record<string, number> = { 'All Categories': 0 };
+    const map: Record<string, number> = {
+      'All Categories': 0,
+      [PERSONAL_STRUGGLING_CATEGORY]: personalWordItems.length,
+    };
     for (const cat of CATEGORIES) {
       if (cat !== 'All Categories') map[cat] = 0;
     }
@@ -289,28 +345,186 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       map[item.category] = (map[item.category] || 0) + 1;
     }
     return map;
-  }, [pageFilter, deckMode, recordingsMap]);
+  }, [pageFilter, deckMode, recordingsMap, personalWordItems]);
 
-  // Filtered words matching Page + Multiple Categories + Audio Source
-  const filteredDeck: WordItem[] = useMemo(() => {
-    return WORDS_CATALOG.filter((item) => {
-      if (pageFilter === 'page1' && item.page !== 1) return false;
-      if (pageFilter === 'page2' && item.page !== 2) return false;
+  // Aggregate per-word accuracy & failure stats from all user test/practice history + current live batch
+  const wordAccuracyMap = useMemo(() => {
+    const byKey: Record<
+      string,
+      { attempts: number; correct: number; lastCorrect: boolean | null }
+    > = {};
+
+    const recordAttempt = (
+      wordId: string | undefined,
+      wordText: string | undefined,
+      isCorrectAttempt: boolean,
+      isNewestFirst: boolean
+    ) => {
+      const keys = new Set<string>();
+      if (wordId) keys.add(wordId.trim().toLowerCase());
+      if (wordText) keys.add(normalizeSpelling(wordText));
+
+      for (const key of keys) {
+        if (!key) continue;
+        if (!byKey[key]) {
+          byKey[key] = { attempts: 0, correct: 0, lastCorrect: null };
+        }
+        byKey[key].attempts += 1;
+        if (isCorrectAttempt) {
+          byKey[key].correct += 1;
+        }
+        if (isNewestFirst) {
+          if (byKey[key].lastCorrect === null) {
+            byKey[key].lastCorrect = isCorrectAttempt;
+          }
+        } else {
+          byKey[key].lastCorrect = isCorrectAttempt;
+        }
+      }
+    };
+
+    // 1. Live unsaved practice batch results (oldest to newest -> newest overwrites lastCorrect)
+    for (let i = practiceBatchResults.length - 1; i >= 0; i--) {
+      const r = practiceBatchResults[i];
+      recordAttempt(r.wordId, r.word, Boolean(r.isCorrect), true);
+    }
+
+    // 2. Saved sessions in recentSessions (already sorted newest first)
+    for (const session of recentSessions) {
+      if (!Array.isArray(session.results)) continue;
+      for (const r of session.results) {
+        recordAttempt(r.wordId, r.word, Boolean(r.isCorrect), true);
+      }
+    }
+
+    const finalMap: Record<string, WordAccuracyStats> = {};
+    for (const [key, val] of Object.entries(byKey)) {
+      const failed = Math.max(0, val.attempts - val.correct);
+      const accuracyPct =
+        val.attempts > 0 ? Math.round((val.correct / val.attempts) * 100) : 0;
+      finalMap[key] = {
+        attempts: val.attempts,
+        correct: val.correct,
+        failed,
+        accuracyPct,
+        lastCorrect: val.lastCorrect,
+      };
+    }
+
+    return finalMap;
+  }, [recentSessions, practiceBatchResults]);
+
+  const getWordStats = useCallback(
+    (item: WordItem | undefined): WordAccuracyStats => {
+      if (!item) {
+        return {
+          attempts: 0,
+          correct: 0,
+          failed: 0,
+          accuracyPct: 0,
+          lastCorrect: null,
+        };
+      }
+      const byId = wordAccuracyMap[item.id.toLowerCase()];
+      if (byId) return byId;
+      const byNorm = wordAccuracyMap[normalizeSpelling(item.word)];
+      if (byNorm) return byNorm;
+      return {
+        attempts: 0,
+        correct: 0,
+        failed: 0,
+        accuracyPct: 0,
+        lastCorrect: null,
+      };
+    },
+    [wordAccuracyMap]
+  );
+
+  // Base filtered words matching Page + Multiple Categories + Audio Source + Personal Struggling Words
+  const baseFilteredDeck: WordItem[] = useMemo(() => {
+    const wantsPersonalOnly =
+      pageFilter === 'personal' ||
+      (selectedCategories.length === 1 &&
+        selectedCategories[0] === PERSONAL_STRUGGLING_CATEGORY);
+
+    if (wantsPersonalOnly) {
+      return personalWordItems.filter((item) => {
+        const hasCustom = Boolean(recordingsMap[item.id]);
+        if (deckMode === 'uploads') return hasCustom;
+        if (deckMode === 'missing') return !item.hasBundledAudio && !hasCustom;
+        return true;
+      });
+    }
+
+    const combinedPool: WordItem[] = [];
+    if (selectedCategories.includes(PERSONAL_STRUGGLING_CATEGORY)) {
+      combinedPool.push(...personalWordItems);
+    }
+
+    for (const item of WORDS_CATALOG) {
+      if (pageFilter === 'page1' && item.page !== 1) continue;
+      if (pageFilter === 'page2' && item.page !== 2) continue;
       if (
         selectedCategories.length > 0 &&
         !selectedCategories.includes(item.category)
       ) {
-        return false;
+        continue;
       }
       const hasCustom = Boolean(recordingsMap[item.id]);
-      if (deckMode === 'uploads') return hasCustom;
-      if (deckMode === 'missing') return !item.hasBundledAudio && !hasCustom;
-      return true;
-    });
-  }, [pageFilter, selectedCategories, deckMode, recordingsMap]);
+      if (deckMode === 'uploads' && !hasCustom) continue;
+      if (deckMode === 'missing' && (item.hasBundledAudio || hasCustom)) continue;
+      combinedPool.push(item);
+    }
+
+    return combinedPool;
+  }, [pageFilter, selectedCategories, deckMode, recordingsMap, personalWordItems]);
+
+  const failedWordsInDeckCount = useMemo(
+    () => baseFilteredDeck.filter((w) => getWordStats(w).failed > 0).length,
+    [baseFilteredDeck, getWordStats]
+  );
+
+  const filteredDeck: WordItem[] = useMemo(() => {
+    if (studySortMode === 'failedOnly') {
+      const failedOnly = baseFilteredDeck.filter(
+        (w) => getWordStats(w).failed > 0
+      );
+      return failedOnly.sort((a, b) => {
+        const sa = getWordStats(a);
+        const sb = getWordStats(b);
+        if (sa.accuracyPct !== sb.accuracyPct) {
+          return sa.accuracyPct - sb.accuracyPct;
+        }
+        return sb.failed - sa.failed;
+      });
+    }
+
+    if (studySortMode === 'weakest') {
+      return [...baseFilteredDeck].sort((a, b) => {
+        const sa = getWordStats(a);
+        const sb = getWordStats(b);
+        // Words with failed attempts come first, sorted by lowest accuracy then highest fail count
+        const aHasFails = sa.failed > 0 ? 1 : 0;
+        const bHasFails = sb.failed > 0 ? 1 : 0;
+        if (aHasFails !== bHasFails) return bHasFails - aHasFails;
+        if (sa.attempts > 0 && sb.attempts > 0) {
+          if (sa.accuracyPct !== sb.accuracyPct) {
+            return sa.accuracyPct - sb.accuracyPct;
+          }
+          return sb.failed - sa.failed;
+        }
+        // Tested words before untested words when sorting by weakest
+        if (sa.attempts !== sb.attempts) return sb.attempts - sa.attempts;
+        return 0;
+      });
+    }
+
+    return baseFilteredDeck;
+  }, [baseFilteredDeck, studySortMode, getWordStats]);
 
   const currentWord: WordItem | undefined =
     filteredDeck[currentIndex % Math.max(1, filteredDeck.length)];
+  const currentWordStats = getWordStats(currentWord);
   const activeRecording = currentWord ? recordingsMap[currentWord.id] : undefined;
   const displayBangla =
     activeRecording?.banglaMeaning || currentWord?.bangla || '';
@@ -321,7 +535,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setShowStudyWord(false);
     setIsPracticingBlur(false);
-  }, [pageFilter, selectedCategories, deckMode]);
+  }, [pageFilter, selectedCategories, deckMode, studySortMode]);
 
   // Helper to play pronunciation for any specific word item
   const playSpecificWord = useCallback(
@@ -668,24 +882,37 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
   return (
     <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-8 space-y-6">
-      {/* Top Banner: Switch to Recordings Manager */}
-      <div className="flex items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
+      {/* Top Banner: Switch to Recordings Manager & Personal Struggling Words */}
+      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
         <div className="min-w-0">
           <div className="text-xs font-bold text-[#10b981]">
-            Pronunciation Audio Studio
+            Pronunciation Audio Studio &amp; Personal Words
           </div>
           <div className="text-[11px] text-[#9ab5a7] truncate">
-            782 Bundled · {Object.keys(recordingsMap).length} Cloud Uploads
+            782 Bundled · {Object.keys(recordingsMap).length} Cloud Uploads ·{' '}
+            <span className="text-[#38bdf8] font-semibold">
+              {personalWords.length} My Struggling Words (Private)
+            </span>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={() => onOpenRecordingsManager(currentWord?.id)}
-          className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-        >
-          <ListMusic className="w-4 h-4" />
-          <span>Manage Recordings</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onOpenPersonalWordsModal}
+            className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#38bdf8]/15 hover:bg-[#38bdf8]/25 border border-[#38bdf8]/40 text-[#7dd3fc] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+          >
+            <Plus className="w-4 h-4 text-[#38bdf8]" />
+            <span>Add Struggling Word ({personalWords.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => onOpenRecordingsManager(currentWord?.id)}
+            className="min-h-[42px] px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+          >
+            <ListMusic className="w-4 h-4" />
+            <span>Manage Recordings</span>
+          </button>
+        </div>
       </div>
 
       {/* Mode Switcher: Free Practice vs. Take Strict Exam Test */}
@@ -699,7 +926,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           <p className="mt-1 text-xs sm:text-sm text-[#8ba89a]">
             {subMode === 'test'
               ? 'Each word plays 3 times with pauses, then automatically advances. No replay or going back.'
-              : 'Select Page 1 or Page 2, choose any category, and practice at your own pace.'}
+              : 'Select Page 1, Page 2, or your private Struggling Words, and practice at your own pace.'}
           </p>
         </div>
 
@@ -732,17 +959,17 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
         </div>
       </div>
 
-      {/* Page 1 / Page 2 Selector + Category Selector Cards (Hidden while Strict Exam is actively running) */}
+      {/* Page 1 / Page 2 / My Struggling Words Selector + Category Selector Cards */}
       {!(subMode === 'test' && examState === 'running') && (
         <section className="rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5">
-          {/* Row 1: Page 1 | Page 2 | All Pages + Audio Deck Filter */}
+          {/* Row 1: Page 1 | Page 2 | All Pages | My Struggling Words + Audio Deck Filter */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="space-y-1.5">
               <div className="text-xs font-semibold text-[#8ba89a] flex items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-[#10b981]" />
-                <span>Select Word Book Page (Page 1 &amp; Page 2)</span>
+                <span>Select Word Book Page or Personal Struggling Words</span>
               </div>
-              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
                 <button
                   type="button"
                   onClick={() => handlePageFilterChange('page1')}
@@ -785,6 +1012,22 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   <span>All Pages</span>
                   <span className="font-mono tabular-nums text-[11px] opacity-85">
                     ({pageCounts.all})
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => handlePageFilterChange('personal')}
+                  className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                    pageFilter === 'personal'
+                      ? 'bg-[#38bdf8] text-[#04120c]'
+                      : 'text-[#7dd3fc] hover:text-white'
+                  }`}
+                >
+                  <Bookmark className="w-3.5 h-3.5 shrink-0" />
+                  <span>My Words</span>
+                  <span className="font-mono tabular-nums text-[11px] opacity-90">
+                    ({personalWords.length})
                   </span>
                 </button>
               </div>
@@ -860,12 +1103,43 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+              {/* "My Struggling Words (Private)" Card */}
+              <button
+                type="button"
+                onClick={() => {
+                  if (pageFilter === 'personal') {
+                    setPageFilter('page1');
+                    setSelectedCategories([]);
+                  } else {
+                    setPageFilter('personal');
+                    setSelectedCategories([PERSONAL_STRUGGLING_CATEGORY]);
+                  }
+                }}
+                className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
+                  pageFilter === 'personal' ||
+                  selectedCategories.includes(PERSONAL_STRUGGLING_CATEGORY)
+                    ? 'bg-[#0c2a36] border-[#38bdf8] text-white font-bold'
+                    : 'bg-[#09181d] border-[#1b3b48] text-[#7dd3fc] hover:border-[#38bdf8] hover:text-white'
+                }`}
+              >
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Bookmark className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
+                  <span className="text-xs truncate">My Struggling Words</span>
+                </span>
+                <span className="text-[11px] font-mono tabular-nums shrink-0 text-[#38bdf8]">
+                  {personalWords.length}
+                </span>
+              </button>
+
               {/* "All Categories" Card */}
               <button
                 type="button"
-                onClick={() => setSelectedCategories([])}
+                onClick={() => {
+                  if (pageFilter === 'personal') setPageFilter('page1');
+                  setSelectedCategories([]);
+                }}
                 className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
-                  selectedCategories.length === 0
+                  pageFilter !== 'personal' && selectedCategories.length === 0
                     ? 'bg-[#143325] border-[#10b981] text-white font-bold'
                     : 'bg-[#09140f] border-[#183126] text-[#9ab5a7] hover:border-[#254b3a] hover:text-white'
                 }`}
@@ -873,12 +1147,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <span className="flex items-center gap-1.5 min-w-0">
                   <span
                     className={`w-4 h-4 rounded flex items-center justify-center border shrink-0 ${
-                      selectedCategories.length === 0
+                      pageFilter !== 'personal' && selectedCategories.length === 0
                         ? 'bg-[#10b981] border-[#10b981] text-[#04120c]'
                         : 'border-[#2d5442]'
                     }`}
                   >
-                    {selectedCategories.length === 0 && (
+                    {pageFilter !== 'personal' && selectedCategories.length === 0 && (
                       <Check className="w-3 h-3 stroke-[3]" />
                     )}
                   </span>
@@ -886,7 +1160,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </span>
                 <span
                   className={`text-[11px] font-mono tabular-nums shrink-0 ${
-                    selectedCategories.length === 0
+                    pageFilter !== 'personal' && selectedCategories.length === 0
                       ? 'text-[#10b981]'
                       : 'text-[#6c8a7b]'
                   }`}
@@ -1511,21 +1785,126 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenRecordingsManager(currentWord.id);
-                      }}
-                      className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
-                    >
-                      <Mic className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        {activeRecording
-                          ? 'Edit / Replace Audio'
-                          : 'Upload Custom Audio'}
-                      </span>
-                    </button>
+                    <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void onTogglePersonalStrugglingWord(currentWord);
+                        }}
+                        title={
+                          personalWordIdsSet.has(currentWord.id)
+                            ? 'Remove from your private Struggling Words'
+                            : 'Save this word to your private Struggling Words list'
+                        }
+                        className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                          personalWordIdsSet.has(currentWord.id)
+                            ? 'bg-[#0c2a36] border-[#38bdf8] text-[#7dd3fc]'
+                            : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#9ab5a7] hover:text-white'
+                        }`}
+                      >
+                        <Bookmark
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            personalWordIdsSet.has(currentWord.id)
+                              ? 'fill-[#38bdf8] text-[#38bdf8]'
+                              : ''
+                          }`}
+                        />
+                        <span>
+                          {personalWordIdsSet.has(currentWord.id)
+                            ? 'In Struggling Words'
+                            : '+ Struggling Word'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenRecordingsManager(currentWord.id);
+                        }}
+                        className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                      >
+                        <Mic className="w-3.5 h-3.5 shrink-0" />
+                        <span>
+                          {activeRecording
+                            ? 'Edit / Replace Audio'
+                            : 'Upload Custom Audio'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Active Word Test History Accuracy & Visual Progress Bar */}
+                  <div className="rounded-xl bg-[#091510] border border-[#193327] px-3.5 py-2.5 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2">
+                        <span className="text-[11px] font-semibold text-[#8ba89a]">
+                          Your Test Accuracy:
+                        </span>
+                        {currentWordStats.attempts > 0 ? (
+                          <span
+                            className={`font-mono tabular-nums font-bold ${
+                              currentWordStats.accuracyPct < 50
+                                ? 'text-[#f87171]'
+                                : currentWordStats.accuracyPct < 80
+                                ? 'text-[#fbbf24]'
+                                : 'text-[#10b981]'
+                            }`}
+                          >
+                            {currentWordStats.accuracyPct}% (
+                            {currentWordStats.correct}/
+                            {currentWordStats.attempts} correct
+                            {currentWordStats.failed > 0
+                              ? ` · ${currentWordStats.failed} failed`
+                              : ''}
+                            )
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-[#6d8a7b] font-medium">
+                            Not tested yet (0 attempts)
+                          </span>
+                        )}
+                      </div>
+
+                      {currentWordStats.attempts > 0 && (
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                            currentWordStats.accuracyPct < 50
+                              ? 'bg-[#2a1215] text-[#f87171] border border-[#f87171]/30'
+                              : currentWordStats.accuracyPct < 80
+                              ? 'bg-[#29200e] text-[#fbbf24] border border-[#fbbf24]/30'
+                              : 'bg-[#0e291e] text-[#10b981] border border-[#10b981]/30'
+                          }`}
+                        >
+                          {currentWordStats.accuracyPct < 50
+                            ? 'High Failure · Needs Practice'
+                            : currentWordStats.accuracyPct < 80
+                            ? 'Improving'
+                            : 'Mastered'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-2 rounded-full bg-[#12261d] overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          currentWordStats.attempts === 0
+                            ? 'bg-[#234435]'
+                            : currentWordStats.accuracyPct < 50
+                            ? 'bg-[#f87171]'
+                            : currentWordStats.accuracyPct < 80
+                            ? 'bg-[#fbbf24]'
+                            : 'bg-[#10b981]'
+                        }`}
+                        style={{
+                          width:
+                            currentWordStats.attempts === 0
+                              ? '0%'
+                              : `${Math.max(6, currentWordStats.accuracyPct)}%`,
+                        }}
+                      />
+                    </div>
                   </div>
 
                   {/* Audio Playback & Study Toggle Controls */}
@@ -1822,17 +2201,107 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     — Click any word to select it, or tap 1.0x / 0.75x to listen.
                   </p>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onOpenPersonalWordsModal();
+                  }}
+                  className="self-start sm:self-center min-h-[36px] px-3 py-1.5 rounded-xl bg-[#38bdf8]/15 hover:bg-[#38bdf8]/25 border border-[#38bdf8]/40 text-[#7dd3fc] text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 text-[#38bdf8]" />
+                  <span>Add My Word</span>
+                </button>
+              </div>
+
+              {/* Sort / Filter Bar for Identifying Most-Failed Words */}
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-[#09140f] border border-[#173024] rounded-xl p-2">
+                <span className="text-[11px] font-semibold text-[#8ba89a] pl-1.5">
+                  Sort / Filter by Test History:
+                </span>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setStudySortMode('default');
+                    }}
+                    className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                      studySortMode === 'default'
+                        ? 'bg-[#10b981] text-[#04120c]'
+                        : 'bg-[#12261d] text-[#9ab5a7] hover:text-white'
+                    }`}
+                  >
+                    Default Order
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setStudySortMode('weakest');
+                    }}
+                    className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                      studySortMode === 'weakest'
+                        ? 'bg-[#fbbf24] text-[#04120c]'
+                        : 'bg-[#12261d] text-[#fbbf24] hover:bg-[#193529]'
+                    }`}
+                  >
+                    Weakest First
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setStudySortMode('failedOnly');
+                    }}
+                    className={`min-h-[30px] px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors ${
+                      studySortMode === 'failedOnly'
+                        ? 'bg-[#f87171] text-[#04120c]'
+                        : 'bg-[#12261d] text-[#f87171] hover:bg-[#2a1418]'
+                    }`}
+                  >
+                    Failed Only ({failedWordsInDeckCount})
+                  </button>
+                </div>
               </div>
 
               {filteredDeck.length === 0 ? (
-                <p className="text-xs text-[#8ba89a] py-8 text-center">
-                  No words in the selected filter.
-                </p>
+                <div className="py-8 text-center space-y-3">
+                  <p className="text-xs text-[#8ba89a]">
+                    {studySortMode === 'failedOnly'
+                      ? 'No failed words recorded in this category yet! Complete a test or practice to track mistakes.'
+                      : pageFilter === 'personal'
+                      ? 'You have not added any personal struggling words yet.'
+                      : 'No words in the selected filter.'}
+                  </p>
+                  {studySortMode === 'failedOnly' ? (
+                    <button
+                      type="button"
+                      onClick={() => setStudySortMode('default')}
+                      className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold inline-flex items-center gap-1.5"
+                    >
+                      <span>Show All Words</span>
+                    </button>
+                  ) : (
+                    pageFilter === 'personal' && (
+                      <button
+                        type="button"
+                        onClick={onOpenPersonalWordsModal}
+                        className="min-h-[40px] px-4 py-2 rounded-xl bg-[#38bdf8] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-1.5"
+                      >
+                        <Plus className="w-4 h-4" />
+                        <span>Add Your First Struggling Word</span>
+                      </button>
+                    )
+                  )}
+                </div>
               ) : (
                 <div className="flex flex-col gap-2.5 max-h-[540px] overflow-y-auto overflow-x-hidden pr-1">
                   {filteredDeck.map((item, idx) => {
                     const rec = recordingsMap[item.id];
                     const itemBangla = rec?.banglaMeaning || item.bangla;
+                    const itemStats = getWordStats(item);
                     const isSelectedWord =
                       Boolean(currentWord) && currentWord.id === item.id;
                     const shouldBlurActiveSpelling =
@@ -1870,10 +2339,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         className={`w-full p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2 ${
                           isSelectedWord
                             ? 'bg-[#122b20] border-[#10b981] ring-1 ring-[#10b981]/30'
+                            : itemStats.attempts > 0 &&
+                              itemStats.accuracyPct < 50
+                            ? 'bg-[#170e11] hover:bg-[#221317] border-[#f87171]/35'
                             : 'bg-[#09140f] hover:bg-[#10231a] border-[#173024]'
                         }`}
                       >
-                        {/* Top Line: Word Number + Full English Word + Active Badge + Audio Buttons */}
+                        {/* Top Line: Word Number + Full English Word + Active/Accuracy Badges + Audio Buttons */}
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <div className="flex flex-wrap items-center gap-2 min-w-0">
                             <span className="text-xs font-mono tabular-nums text-[#6d8a7b] shrink-0">
@@ -1893,6 +2365,27 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                                 {shouldBlurActiveSpelling
                                   ? 'Active · Blurred'
                                   : 'Active'}
+                              </span>
+                            )}
+                            {itemStats.attempts > 0 ? (
+                              <span
+                                className={`px-2 py-0.5 rounded-md text-[10px] font-mono tabular-nums font-bold whitespace-nowrap shrink-0 border ${
+                                  itemStats.accuracyPct < 50
+                                    ? 'bg-[#2a1215] text-[#f87171] border-[#f87171]/40'
+                                    : itemStats.accuracyPct < 80
+                                    ? 'bg-[#29200e] text-[#fbbf24] border-[#fbbf24]/40'
+                                    : 'bg-[#0e291e] text-[#10b981] border-[#10b981]/40'
+                                }`}
+                              >
+                                {itemStats.accuracyPct}% ({itemStats.correct}/
+                                {itemStats.attempts})
+                                {itemStats.failed > 0
+                                  ? ` · ${itemStats.failed} failed`
+                                  : ''}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md bg-[#11221a] text-[#6d8a7b] text-[10px] font-medium whitespace-nowrap shrink-0">
+                                Untested
                               </span>
                             )}
                           </div>
@@ -1931,13 +2424,51 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           </div>
                         </div>
 
-                        {/* Bottom Line (Full Width): Bangla Meaning + Page & Category */}
+                        {/* Middle Line (Full Width): Bangla Meaning + Page & Category */}
                         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                           <span className="text-sm font-medium text-[#d2e5dc]">
                             {itemBangla}
                           </span>
                           <span className="text-[11px] text-[#7ea090] whitespace-nowrap">
                             Page {item.page} · {item.category}
+                          </span>
+                        </div>
+
+                        {/* Visual Accuracy Progress Bar */}
+                        <div className="w-full flex items-center gap-2 pt-0.5">
+                          <div className="flex-1 h-1.5 rounded-full bg-[#13281e] overflow-hidden">
+                            <div
+                              className={`h-full rounded-full transition-all duration-300 ${
+                                itemStats.attempts === 0
+                                  ? 'bg-transparent'
+                                  : itemStats.accuracyPct < 50
+                                  ? 'bg-[#f87171]'
+                                  : itemStats.accuracyPct < 80
+                                  ? 'bg-[#fbbf24]'
+                                  : 'bg-[#10b981]'
+                              }`}
+                              style={{
+                                width:
+                                  itemStats.attempts === 0
+                                    ? '0%'
+                                    : `${Math.max(6, itemStats.accuracyPct)}%`,
+                              }}
+                            />
+                          </div>
+                          <span
+                            className={`text-[10px] font-mono tabular-nums shrink-0 ${
+                              itemStats.attempts === 0
+                                ? 'text-[#597567]'
+                                : itemStats.accuracyPct < 50
+                                ? 'text-[#f87171] font-bold'
+                                : itemStats.accuracyPct < 80
+                                ? 'text-[#fbbf24] font-semibold'
+                                : 'text-[#10b981] font-semibold'
+                            }`}
+                          >
+                            {itemStats.attempts === 0
+                              ? '0/0'
+                              : `${itemStats.accuracyPct}%`}
                           </span>
                         </div>
                       </div>
