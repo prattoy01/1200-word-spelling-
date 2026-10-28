@@ -387,11 +387,23 @@ export async function playWordAudio(options: {
 
   const bundledUrl = bundledAudioFile || catalogEntry?.bundledAudioFile;
   if (bundledUrl) {
-    const playedBundled = await playUrlWithSharedAudio(
-      bundledUrl,
-      playbackRate
-    );
-    if (playedBundled) return;
+    const isFileProtocol =
+      typeof window !== 'undefined' && window.location?.protocol === 'file:';
+    if (!isFileProtocol) {
+      const playedBundled = await playUrlWithSharedAudio(
+        bundledUrl,
+        playbackRate
+      );
+      if (playedBundled) return;
+    }
+    if (bundledUrl.startsWith('/')) {
+      const remoteVercelAudioUrl = `https://1200-word-spelling.vercel.app${bundledUrl}`;
+      const playedRemote = await playUrlWithSharedAudio(
+        remoteVercelAudioUrl,
+        playbackRate
+      );
+      if (playedRemote) return;
+    }
   }
 
   // 3. Real Google Dictionary MP3 Fallback for Missing words
@@ -407,7 +419,22 @@ export async function playWordAudio(options: {
     if (await playUrlWithSharedAudio(usUrl, playbackRate)) return;
   }
 
-  // 4. Last-resort British English Web Speech API
+  // 4. Native Android APK TTS Bridge (if running inside our native Android APK)
+  const androidBridge = (
+    window as unknown as {
+      AndroidNative?: { speak?: (text: string, rate: number) => void };
+    }
+  ).AndroidNative;
+  if (androidBridge && typeof androidBridge.speak === 'function') {
+    try {
+      androidBridge.speak(word, playbackRate);
+      return;
+    } catch (err) {
+      console.warn('AndroidNative TTS bridge error:', err);
+    }
+  }
+
+  // 5. Last-resort British English Web Speech API
   if ('speechSynthesis' in window) {
     try {
       const utterance = new SpeechSynthesisUtterance(word);

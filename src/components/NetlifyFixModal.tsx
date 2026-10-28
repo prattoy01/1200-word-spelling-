@@ -12,10 +12,16 @@ import {
   ShieldCheck,
   ExternalLink,
   AlertCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import type { CloudRecording } from '../services/recordingsService';
 import { saveWordRecording } from '../services/recordingsService';
-import { PWAInstallButton } from './PWAInstallButton';
+import {
+  ANDROID_APK_PATH,
+  ANDROID_APK_FILENAME,
+  triggerAndroidApkDownload,
+} from './PWAInstallButton';
+import { usePWAInstall } from '../hooks/usePWAInstall';
 
 interface NetlifyFixModalProps {
   isOpen: boolean;
@@ -49,8 +55,10 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
   restoreProgressText,
 }) => {
   const [copiedLink, setCopiedLink] = useState(false);
+  const [apkDownloadStarted, setApkDownloadStarted] = useState(false);
   const [importStatus, setImportStatus] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { isInstallable, install } = usePWAInstall();
 
   if (!isOpen) return null;
 
@@ -67,12 +75,18 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
     setTimeout(() => setCopiedLink(false), 2200);
   };
 
+  const handleApkDownloadClick = () => {
+    triggerAndroidApkDownload();
+    setApkDownloadStarted(true);
+    setTimeout(() => setApkDownloadStarted(false), 4000);
+  };
+
   const handleNativeShare = async () => {
     if (navigator.share) {
       try {
         await navigator.share({
-          title: 'Listen & Write — IELTS Cloud Studio',
-          text: 'Practice IELTS Listening spelling and sync pronunciation recordings across Web & Mobile.',
+          title: 'Listen & Write — IELTS Cloud Studio (Android App & Web)',
+          text: 'Download the Listen & Write IELTS Android APK or practice online with real-time Cloud Sync.',
           url: activeUrl,
         });
       } catch {
@@ -171,10 +185,10 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">
-                Move to 100% Free Hosting (Vercel / Cloudflare Pages) &amp; Mobile Link
+                Download Official Android App (.APK) &amp; Mobile Link
               </h2>
               <p className="text-xs text-[#8ba89a]">
-                Avoid Netlify&apos;s 300-credit limit — <code className="font-mono text-[#10b981]">vercel.json</code> &amp; Cloudflare configs are now built in with 0 data loss!
+                Install the native Android APK (<code className="font-mono text-[#10b981]">{ANDROID_APK_FILENAME}</code>) with full offline audio &amp; live contest sync
               </p>
             </div>
           </div>
@@ -188,29 +202,99 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
         </div>
 
         <div className="p-6 space-y-6 max-h-[78vh] overflow-y-auto">
-          {/* Zero Data Loss Guarantee Banner */}
-          <div className="rounded-xl bg-[#0d261c] border border-[#10b981]/40 p-4 space-y-2">
-            <div className="flex items-center gap-2 text-xs font-bold text-[#10b981]">
-              <ShieldCheck className="w-4 h-4 shrink-0" />
-              <span>100% Safe Migration: Moving from Netlify to Vercel or Cloudflare Loses ZERO Data!</span>
+          {/* 1. OFFICIAL ANDROID APK DOWNLOAD HERO CARD */}
+          <div className="rounded-2xl bg-gradient-to-br from-[#0d291e] via-[#112e22] to-[#1a2814] border-2 border-[#10b981] p-5 space-y-4 shadow-xl">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="space-y-1.5">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#10b981]/20 border border-[#10b981]/50 text-[#10b981] text-[11px] font-extrabold uppercase tracking-wider">
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Native Signed Android Package (v2.4.0)</span>
+                </div>
+                <h3 className="text-xl font-extrabold text-white">
+                  Listen &amp; Write IELTS — Android APK
+                </h3>
+                <p className="text-xs text-[#b7cec2] leading-relaxed max-w-xl">
+                  Full Android application (<code className="font-mono text-[#a7f3d0]">app.listenwrite.ielts</code>) signed with Android v1/v2/v3 signatures for Android 5.0 through Android 15. Includes 3x auto-audio Strict Exam, Live Blind Contests, Personal Words, and Microphone Recording.
+                </p>
+              </div>
+
+              <div className="flex flex-col gap-2 shrink-0">
+                <a
+                  href={ANDROID_APK_PATH}
+                  download={ANDROID_APK_FILENAME}
+                  onClick={() => {
+                    setApkDownloadStarted(true);
+                    setTimeout(() => setApkDownloadStarted(false), 4000);
+                  }}
+                  className="min-h-[48px] px-5 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg transition-colors whitespace-nowrap"
+                >
+                  <Download className="w-4 h-4 stroke-[2.5]" />
+                  <span>Download Android APK</span>
+                </a>
+
+                {isInstallable && (
+                  <button
+                    type="button"
+                    onClick={install}
+                    className="min-h-[38px] px-4 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-bold text-[#fbbf24] flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Or Install Instant WebApp</span>
+                  </button>
+                )}
+              </div>
             </div>
-            <p className="text-xs text-[#d2e5dc] leading-relaxed">
-              All of your uploaded pronunciations, Admin Panel contributions, user accounts, and practice history live in <strong>Google Firebase Cloud</strong> (<code className="font-mono text-[#10b981]">ai-studio-12193dcd-ed1d-43e5-a21f-43c9ec769a10</code>), <strong>not</strong> on Netlify. We also added <code className="font-mono text-[#fbbf24]">vercel.json</code>, <code className="font-mono text-[#fbbf24]">_headers</code>, and 1-year offline audio caching so your 782+ MP3 files don&apos;t drain hosting bandwidth!
-            </p>
+
+            {apkDownloadStarted && (
+              <div className="rounded-xl bg-[#071610] border border-[#10b981]/50 px-4 py-2.5 text-xs text-[#a7f3d0] flex items-center gap-2">
+                <CheckCircle2 className="w-4 h-4 text-[#10b981] shrink-0" />
+                <span>
+                  Downloading <strong>{ANDROID_APK_FILENAME}</strong>! Open the downloaded file on your Android phone and tap <strong>Install</strong>.
+                </span>
+              </div>
+            )}
+
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-[#1e4433] text-xs text-[#c4d9ce]">
+              <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
+                <div className="font-bold text-[#10b981] mb-0.5">Step 1: Download</div>
+                <p className="text-[11px] text-[#8ba89a]">
+                  Tap <strong>Download Android APK</strong> above to save <code className="font-mono text-white">{ANDROID_APK_FILENAME}</code>.
+                </p>
+              </div>
+              <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
+                <div className="font-bold text-[#fbbf24] mb-0.5">Step 2: Open APK</div>
+                <p className="text-[11px] text-[#8ba89a]">
+                  Tap the downloaded <code className="font-mono text-white">.apk</code> notification or open it from your <strong>Downloads</strong> folder.
+                </p>
+              </div>
+              <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
+                <div className="font-bold text-white mb-0.5">Step 3: Install &amp; Launch</div>
+                <p className="text-[11px] text-[#8ba89a]">
+                  Tap <strong>Install</strong> (if Play Protect asks on first install, tap <strong>More details &rarr; Install anyway</strong>).
+                </p>
+              </div>
+            </div>
           </div>
 
-          {/* Step-by-Step: Move to Vercel or Cloudflare Pages */}
+          {/* 2. Share Link or Direct APK Download Link */}
           <div className="rounded-xl bg-[#13281f] border border-[#244a39] p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <div className="text-xs font-semibold text-[#10b981]">
-                  Current Active App URL
+                  Share App Link or Direct APK URL with Students
                 </div>
                 <h3 className="text-base font-bold text-white mt-0.5">
-                  Copy Active Link or Switch to Vercel / Cloudflare Pages
+                  Copy Active Link or Send to Mobile Phone
                 </h3>
               </div>
-              <PWAInstallButton />
+              <button
+                type="button"
+                onClick={handleApkDownloadClick}
+                className="px-3.5 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download .APK Again</span>
+              </button>
             </div>
 
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
@@ -248,47 +332,6 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
               </button>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1 text-xs text-[#b7cec2]">
-              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-2">
-                <div className="font-bold text-white flex items-center justify-between">
-                  <span>Option 1: Vercel (100% Free Hobby Plan)</span>
-                  <span className="px-2 py-0.5 rounded bg-[#10b981]/20 text-[#10b981] text-[10px] font-extrabold">
-                    RECOMMENDED
-                  </span>
-                </div>
-                <ol className="list-decimal list-inside space-y-1 text-[#8ba89a] leading-relaxed">
-                  <li>
-                    Sync/push this project to your <strong>GitHub</strong> repo (or download ZIP from top-right of AI Studio).
-                  </li>
-                  <li>
-                    Go to <strong>vercel.com/new</strong> &rarr; Sign in with GitHub &rarr; Click <strong>Import</strong> on your repo.
-                  </li>
-                  <li>
-                    Click <strong>Deploy</strong> (<code className="font-mono text-[#d2e5dc]">vercel.json</code> automatically sets Vite + <code className="font-mono text-[#d2e5dc]">dist</code> + audio caching).
-                  </li>
-                </ol>
-              </div>
-              <div className="rounded-lg bg-[#0b1812] border border-[#1d362a] p-3.5 space-y-2">
-                <div className="font-bold text-white flex items-center justify-between">
-                  <span>Option 2: Cloudflare Pages</span>
-                  <span className="px-2 py-0.5 rounded bg-[#fbbf24]/20 text-[#fbbf24] text-[10px] font-extrabold">
-                    UNLIMITED BANDWIDTH
-                  </span>
-                </div>
-                <ol className="list-decimal list-inside space-y-1 text-[#8ba89a] leading-relaxed">
-                  <li>
-                    Go to <strong>dash.cloudflare.com</strong> &rarr; <strong>Workers &amp; Pages</strong> &rarr; <strong>Create</strong> &rarr; <strong>Pages</strong>.
-                  </li>
-                  <li>
-                    Connect your GitHub repo or upload the <code className="font-mono text-[#d2e5dc]">dist</code> folder directly.
-                  </li>
-                  <li>
-                    Build command: <code className="font-mono text-[#d2e5dc]">npm run build</code>, Output dir: <code className="font-mono text-[#d2e5dc]">dist</code>. Completely free with <strong>unlimited</strong> bandwidth!
-                  </li>
-                </ol>
-              </div>
-            </div>
-
             <div className="rounded-lg bg-[#1c2410] border border-[#fbbf24]/30 p-3.5 text-xs text-[#e2e8f0] flex items-start gap-2.5">
               <AlertCircle className="w-4 h-4 text-[#fbbf24] shrink-0 mt-0.5" />
               <div className="space-y-1">
@@ -296,14 +339,13 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                   Enable Google Popup Sign-In on Vercel (10-Second Step):
                 </strong>
                 <p className="leading-relaxed">
-                  Right now your Firebase project (<code className="font-mono text-white">protean-sandbox-t01dl</code>) has <code className="font-mono text-[#a7f3d0]">1200spelling.netlify.app</code> in its Authorized Domains, so you just need to add your new Vercel domain too:
-                  Go to <strong>Firebase Console &rarr; Project &ldquo;protean-sandbox-t01dl&rdquo; &rarr; Authentication &rarr; Settings &rarr; Authorized domains &rarr; Add domain</strong> and paste <code className="font-mono text-[#fbbf24]">1200-word-spelling.vercel.app</code>. (Email &amp; Password sign-in above already works immediately without waiting!)
+                  In <strong>Firebase Console &rarr; Project &ldquo;protean-sandbox-t01dl&rdquo; &rarr; Authentication &rarr; Settings &rarr; Authorized domains &rarr; Add domain</strong>, add <code className="font-mono text-[#fbbf24]">1200-word-spelling.vercel.app</code>. (Direct Email &amp; Student Name-Only Unique #ID login already work everywhere immediately!)
                 </p>
               </div>
             </div>
           </div>
 
-          {/* 2. Live Cloud Sync Status & 1-Click Restore of Screenshot 14 Uploads */}
+          {/* 3. Live Cloud Sync Status & 1-Click Restore of Screenshot 14 Uploads */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             <div className="rounded-xl bg-[#0b1812] border border-[#1f3b2e] p-4 flex flex-col justify-between">
               <div>
@@ -320,11 +362,11 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                 </div>
                 {localUnsyncedCount > 0 && (
                   <p className="mt-1 text-xs text-[#fbbf24]">
-                    {localUnsyncedCount} local recording(s) waiting for Google Sign-In to sync to Cloud.
+                    {localUnsyncedCount} local recording(s) waiting for Sign-In to sync to Cloud.
                   </p>
                 )}
                 <p className="mt-2 text-xs text-[#8ba89a]">
-                  All {cloudCount} cloud recordings play automatically on Web, Mobile App, and Incognito without disappearing.
+                  All {cloudCount} cloud recordings play automatically on Web, Android APK, and Incognito without disappearing.
                 </p>
               </div>
 
@@ -334,12 +376,12 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                   className="mt-4 w-full py-2.5 px-4 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-semibold text-sm transition-colors flex items-center justify-center gap-2"
                 >
                   <CloudCheck className="w-4 h-4" />
-                  <span>Sign in with Google to Sync Uploads</span>
+                  <span>Sign in to Sync Uploads</span>
                 </button>
               ) : (
                 <div className="mt-4 py-2 px-3 rounded-lg bg-[#10b981]/10 border border-[#10b981]/30 text-xs text-[#10b981] flex items-center gap-2">
                   <CloudCheck className="w-4 h-4 shrink-0" />
-                  <span>Connected to Firebase Cloud — Web &harr; Mobile sync active</span>
+                  <span>Connected to Firebase Cloud — Web &harr; Android APK sync active</span>
                 </div>
               )}
             </div>
@@ -354,7 +396,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                   Sync Your 14 Outdoor &amp; Sports Words
                 </h3>
                 <p className="mt-1.5 text-xs text-[#8ba89a] leading-relaxed">
-                  Automatically generate and sync the 14 uploaded words shown in your second screenshot (<strong className="text-[#d2e5dc]">orienteering, caving, scuba-diving, snorkeling</strong>, etc.) across Web and Mobile.
+                  Automatically generate and sync the 14 uploaded words (<strong className="text-[#d2e5dc]">orienteering, caving, scuba-diving, snorkeling</strong>, etc.) across Web and Android APK.
                 </p>
               </div>
 
@@ -373,7 +415,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
             </div>
           </div>
 
-          {/* 3. Export / Import Bundle */}
+          {/* 4. Export / Import Bundle */}
           <div className="rounded-xl bg-[#0b1812] border border-[#1f3b2e] p-4 space-y-3">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-white">

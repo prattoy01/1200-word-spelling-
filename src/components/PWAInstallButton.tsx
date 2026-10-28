@@ -2,6 +2,18 @@ import React, { useState } from 'react';
 import { Smartphone, Download, X, Share } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
+export const ANDROID_APK_PATH = '/ListenWrite-IELTS.apk';
+export const ANDROID_APK_FILENAME = 'ListenWrite-IELTS.apk';
+
+export function triggerAndroidApkDownload(): void {
+  const link = document.createElement('a');
+  link.href = ANDROID_APK_PATH;
+  link.download = ANDROID_APK_FILENAME;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+}
+
 interface PWAInstallButtonProps {
   onOpenMobileLinkModal?: () => void;
 }
@@ -9,37 +21,37 @@ interface PWAInstallButtonProps {
 export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   onOpenMobileLinkModal,
 }) => {
-  const { isInstallable, isInstalled, isIOS, install } = usePWAInstall();
+  const { isInstalled, isIOS } = usePWAInstall();
   const [showIOSGuide, setShowIOSGuide] = useState(false);
 
-  if (isInstalled) {
-    return null;
-  }
+  const handleDownloadApkAndOpenModal = () => {
+    triggerAndroidApkDownload();
+    if (onOpenMobileLinkModal) {
+      onOpenMobileLinkModal();
+    }
+  };
 
-  if (isInstallable) {
-    return (
-      <button
-        type="button"
-        onClick={install}
-        className="px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-semibold text-[#10b981] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-      >
-        <Download className="w-3.5 h-3.5" />
-        <span>Install Mobile / Desktop App</span>
-      </button>
-    );
-  }
-
-  if (isIOS) {
+  if (isIOS && !isInstalled) {
     return (
       <>
-        <button
-          type="button"
-          onClick={() => setShowIOSGuide(true)}
-          className="px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-semibold text-[#10b981] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
-        >
-          <Smartphone className="w-3.5 h-3.5" />
-          <span>Install on iPhone / iPad</span>
-        </button>
+        <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleDownloadApkAndOpenModal}
+            className="px-3.5 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-xs font-extrabold text-[#04120c] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-sm"
+          >
+            <Download className="w-3.5 h-3.5" />
+            <span>Get Mobile App &amp; Link (.APK)</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowIOSGuide(true)}
+            className="px-3 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+          >
+            <Smartphone className="w-3.5 h-3.5" />
+            <span>iOS</span>
+          </button>
+        </div>
 
         {showIOSGuide && (
           <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
@@ -85,11 +97,11 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   return (
     <button
       type="button"
-      onClick={onOpenMobileLinkModal}
-      className="px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-semibold text-[#10b981] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
+      onClick={handleDownloadApkAndOpenModal}
+      className="px-3.5 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-xs font-extrabold text-[#04120c] flex items-center gap-2 transition-colors whitespace-nowrap shrink-0 shadow-sm"
     >
-      <Smartphone className="w-3.5 h-3.5" />
-      <span>Get Mobile App &amp; Link</span>
+      <Download className="w-3.5 h-3.5" />
+      <span>Get Mobile App &amp; Link (.APK)</span>
     </button>
   );
 };

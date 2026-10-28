@@ -74,7 +74,10 @@ import {
   subscribeToContests,
   subscribeToContestSubmissions,
 } from './services/contestService';
-import { PWAInstallButton } from './components/PWAInstallButton';
+import {
+  PWAInstallButton,
+  triggerAndroidApkDownload,
+} from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
 type FilterTab = 'missing' | 'uploads' | 'all';
@@ -761,10 +764,14 @@ export default function App() {
           )}
           <button
             type="button"
-            onClick={() => setIsSyncModalOpen(true)}
-            className="hover:text-white transition-colors whitespace-nowrap shrink-0"
+            onClick={() => {
+              triggerAndroidApkDownload();
+              setIsSyncModalOpen(true);
+            }}
+            className="hover:text-white text-[#10b981] font-semibold transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
           >
-            Mobile App &amp; Link
+            <Smartphone className="w-3.5 h-3.5 text-[#10b981]" />
+            <span>Get Mobile App &amp; Link (.APK)</span>
           </button>
         </nav>
 

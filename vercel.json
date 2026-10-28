@@ -5,6 +5,23 @@
   "outputDirectory": "dist",
   "headers": [
     {
+      "source": "/ListenWrite-IELTS.apk",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/vnd.android.package-archive"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=\"ListenWrite-IELTS.apk\""
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=3600"
+        }
+      ]
+    },
+    {
       "source": "/audio-(.*)",
       "headers": [
         {
@@ -34,7 +51,7 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!audio-|dict-fallback/|assets/|pwa-|apple-touch-icon|icon\\.svg|manifest\\.webmanifest|sw\\.js|workbox-).*)",
+      "source": "/((?!ListenWrite-IELTS\\.apk|.*\\.apk|audio-|dict-fallback/|assets/|pwa-|apple-touch-icon|icon\\.svg|manifest\\.webmanifest|sw\\.js|workbox-).*)",
       "destination": "/index.html"
     }
   ]
