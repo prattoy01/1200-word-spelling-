@@ -352,6 +352,195 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "Contest": {
+      "title": "Contest",
+      "description": "A scheduled multi-user strict spelling contest where words are deterministically locked until the exact start time so even the setter cannot see them beforehand.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique contest identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "title": {
+          "type": "string",
+          "description": "Contest title.",
+          "minLength": 1,
+          "maxLength": 140
+        },
+        "creatorId": {
+          "type": "string",
+          "description": "UID of the contest setter.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "creatorName": {
+          "type": "string",
+          "description": "Display name of the contest setter.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "pageFilter": {
+          "type": "string",
+          "description": "Page pool for the contest words.",
+          "enum": ["page1", "page2", "all"]
+        },
+        "categories": {
+          "type": "array",
+          "description": "Selected category names or empty list for all categories."
+        },
+        "wordCount": {
+          "type": "number",
+          "description": "Number of words in the contest exam."
+        },
+        "baseSeconds": {
+          "type": "number",
+          "description": "Minimum writing seconds per word in strict exam mode."
+        },
+        "showBangla": {
+          "type": "boolean",
+          "description": "Whether Bangla meaning clue is displayed during the contest."
+        },
+        "startTimeMs": {
+          "type": "number",
+          "description": "Scheduled start timestamp in milliseconds (UTC)."
+        },
+        "durationMinutes": {
+          "type": "number",
+          "description": "Window duration in minutes during which the contest stays open after startTimeMs."
+        },
+        "randomSeed": {
+          "type": "string",
+          "description": "Random cryptographic seed used to deterministically generate the hidden word deck at start time.",
+          "minLength": 8,
+          "maxLength": 128
+        },
+        "status": {
+          "type": "string",
+          "description": "Contest publication status.",
+          "enum": ["active", "cancelled"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the contest was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the contest was last updated."
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "creatorId",
+        "creatorName",
+        "pageFilter",
+        "categories",
+        "wordCount",
+        "baseSeconds",
+        "showBangla",
+        "startTimeMs",
+        "durationMinutes",
+        "randomSeed",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ContestSubmission": {
+      "title": "ContestSubmission",
+      "description": "A participant's registration and strict exam submission for a scheduled contest.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Deterministic submission ID (${contestId}_${userId}).",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "contestId": {
+          "type": "string",
+          "description": "ID of the contest.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userId": {
+          "type": "string",
+          "description": "UID of the logged-in participant.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "userName": {
+          "type": "string",
+          "description": "Display name of the participant.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "userEmail": {
+          "type": "string",
+          "description": "Email address of the participant.",
+          "minLength": 0,
+          "maxLength": 160
+        },
+        "status": {
+          "type": "string",
+          "description": "Participation status.",
+          "enum": ["registered", "in_progress", "completed"]
+        },
+        "totalWords": {
+          "type": "number",
+          "description": "Total words in the contest."
+        },
+        "correctCount": {
+          "type": "number",
+          "description": "Number of words spelled accurately."
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Accuracy percentage (0 to 100)."
+        },
+        "timeTakenMs": {
+          "type": "number",
+          "description": "Total elapsed time in milliseconds to complete the strict contest."
+        },
+        "results": {
+          "type": "array",
+          "description": "Per-word answer breakdown."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the participant registered or started."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the submission was updated or completed."
+        }
+      },
+      "required": [
+        "id",
+        "contestId",
+        "userId",
+        "userName",
+        "userEmail",
+        "status",
+        "totalWords",
+        "correctCount",
+        "accuracy",
+        "timeTakenMs",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -384,6 +573,18 @@
         "$ref": "#/entities/PersonalWord"
       },
       "description": "Stores user-private struggling spelling words scoped strictly by ownerId."
+    },
+    "/contests/{contestId}": {
+      "schema": {
+        "$ref": "#/entities/Contest"
+      },
+      "description": "Stores scheduled multi-user strict spelling contests."
+    },
+    "/contestSubmissions/{submissionId}": {
+      "schema": {
+        "$ref": "#/entities/ContestSubmission"
+      },
+      "description": "Stores participant registrations and strict exam results for contests."
     }
   }
 }

@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Send,
   Bookmark,
+  Trophy,
 } from 'lucide-react';
 import {
   auth,
@@ -66,11 +67,18 @@ import { PracticeView } from './components/PracticeView';
 import { AdminPanelView } from './components/AdminPanelView';
 import { SignInModal } from './components/SignInModal';
 import { PersonalWordsModal } from './components/PersonalWordsModal';
+import { ContestPlatformView } from './components/ContestPlatformView';
+import {
+  type ContestRecord,
+  type ContestSubmissionRecord,
+  subscribeToContests,
+  subscribeToContestSubmissions,
+} from './services/contestService';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { OfflineIndicator } from './components/OfflineIndicator';
 
 type FilterTab = 'missing' | 'uploads' | 'all';
-type ActiveScreen = 'recordings' | 'practice' | 'admin';
+type ActiveScreen = 'recordings' | 'practice' | 'admin' | 'contests';
 type RecordingsPageFilter = 'all' | 'page1' | 'page2';
 
 export default function App() {
@@ -94,6 +102,11 @@ export default function App() {
   const [personalWords, setPersonalWords] = useState<PersonalWordRecord[]>([]);
   const [isPersonalWordsModalOpen, setIsPersonalWordsModalOpen] = useState(false);
   const [focusPersonalTrigger, setFocusPersonalTrigger] = useState(0);
+  // Multi-user Scheduled Blind Contests & Submissions
+  const [contests, setContests] = useState<ContestRecord[]>([]);
+  const [contestSubmissions, setContestSubmissions] = useState<
+    ContestSubmissionRecord[]
+  >([]);
 
   // Contribution options when uploading/recording personal audio
   const [contributeOnSave, setContributeOnSave] = useState<boolean>(true);
@@ -219,10 +232,24 @@ export default function App() {
       }
     });
 
+    const unsubContests = subscribeToContests((list) => {
+      if (isMounted) {
+        setContests(list);
+      }
+    });
+
+    const unsubContestSubs = subscribeToContestSubmissions((list) => {
+      if (isMounted) {
+        setContestSubmissions(list);
+      }
+    });
+
     return () => {
       isMounted = false;
       unsubRecordings();
       unsubContributions();
+      unsubContests();
+      unsubContestSubs();
     };
   }, []);
 
@@ -684,6 +711,18 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setActiveScreen('contests')}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+              activeScreen === 'contests'
+                ? 'text-[#fbbf24] underline underline-offset-8 decoration-2 font-bold'
+                : 'text-[#fbbf24]'
+            }`}
+          >
+            <Trophy className="w-3.5 h-3.5 text-[#fbbf24]" />
+            <span>Live Contests ({contests.length})</span>
+          </button>
+          <button
+            type="button"
             onClick={() => setIsPersonalWordsModalOpen(true)}
             className="hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-[#7dd3fc]"
           >
@@ -787,6 +826,18 @@ export default function App() {
           onOpenPersonalWordsModal={() => setIsPersonalWordsModalOpen(true)}
           onTogglePersonalStrugglingWord={handleTogglePersonalStrugglingWord}
           focusPersonalTrigger={focusPersonalTrigger}
+          onOpenContests={() => setActiveScreen('contests')}
+          liveContestsCount={contests.length}
+        />
+      ) : activeScreen === 'contests' ? (
+        <ContestPlatformView
+          user={user}
+          isAdmin={isAdmin}
+          onRequestSignIn={handleSignIn}
+          recordingsMap={recordingsMap}
+          contests={contests}
+          submissions={contestSubmissions}
+          onBackToPractice={() => setActiveScreen('practice')}
         />
       ) : activeScreen === 'admin' ? (
         <AdminPanelView
@@ -1329,7 +1380,7 @@ export default function App() {
       <nav
         aria-label="Mobile navigation"
         className={`md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08120e]/95 backdrop-blur-md border-t border-[#183327] grid ${
-          isAdmin ? 'grid-cols-4' : 'grid-cols-3'
+          isAdmin ? 'grid-cols-5' : 'grid-cols-4'
         } items-center h-16 px-2`}
       >
         <button
@@ -1370,6 +1421,21 @@ export default function App() {
 
         <button
           type="button"
+          onClick={() => setActiveScreen('contests')}
+          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            activeScreen === 'contests'
+              ? 'text-[#fbbf24] font-bold'
+              : 'text-[#8ba89a]'
+          }`}
+        >
+          <Trophy className="w-5 h-5" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            Contests ({contests.length})
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveScreen('recordings')}
           className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
             activeScreen === 'recordings'
@@ -1379,7 +1445,7 @@ export default function App() {
         >
           <ListMusic className="w-5 h-5" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            Recordings ({counts.uploads})
+            Recordings
           </span>
         </button>
 

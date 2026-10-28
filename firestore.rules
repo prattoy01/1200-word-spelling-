@@ -363,5 +363,161 @@ service cloud.firestore {
       allow delete: if isValidId(personalWordId)
         && existing().ownerId.size() >= 1;
     }
+
+    // Validation Blueprint for Contest
+    function isValidContest(data) {
+      return data.keys().hasAll([
+          'id',
+          'title',
+          'creatorId',
+          'creatorName',
+          'pageFilter',
+          'categories',
+          'wordCount',
+          'baseSeconds',
+          'showBangla',
+          'startTimeMs',
+          'durationMinutes',
+          'randomSeed',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'title',
+          'creatorId',
+          'creatorName',
+          'pageFilter',
+          'categories',
+          'wordCount',
+          'baseSeconds',
+          'showBangla',
+          'startTimeMs',
+          'durationMinutes',
+          'randomSeed',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 140
+        && data.creatorId is string && data.creatorId.size() >= 1 && data.creatorId.size() <= 128 && data.creatorId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 120
+        && data.pageFilter is string && data.pageFilter.size() <= 20 && (data.pageFilter == 'page1' || data.pageFilter == 'page2' || data.pageFilter == 'all')
+        && data.categories is list && data.categories.size() <= 50 && (data.categories.size() == 0 || (data.categories[0] is string && data.categories[0].size() <= 100))
+        && data.wordCount is number && data.wordCount >= 1 && data.wordCount <= 200
+        && data.baseSeconds is number && data.baseSeconds >= 5 && data.baseSeconds <= 60
+        && data.showBangla is bool
+        && data.startTimeMs is number && data.startTimeMs >= 1700000000000 && data.startTimeMs <= 4102444800000
+        && data.durationMinutes is number && data.durationMinutes >= 5 && data.durationMinutes <= 1440
+        && data.randomSeed is string && data.randomSeed.size() >= 8 && data.randomSeed.size() <= 128
+        && data.status is string && data.status.size() <= 20 && (data.status == 'active' || data.status == 'cancelled')
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /contests/{contestId}
+    match /contests/{contestId} {
+      allow get: if isValidId(contestId) && (
+        resource == null ||
+        existing().status in ['active', 'cancelled']
+      );
+
+      allow list: if existing().status in ['active', 'cancelled'];
+
+      allow create: if isValidId(contestId)
+        && isValidContest(incoming())
+        && incoming().id == contestId
+        && incoming().status == 'active'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(contestId)
+        && isValidContest(incoming())
+        && incoming().id == existing().id
+        && incoming().creatorId == existing().creatorId
+        && incoming().randomSeed == existing().randomSeed
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+
+      allow delete: if isValidId(contestId)
+        && existing().status in ['active', 'cancelled'];
+    }
+
+    // Validation Blueprint for ContestSubmission
+    function isValidContestSubmission(data) {
+      return data.keys().hasAll([
+          'id',
+          'contestId',
+          'userId',
+          'userName',
+          'userEmail',
+          'status',
+          'totalWords',
+          'correctCount',
+          'accuracy',
+          'timeTakenMs',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'id',
+          'contestId',
+          'userId',
+          'userName',
+          'userEmail',
+          'status',
+          'totalWords',
+          'correctCount',
+          'accuracy',
+          'timeTakenMs',
+          'results',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.id is string && data.id.size() >= 1 && data.id.size() <= 128 && data.id.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.contestId is string && data.contestId.size() >= 1 && data.contestId.size() <= 128 && data.contestId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userId is string && data.userId.size() >= 1 && data.userId.size() <= 128 && data.userId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.userName is string && data.userName.size() >= 1 && data.userName.size() <= 120
+        && data.userEmail is string && data.userEmail.size() >= 0 && data.userEmail.size() <= 160
+        && data.status is string && data.status.size() <= 20 && (data.status == 'registered' || data.status == 'in_progress' || data.status == 'completed')
+        && data.totalWords is number && data.totalWords >= 1 && data.totalWords <= 200
+        && data.correctCount is number && data.correctCount >= 0 && data.correctCount <= data.totalWords
+        && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100
+        && data.timeTakenMs is number && data.timeTakenMs >= 0 && data.timeTakenMs <= 7200000
+        && (!('results' in data) || (data.results is list && data.results.size() <= 200 && (data.results.size() == 0 || data.results[0] is map)))
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /contestSubmissions/{submissionId}
+    match /contestSubmissions/{submissionId} {
+      allow get: if isValidId(submissionId) && (
+        resource == null ||
+        existing().status in ['registered', 'in_progress', 'completed']
+      );
+
+      allow list: if existing().status in ['registered', 'in_progress', 'completed'];
+
+      allow create: if isValidId(submissionId)
+        && isValidContestSubmission(incoming())
+        && incoming().id == submissionId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(submissionId)
+        && isValidContestSubmission(incoming())
+        && existing().status != 'completed'
+        && incoming().id == existing().id
+        && incoming().contestId == existing().contestId
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time;
+
+      allow delete: if isValidId(submissionId)
+        && existing().status in ['registered', 'in_progress', 'completed'];
+    }
   }
 }

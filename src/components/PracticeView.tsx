@@ -48,6 +48,8 @@ interface PracticeViewProps {
   onOpenPersonalWordsModal: () => void;
   onTogglePersonalStrugglingWord: (wordItem: WordItem) => Promise<void>;
   focusPersonalTrigger?: number;
+  onOpenContests?: () => void;
+  liveContestsCount?: number;
 }
 
 type PageFilter = 'page1' | 'page2' | 'all' | 'personal';
@@ -189,6 +191,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   onOpenPersonalWordsModal,
   onTogglePersonalStrugglingWord,
   focusPersonalTrigger,
+  onOpenContests,
+  liveContestsCount = 0,
 }) => {
   // Shared Page 1 / Page 2 & Multi-Category Selection (empty array = All Categories)
   const [pageFilter, setPageFilter] = useState<PageFilter>('page1');
@@ -896,6 +900,19 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onOpenContests && (
+            <button
+              type="button"
+              onClick={onOpenContests}
+              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 border border-[#fbbf24]/50 text-[#fbbf24] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            >
+              <Trophy className="w-4 h-4 text-[#fbbf24]" />
+              <span>
+                Live Contests
+                {liveContestsCount > 0 ? ` (${liveContestsCount})` : ''}
+              </span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onOpenPersonalWordsModal}
