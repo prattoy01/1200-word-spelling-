@@ -7,7 +7,8 @@
  *   so recordings made on PC Web play on iPhone/Android and vice versa.
  */
 
-import { WORDS_CATALOG, toWordId } from '../data/words';
+import { WORDS_CATALOG, toWordId, type WordItem } from '../data/words';
+import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
 
 export interface ProcessedAudio {
   audioDataUrl: string;
@@ -284,6 +285,22 @@ export async function loadRealAudioFileAsProcessed(
   };
 }
 
+export const OFFLINE_ORIGINAL_AUDIO_CACHE_NAME = 'lw-offline-original-audio-v1';
+
+/**
+ * Register the dedicated offline audio Service Worker so `<audio>` tags can play
+ * cached original spelling recordings even when the device is 100% offline.
+ */
+if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker
+      .register('/offline-audio-sw.js', { scope: '/' })
+      .catch(() => {
+        // Ignore if service worker registration is restricted in a sandboxed preview
+      });
+  });
+}
+
 /**
  * Fast lookup index for words in WORDS_CATALOG by lowercase word and by slug id.
  */
@@ -294,6 +311,51 @@ const wordLookupMap = new Map<
 for (const item of WORDS_CATALOG) {
   wordLookupMap.set(item.word.toLowerCase().trim(), item);
   wordLookupMap.set(item.id.toLowerCase().trim(), item);
+}
+
+/**
+ * Embedded real human pronunciation MP3s from SCREENSHOT_14_REAL_AUDIO (always available offline).
+ */
+const embeddedOriginalAudioMap = new Map<string, string>();
+for (const entry of SCREENSHOT_14_REAL_AUDIO) {
+  const wid = toWordId(entry.word);
+  embeddedOriginalAudioMap.set(wid, entry.audioDataUrl);
+  embeddedOriginalAudioMap.set(entry.word.toLowerCase().trim(), entry.audioDataUrl);
+}
+
+/**
+ * Resolves the primary original audio URLs for any word in the catalog.
+ */
+export function getCandidateOriginalAudioUrls(
+  word: string,
+  bundledAudioFile?: string | null
+): string[] {
+  const urls: string[] = [];
+  const catalogEntry =
+    wordLookupMap.get(word.toLowerCase().trim()) ||
+    wordLookupMap.get(toWordId(word));
+  const primaryBundled = bundledAudioFile || catalogEntry?.bundledAudioFile;
+
+  if (primaryBundled) {
+    urls.push(primaryBundled);
+    if (primaryBundled.startsWith('/')) {
+      urls.push(`https://1200-word-spelling.vercel.app${primaryBundled}`);
+    }
+  }
+
+  const dictToken = word
+    .toLowerCase()
+    .replace(/\s*\/\s*.*/, '')
+    .trim()
+    .replace(/\s+/g, '_');
+  if (/^[a-z_]+$/.test(dictToken)) {
+    const gbUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_gb_1.mp3`;
+    const usUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_us_1.mp3`;
+    if (!urls.includes(gbUrl)) urls.push(gbUrl);
+    if (!urls.includes(usUrl)) urls.push(usUrl);
+  }
+
+  return urls;
 }
 
 /**
@@ -308,6 +370,36 @@ function getSharedAudioElement(): HTMLAudioElement {
     sharedAudioElement.preload = 'auto';
   }
   return sharedAudioElement;
+}
+
+async function playBlobOrDataUrlWithSharedAudio(
+  audioDataUrlOrBlob: string | Blob,
+  playbackRate: number
+): Promise<boolean> {
+  try {
+    const audioEl = getSharedAudioElement();
+    audioEl.pause();
+    if (currentBlobUrl) {
+      URL.revokeObjectURL(currentBlobUrl);
+      currentBlobUrl = null;
+    }
+    const blob =
+      typeof audioDataUrlOrBlob === 'string'
+        ? dataUrlToBlob(audioDataUrlOrBlob)
+        : audioDataUrlOrBlob;
+    currentBlobUrl = URL.createObjectURL(blob);
+    audioEl.src = currentBlobUrl;
+    audioEl.playbackRate = playbackRate;
+    audioEl.currentTime = 0;
+    await audioEl.play();
+    return true;
+  } catch (err) {
+    if (typeof audioDataUrlOrBlob === 'string') {
+      return playUrlWithSharedAudio(audioDataUrlOrBlob, playbackRate);
+    }
+    console.warn('Blob audio playback failed:', err);
+    return false;
+  }
 }
 
 async function playUrlWithSharedAudio(
@@ -329,10 +421,289 @@ async function playUrlWithSharedAudio(
 }
 
 /**
- * Plays pronunciation for a word across Desktop and Mobile (Android/iOS):
+ * Local IndexedDB cache so both custom recordings AND original spelling recordings
+ * work 100% offline and load instantaneously from the local system.
+ */
+const DB_NAME = 'listen_write_cloud_cache_v1';
+const DB_VERSION = 2;
+const STORE_NAME = 'recordings';
+const ORIGINAL_AUDIO_STORE = 'original_audio_v1';
+
+export interface LocalOriginalAudioItem {
+  wordId: string;
+  word: string;
+  audioDataUrl?: string;
+  sourceUrl: string;
+  savedAtMs: number;
+}
+
+// In-memory index of wordIds whose original spelling audio is confirmed saved on the local system
+const locallySavedOriginalWordIds = new Set<string>(
+  Array.from(embeddedOriginalAudioMap.keys())
+);
+let localOriginalIndexLoaded = false;
+
+function openLocalCacheDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(DB_NAME, DB_VERSION);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        db.createObjectStore(STORE_NAME, { keyPath: 'wordId' });
+      }
+      if (!db.objectStoreNames.contains(ORIGINAL_AUDIO_STORE)) {
+        db.createObjectStore(ORIGINAL_AUDIO_STORE, { keyPath: 'wordId' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getLocalOriginalAudioItem(
+  wordId: string
+): Promise<LocalOriginalAudioItem | null> {
+  try {
+    const db = await openLocalCacheDb();
+    return await new Promise((resolve) => {
+      const tx = db.transaction(ORIGINAL_AUDIO_STORE, 'readonly');
+      const req = tx.objectStore(ORIGINAL_AUDIO_STORE).get(wordId);
+      req.onsuccess = () =>
+        resolve((req.result as LocalOriginalAudioItem) || null);
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}
+
+async function putLocalOriginalAudioItem(
+  item: LocalOriginalAudioItem
+): Promise<void> {
+  try {
+    locallySavedOriginalWordIds.add(item.wordId);
+    const db = await openLocalCacheDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(ORIGINAL_AUDIO_STORE, 'readwrite');
+      tx.objectStore(ORIGINAL_AUDIO_STORE).put(item);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Ignore storage quota warning
+  }
+}
+
+/**
+ * Loads the set of wordIds saved in the local system's `original_audio_v1` IndexedDB store.
+ */
+export async function refreshOfflineOriginalAudioIndex(): Promise<Set<string>> {
+  try {
+    const db = await openLocalCacheDb();
+    await new Promise<void>((resolve) => {
+      const tx = db.transaction(ORIGINAL_AUDIO_STORE, 'readonly');
+      const req = tx.objectStore(ORIGINAL_AUDIO_STORE).getAllKeys();
+      req.onsuccess = () => {
+        const keys = (req.result || []) as string[];
+        for (const k of keys) {
+          locallySavedOriginalWordIds.add(String(k));
+        }
+        localOriginalIndexLoaded = true;
+        resolve();
+      };
+      req.onerror = () => resolve();
+    });
+  } catch {
+    // Ignore
+  }
+  return locallySavedOriginalWordIds;
+}
+
+export function isWordOriginalAudioSavedLocally(wordOrId: string): boolean {
+  const wid = toWordId(wordOrId);
+  return (
+    locallySavedOriginalWordIds.has(wid) ||
+    locallySavedOriginalWordIds.has(wordOrId.toLowerCase().trim()) ||
+    embeddedOriginalAudioMap.has(wid)
+  );
+}
+
+export async function getLocalOfflineAudioCount(): Promise<number> {
+  if (!localOriginalIndexLoaded) {
+    await refreshOfflineOriginalAudioIndex();
+  }
+  const catalogWordIds = new Set(WORDS_CATALOG.map((w) => w.id));
+  let count = 0;
+  for (const wid of catalogWordIds) {
+    if (
+      locallySavedOriginalWordIds.has(wid) ||
+      embeddedOriginalAudioMap.has(wid)
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
+
+/**
+ * Downloads and saves a word's original spelling recording to the local system:
+ * 1. If CORS fetch succeeds (e.g. Wikimedia OGG/MP3 or same-origin audio), converts to base64 DataURL and saves directly in IndexedDB (`original_audio_v1`) + CacheStorage.
+ * 2. If cross-origin opaque response (e.g. `ssl.gstatic.com`), caches the binary audio response in `CacheStorage` (`lw-offline-original-audio-v1`) AND records the cached URL in IndexedDB (`original_audio_v1`) so the Service Worker & browser cache serve it offline.
+ */
+export async function saveOriginalWordAudioLocally(
+  word: string,
+  bundledAudioFile?: string | null
+): Promise<boolean> {
+  const wordId = toWordId(word);
+  if (embeddedOriginalAudioMap.has(wordId)) {
+    locallySavedOriginalWordIds.add(wordId);
+    return true;
+  }
+
+  const existingItem = await getLocalOriginalAudioItem(wordId);
+  if (existingItem?.audioDataUrl) {
+    locallySavedOriginalWordIds.add(wordId);
+    return true;
+  }
+
+  const candidateUrls = getCandidateOriginalAudioUrls(word, bundledAudioFile);
+  if (candidateUrls.length === 0) return false;
+
+  for (const url of candidateUrls) {
+    if (!url) continue;
+
+    // 1. Try CORS fetch first so we can store full base64 audioDataUrl directly inside IndexedDB
+    try {
+      const corsResp = await fetch(url, { mode: 'cors', credentials: 'omit' });
+      if (corsResp.ok) {
+        const blob = await corsResp.blob();
+        if (blob.size > 200) {
+          const dataUrl = await blobToDataUrl(blob);
+          await putLocalOriginalAudioItem({
+            wordId,
+            word,
+            audioDataUrl: dataUrl,
+            sourceUrl: url,
+            savedAtMs: Date.now(),
+          });
+          if (typeof caches !== 'undefined') {
+            const cache = await caches.open(OFFLINE_ORIGINAL_AUDIO_CACHE_NAME);
+            await cache.put(url, new Response(blob, { status: 200 }));
+          }
+          return true;
+        }
+      }
+    } catch {
+      // Fall through to CacheStorage no-cors fetch
+    }
+
+    // 2. Fallback: CacheStorage + Service Worker no-cors fetch (for ssl.gstatic.com)
+    try {
+      if (typeof caches !== 'undefined') {
+        const cache = await caches.open(OFFLINE_ORIGINAL_AUDIO_CACHE_NAME);
+        let cachedResp = await cache.match(url, { ignoreVary: true });
+        if (!cachedResp) {
+          const noCorsResp = await fetch(url, {
+            mode: 'no-cors',
+            credentials: 'omit',
+          });
+          if (
+            noCorsResp &&
+            (noCorsResp.status === 200 || noCorsResp.status === 0)
+          ) {
+            await cache.put(url, noCorsResp.clone());
+            cachedResp = noCorsResp;
+          }
+        }
+        if (cachedResp) {
+          await putLocalOriginalAudioItem({
+            wordId,
+            word,
+            sourceUrl: url,
+            savedAtMs: Date.now(),
+          });
+          return true;
+        }
+      }
+    } catch {
+      // Try next candidate URL
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Batch-preloads and saves original spelling recordings to the local system for offline playback.
+ */
+export async function preloadOriginalAudioForWords(
+  words: WordItem[],
+  onProgress?: (savedCount: number, totalCount: number) => void
+): Promise<number> {
+  if (!localOriginalIndexLoaded) {
+    await refreshOfflineOriginalAudioIndex();
+  }
+  const total = words.length;
+  let savedCount = 0;
+
+  //Also notify Service Worker of all audio URLs for fast background caching
+  if (
+    typeof navigator !== 'undefined' &&
+    'serviceWorker' in navigator &&
+    navigator.serviceWorker.controller
+  ) {
+    const urlsToCache: string[] = [];
+    for (const w of words) {
+      const candidates = getCandidateOriginalAudioUrls(
+        w.word,
+        w.bundledAudioFile
+      );
+      if (candidates[0]) urlsToCache.push(candidates[0]);
+    }
+    navigator.serviceWorker.controller.postMessage({
+      type: 'CACHE_AUDIO_URLS',
+      urls: urlsToCache,
+    });
+  }
+
+  const concurrency = 6;
+  let index = 0;
+
+  const worker = async () => {
+    while (index < words.length) {
+      const currentIdx = index++;
+      const item = words[currentIdx];
+      if (!item) continue;
+
+      if (isWordOriginalAudioSavedLocally(item.id)) {
+        savedCount++;
+        onProgress?.(savedCount, total);
+        continue;
+      }
+
+      const ok = await saveOriginalWordAudioLocally(
+        item.word,
+        item.bundledAudioFile
+      );
+      if (ok) {
+        savedCount++;
+      }
+      onProgress?.(savedCount, total);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(concurrency, words.length) }, () => worker())
+  );
+
+  return savedCount;
+}
+
+/**
+ * Plays pronunciation for a word across Desktop and Mobile (Android/iOS), both Online and Offline:
  * 1. Priority 1 (User Cloud/Local Upload): Real user-uploaded or mic-recorded audioDataUrl.
- * 2. Priority 2 (Original Bundled Audio): The 782 original /audio-w*.mp3 & /audio-w2.ogg files from Google Drive.
- * 3. Priority 3 (Real Dictionary MP3 Fallback): /dict-fallback/audio-w*.mp3 or /audio-w555.mp3 / /audio-w560.mp3.
+ * 2. Priority 2 (Local System Saved Original Recording): Embedded MP3 or IndexedDB/CacheStorage saved original recording (works 100% offline!).
+ * 3. Priority 3 (Original Bundled Audio & Dictionary MP3): Plays and automatically saves to the local system for offline use.
  * 4. Priority 4 (Browser British English TTS): Only if no recorded audio file exists at all.
  */
 export async function playWordAudio(options: {
@@ -342,6 +713,7 @@ export async function playWordAudio(options: {
   playbackRate?: number;
 }): Promise<void> {
   const { word, audioDataUrl, bundledAudioFile, playbackRate = 1.0 } = options;
+  const wordId = toWordId(word);
 
   const audioEl = getSharedAudioElement();
   audioEl.pause();
@@ -358,68 +730,82 @@ export async function playWordAudio(options: {
     !isSyntheticRestoredPlaceholder(word, audioDataUrl);
 
   if (isRealCustomAudio && audioDataUrl) {
-    try {
-      if (currentBlobUrl) {
-        URL.revokeObjectURL(currentBlobUrl);
-        currentBlobUrl = null;
-      }
-      const blob = dataUrlToBlob(audioDataUrl);
-      currentBlobUrl = URL.createObjectURL(blob);
-      audioEl.src = currentBlobUrl;
-      audioEl.playbackRate = playbackRate;
-      audioEl.currentTime = 0;
-      await audioEl.play();
-      return;
-    } catch (err) {
-      console.warn('Blob audio playback failed, trying direct Data URL:', err);
-      const playedDirect = await playUrlWithSharedAudio(
-        audioDataUrl,
-        playbackRate
-      );
-      if (playedDirect) return;
-    }
+    const playedCustom = await playBlobOrDataUrlWithSharedAudio(
+      audioDataUrl,
+      playbackRate
+    );
+    if (playedCustom) return;
   }
 
-  // 2. Original Bundled MP3/OGG from Google Drive (782 words)
-  const catalogEntry =
-    wordLookupMap.get(word.toLowerCase().trim()) ||
-    wordLookupMap.get(toWordId(word));
+  // 2. Check Embedded 14 Real MP3 Recordings (100% offline)
+  const embeddedDataUrl =
+    embeddedOriginalAudioMap.get(wordId) ||
+    embeddedOriginalAudioMap.get(word.toLowerCase().trim());
+  if (embeddedDataUrl) {
+    const playedEmbedded = await playBlobOrDataUrlWithSharedAudio(
+      embeddedDataUrl,
+      playbackRate
+    );
+    if (playedEmbedded) return;
+  }
 
-  const bundledUrl = bundledAudioFile || catalogEntry?.bundledAudioFile;
-  if (bundledUrl) {
+  // 3. Check Local System IndexedDB `original_audio_v1` Store (100% offline)
+  const localOriginal = await getLocalOriginalAudioItem(wordId);
+  if (localOriginal?.audioDataUrl) {
+    const playedLocalIdb = await playBlobOrDataUrlWithSharedAudio(
+      localOriginal.audioDataUrl,
+      playbackRate
+    );
+    if (playedLocalIdb) return;
+  }
+
+  // 4. Play from Local CacheStorage / Bundled Original Audio URLs & Save Locally for Offline
+  const candidateUrls = getCandidateOriginalAudioUrls(word, bundledAudioFile);
+  if (
+    localOriginal?.sourceUrl &&
+    !candidateUrls.includes(localOriginal.sourceUrl)
+  ) {
+    candidateUrls.unshift(localOriginal.sourceUrl);
+  }
+
+  for (const url of candidateUrls) {
+    if (!url) continue;
+
+    // If stored in CacheStorage as a readable status-200 response, play directly from Blob (works offline even without SW)
+    if (typeof caches !== 'undefined') {
+      try {
+        const cache = await caches.open(OFFLINE_ORIGINAL_AUDIO_CACHE_NAME);
+        const cachedResp = await cache.match(url, { ignoreVary: true });
+        if (cachedResp && cachedResp.status === 200) {
+          const blob = await cachedResp.blob();
+          if (blob.size > 200) {
+            const playedBlob = await playBlobOrDataUrlWithSharedAudio(
+              blob,
+              playbackRate
+            );
+            if (playedBlob) return;
+          }
+        }
+      } catch {
+        // Continue to standard audio element playback
+      }
+    }
+
     const isFileProtocol =
       typeof window !== 'undefined' && window.location?.protocol === 'file:';
-    if (!isFileProtocol) {
-      const playedBundled = await playUrlWithSharedAudio(
-        bundledUrl,
-        playbackRate
-      );
-      if (playedBundled) return;
+    if (isFileProtocol && url.startsWith('/')) {
+      continue;
     }
-    if (bundledUrl.startsWith('/')) {
-      const remoteVercelAudioUrl = `https://1200-word-spelling.vercel.app${bundledUrl}`;
-      const playedRemote = await playUrlWithSharedAudio(
-        remoteVercelAudioUrl,
-        playbackRate
-      );
-      if (playedRemote) return;
+
+    const playedUrl = await playUrlWithSharedAudio(url, playbackRate);
+    if (playedUrl) {
+      // Save this original spelling recording to the local system in the background so it works offline next time!
+      void saveOriginalWordAudioLocally(word, url);
+      return;
     }
   }
 
-  // 3. Real Google Dictionary MP3 Fallback for Missing words
-  const dictToken = word
-    .toLowerCase()
-    .replace(/\s*\/\s*.*/, '')
-    .trim()
-    .replace(/\s+/g, '_');
-  if (/^[a-z_]+$/.test(dictToken)) {
-    const gbUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_gb_1.mp3`;
-    if (await playUrlWithSharedAudio(gbUrl, playbackRate)) return;
-    const usUrl = `https://ssl.gstatic.com/dictionary/static/sounds/20200429/${dictToken}--_us_1.mp3`;
-    if (await playUrlWithSharedAudio(usUrl, playbackRate)) return;
-  }
-
-  // 4. Native Android APK TTS Bridge (if running inside our native Android APK)
+  // 5. Native Android APK TTS Bridge (if running inside our native Android APK and no recording exists)
   const androidBridge = (
     window as unknown as {
       AndroidNative?: { speak?: (text: string, rate: number) => void };
@@ -434,7 +820,7 @@ export async function playWordAudio(options: {
     }
   }
 
-  // 5. Last-resort British English Web Speech API
+  // 6. Last-resort British English Web Speech API
   if ('speechSynthesis' in window) {
     try {
       const utterance = new SpeechSynthesisUtterance(word);
@@ -465,26 +851,6 @@ export async function playWordAudio(options: {
       console.warn('speechSynthesis error:', err);
     }
   }
-}
-
-/**
- * Local IndexedDB cache so recordings work offline and load instantaneously.
- */
-const DB_NAME = 'listen_write_cloud_cache_v1';
-const STORE_NAME = 'recordings';
-
-function openLocalCacheDb(): Promise<IDBDatabase> {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        db.createObjectStore(STORE_NAME, { keyPath: 'wordId' });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
 }
 
 export interface CachedRecordingItem {
@@ -561,3 +927,4 @@ export async function getAllLocalCachedRecordings(): Promise<
     return {};
   }
 }
+

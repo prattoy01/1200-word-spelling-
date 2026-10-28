@@ -163,15 +163,50 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     return () => window.clearInterval(id);
   }, [handleManualSync]);
 
-  const [activeTab, setActiveTab] = useState<'contests' | 'create'>('contests');
+  const [activeTab, setActiveTab] = useState<'contests' | 'create'>(() => {
+    try {
+      const saved = localStorage.getItem('lw_contest_view_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed?.activeTab === 'create') return 'create';
+      }
+    } catch {
+      // ignore
+    }
+    return 'contests';
+  });
   const [selectedContestId, setSelectedContestId] = useState<string | null>(
-    null
+    () => {
+      try {
+        const saved = localStorage.getItem('lw_contest_view_state_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (typeof parsed?.selectedContestId === 'string') {
+            return parsed.selectedContestId;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return null;
+    }
   );
   const [autoStartWhenLive, setAutoStartWhenLive] = useState<boolean>(true);
   const [statusMessage, setStatusMessage] = useState<{
     type: 'success' | 'error';
     text: string;
   } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'lw_contest_view_state_v1',
+        JSON.stringify({ activeTab, selectedContestId })
+      );
+    } catch {
+      // ignore
+    }
+  }, [activeTab, selectedContestId]);
 
   // Create Contest Form State
   const [participantNameInput, setParticipantNameInput] = useState<string>(
@@ -249,6 +284,28 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   const currentUserIdSanitized = useMemo(
     () => (user?.uid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120),
     [user]
+  );
+
+  const handleRemoveContest = useCallback(
+    async (contest: ContestRecord, e?: React.MouseEvent) => {
+      if (e) {
+        e.stopPropagation();
+      }
+      await deleteOrCancelContest(contest.id);
+      const remainingContests = contests.filter((c) => c.id !== contest.id);
+      const remainingSubs = submissions.filter(
+        (s) => s.contestId !== contest.id
+      );
+      onSyncContests?.(remainingContests, remainingSubs);
+      if (selectedContestId === contest.id) {
+        setSelectedContestId(remainingContests[0]?.id || null);
+      }
+      setStatusMessage({
+        type: 'success',
+        text: `Removed contest "${contest.title}".`,
+      });
+    },
+    [contests, submissions, onSyncContests, selectedContestId]
   );
 
   // Submissions grouped by contestId
@@ -1757,6 +1814,10 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                     const isSelected = selectedContest?.id === contest.id;
                     const contestSubs = submissionsByContest[contest.id] || [];
                     const endTimeMs = getContestEndTimeMs(contest);
+                    const canDeleteThisContest =
+                      isAdmin ||
+                      (Boolean(user) &&
+                        contest.creatorId === currentUserIdSanitized);
 
                     return (
                       <div
@@ -1790,19 +1851,35 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             </div>
                           </div>
 
-                          {phase === 'live' ? (
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#10b981] text-[#04120c] text-[10px] font-extrabold uppercase tracking-wider animate-pulse shrink-0">
-                              LIVE NOW
-                            </span>
-                          ) : phase === 'upcoming' ? (
-                            <span className="px-2.5 py-0.5 rounded-full bg-[#fbbf24]/20 border border-[#fbbf24]/50 text-[#fbbf24] text-[10px] font-mono font-bold shrink-0">
-                              In {formatCountdown(contest.startTimeMs - nowMs)}
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 rounded-md bg-[#13261d] text-[#6d8a7b] text-[10px] font-bold uppercase shrink-0">
-                              Ended
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5 shrink-0">
+                            {phase === 'live' ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-[#10b981] text-[#04120c] text-[10px] font-extrabold uppercase tracking-wider animate-pulse shrink-0">
+                                LIVE NOW
+                              </span>
+                            ) : phase === 'upcoming' ? (
+                              <span className="px-2.5 py-0.5 rounded-full bg-[#fbbf24]/20 border border-[#fbbf24]/50 text-[#fbbf24] text-[10px] font-mono font-bold shrink-0">
+                                In {formatCountdown(contest.startTimeMs - nowMs)}
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-md bg-[#13261d] text-[#6d8a7b] text-[10px] font-bold uppercase shrink-0">
+                                Ended
+                              </span>
+                            )}
+
+                            {canDeleteThisContest && (
+                              <button
+                                type="button"
+                                onClick={(e) =>
+                                  void handleRemoveContest(contest, e)
+                                }
+                                title="Remove Contest"
+                                className="min-h-[28px] px-2 py-1 rounded-lg bg-[#2a1215] hover:bg-[#3b181d] border border-[#f87171]/40 text-[10px] font-bold text-[#f87171] flex items-center gap-1 transition-colors"
+                              >
+                                <Trash2 className="w-3 h-3" />
+                                <span>Remove</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#8ba89a] pt-1 border-t border-[#152a20]">
@@ -1923,17 +2000,13 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                       {canDelete && (
                         <button
                           type="button"
-                          onClick={async () => {
-                            await deleteOrCancelContest(selectedContest.id);
-                            setStatusMessage({
-                              type: 'success',
-                              text: 'Contest removed.',
-                            });
-                          }}
+                          onClick={(e) =>
+                            void handleRemoveContest(selectedContest, e)
+                          }
                           className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#2a1215] hover:bg-[#3b181d] border border-[#f87171]/40 text-xs font-semibold text-[#f87171] flex items-center gap-1.5"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
-                          <span>Delete</span>
+                          <span>Remove Contest</span>
                         </button>
                       )}
                     </div>

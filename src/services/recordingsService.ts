@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -18,6 +19,7 @@ import {
   auth,
   isAdminUser,
   ADMIN_EMAIL,
+  emailToDeterministicUid,
   OperationType,
   handleFirestoreError,
 } from '../firebase';
@@ -1054,24 +1056,32 @@ export function subscribeToUserPracticeSessions(
 }
 
 // ============================================================================
-// PERSONAL STRUGGLING WORDS (100% PRIVATE TO EACH USER)
+// PERSONAL STRUGGLING WORDS (SYNCED ACROSS ALL DEVICES FOR THE USER'S ACCOUNT)
 // ============================================================================
 
 const PERSONAL_WORDS_PATH = 'personalWords';
 const DEVICE_PRIVATE_OWNER_KEY = 'lw_private_device_owner_id_v1';
 const LOCAL_PERSONAL_WORDS_PREFIX = 'lw_personal_struggling_words_v1_';
+const LOCAL_DELETED_PERSONAL_WORDS_PREFIX = 'lw_deleted_personal_words_v1_';
+const PERSONAL_WORDS_BROADCAST_CHANNEL = 'lw_personal_words_sync_v1';
 
-/**
- * Returns a strictly isolated ownerId for the current user:
- * - When signed in: uses the user's unique `uid` so their struggling words sync across their own devices.
- * - When not signed in: generates a unique device-specific ID stored only in this browser's localStorage
- *   so unsigned-in users never share personal struggling words with anyone else.
- */
-export function getPrivatePersonalOwnerId(explicitUserId?: string | null): string {
-  const uid = explicitUserId || auth.currentUser?.uid;
-  if (uid) {
-    return uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+function notifyPersonalWordsListeners(ownerId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel(PERSONAL_WORDS_BROADCAST_CHANNEL);
+      bc.postMessage({ type: 'PERSONAL_WORDS_UPDATED', ownerId, ts: Date.now() });
+      bc.close();
+    }
+    window.dispatchEvent(
+      new CustomEvent('lw-personal-words-local-update', { detail: { ownerId } })
+    );
+  } catch {
+    // Ignore BroadcastChannel errors
   }
+}
+
+function getAnonymousDeviceOwnerId(): string {
   if (typeof window === 'undefined') return 'local_private_user';
   try {
     let deviceId = window.localStorage.getItem(DEVICE_PRIVATE_OWNER_KEY);
@@ -1084,6 +1094,29 @@ export function getPrivatePersonalOwnerId(explicitUserId?: string | null): strin
   } catch {
     return 'local_private_user';
   }
+}
+
+/**
+ * Returns a deterministic account-bound `ownerId` for the current user:
+ * - When signed in with an email account (Google OAuth, Email/Password, Quick Sign-In):
+ *   uses `emailToDeterministicUid(email)` so the exact same `ownerId` is used on every device & browser!
+ * - When signed in with a student ID: uses the user's `uid`.
+ * - When not signed in: uses a device-local ID (`priv_...`), which is automatically migrated into
+ *   the user's account as soon as they sign in.
+ */
+export function getPrivatePersonalOwnerId(explicitUserId?: string | null): string {
+  const currentUser = auth.currentUser;
+  const email = currentUser?.email?.trim().toLowerCase();
+  if (email && !email.endsWith('@student.listenwrite.app')) {
+    return emailToDeterministicUid(email)
+      .replace(/[^a-zA-Z0-9_-]/g, '_')
+      .slice(0, 80);
+  }
+  const uid = explicitUserId || currentUser?.uid;
+  if (uid) {
+    return uid.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  }
+  return getAnonymousDeviceOwnerId();
 }
 
 export function readLocalPersonalWordsCache(ownerId: string): PersonalWordRecord[] {
@@ -1100,7 +1133,8 @@ export function readLocalPersonalWordsCache(ownerId: string): PersonalWordRecord
 
 function writeLocalPersonalWordsCache(
   ownerId: string,
-  words: PersonalWordRecord[]
+  words: PersonalWordRecord[],
+  notify = true
 ): void {
   if (typeof window === 'undefined') return;
   try {
@@ -1108,8 +1142,89 @@ function writeLocalPersonalWordsCache(
       `${LOCAL_PERSONAL_WORDS_PREFIX}${ownerId}`,
       JSON.stringify(words)
     );
+    if (notify) {
+      notifyPersonalWordsListeners(ownerId);
+    }
   } catch {
     // Ignore storage quota errors
+  }
+}
+
+function readDeletedPersonalWordIds(ownerId: string): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(
+      `${LOCAL_DELETED_PERSONAL_WORDS_PREFIX}${ownerId}`
+    );
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return new Set(Array.isArray(parsed) ? parsed : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeDeletedPersonalWordIds(ownerId: string, ids: Set<string>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(
+      `${LOCAL_DELETED_PERSONAL_WORDS_PREFIX}${ownerId}`,
+      JSON.stringify(Array.from(ids).slice(-300))
+    );
+  } catch {
+    // Ignore
+  }
+}
+
+/**
+ * If a user bookmarked struggling words on this device before signing in,
+ * automatically merges those words into their signed-in account so they sync across devices.
+ */
+function migrateAnonymousDeviceWordsToAccount(accountOwnerId: string): void {
+  if (typeof window === 'undefined') return;
+  if (!accountOwnerId || accountOwnerId.startsWith('priv_')) return;
+
+  try {
+    const anonId = window.localStorage.getItem(DEVICE_PRIVATE_OWNER_KEY);
+    if (!anonId || anonId === accountOwnerId) return;
+
+    const anonWords = readLocalPersonalWordsCache(anonId);
+    if (anonWords.length === 0) return;
+
+    const existingAccountWords = readLocalPersonalWordsCache(accountOwnerId);
+    const byWordId = new Map<string, PersonalWordRecord>();
+    for (const w of existingAccountWords) {
+      byWordId.set(w.wordId, w);
+    }
+
+    let addedAny = false;
+    for (const aw of anonWords) {
+      if (!byWordId.has(aw.wordId)) {
+        const safeWordId = aw.wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44);
+        const docId = `${accountOwnerId}_${safeWordId}`
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
+          .slice(0, 128);
+        byWordId.set(aw.wordId, {
+          ...aw,
+          id: docId,
+          ownerId: accountOwnerId,
+          updatedAtMs: Date.now(),
+        });
+        addedAny = true;
+      }
+    }
+
+    if (addedAny) {
+      const merged = Array.from(byWordId.values()).sort(
+        (a, b) => b.updatedAtMs - a.updatedAtMs
+      );
+      writeLocalPersonalWordsCache(accountOwnerId, merged, false);
+    }
+
+    // Clear anonymous cache after migrating into the user's account
+    window.localStorage.removeItem(`${LOCAL_PERSONAL_WORDS_PREFIX}${anonId}`);
+  } catch {
+    // Ignore migration errors
   }
 }
 
@@ -1137,8 +1252,8 @@ export function personalWordToWordItem(rec: PersonalWordRecord): WordItem {
 }
 
 /**
- * Adds or updates a personal struggling word that stays strictly private to the current user.
- * Optionally saves a private personal pronunciation recording for that word.
+ * Adds or updates a personal struggling word and syncs it to the user's account in Cloud Firestore
+ * so it appears on every device where the user signs in.
  */
 export async function addOrUpdatePersonalWord(params: {
   word: string;
@@ -1152,6 +1267,8 @@ export async function addOrUpdatePersonalWord(params: {
   }
 
   const ownerId = getPrivatePersonalOwnerId();
+  migrateAnonymousDeviceWordsToAccount(ownerId);
+
   const catalogMatch = WORDS_CATALOG.find(
     (w) => w.word.trim().toLowerCase() === cleanWord.toLowerCase()
   );
@@ -1180,13 +1297,20 @@ export async function addOrUpdatePersonalWord(params: {
     updatedAtMs: nowMs,
   };
 
+  // Un-mark from deleted set if user re-adds this word
+  const deletedSet = readDeletedPersonalWordIds(ownerId);
+  if (deletedSet.has(safeWordId)) {
+    deletedSet.delete(safeWordId);
+    writeDeletedPersonalWordIds(ownerId, deletedSet);
+  }
+
   // 1. Save immediately in user-scoped local cache
   const existingList = readLocalPersonalWordsCache(ownerId).filter(
     (w) => w.wordId !== safeWordId
   );
-  writeLocalPersonalWordsCache(ownerId, [record, ...existingList]);
+  writeLocalPersonalWordsCache(ownerId, [record, ...existingList], true);
 
-  // 2. If user also provided custom pronunciation audio, save it strictly as their Personal Audio (not sent to Admin)
+  // 2. If user also provided custom pronunciation audio, save it strictly as their Personal Audio
   if (params.audio) {
     await saveWordRecording({
       wordId: safeWordId,
@@ -1197,31 +1321,18 @@ export async function addOrUpdatePersonalWord(params: {
     });
   }
 
-  // 3. Persist to Cloud Firestore scoped strictly to this user's `ownerId`
+  // 3. Persist directly to Cloud Firestore scoped to this user's `ownerId` (no extra getDoc needed)
   const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
   try {
-    const snap = await getDoc(docRef);
-    if (!snap.exists()) {
-      await setDoc(docRef, {
-        wordId: safeWordId,
-        word: cleanWord,
-        bangla: safeBangla,
-        example: safeExample,
-        ownerId,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(docRef, {
-        wordId: safeWordId,
-        word: cleanWord,
-        bangla: safeBangla,
-        example: safeExample,
-        ownerId,
-        createdAt: snap.data().createdAt || serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
+    await setDoc(docRef, {
+      wordId: safeWordId,
+      word: cleanWord,
+      bangla: safeBangla,
+      example: safeExample,
+      ownerId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
   } catch (err) {
     console.warn('Saved personal word locally (cloud sync pending):', err);
   }
@@ -1230,17 +1341,22 @@ export async function addOrUpdatePersonalWord(params: {
 }
 
 /**
- * Removes a personal struggling word from the current user's private list.
+ * Removes a personal struggling word from the current user's list across local cache & Cloud Firestore.
  */
 export async function removePersonalWord(wordId: string): Promise<void> {
   const ownerId = getPrivatePersonalOwnerId();
   const safeWordId = wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44);
   const docId = `${ownerId}_${safeWordId}`.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
 
+  const deletedSet = readDeletedPersonalWordIds(ownerId);
+  deletedSet.add(safeWordId);
+  deletedSet.add(wordId);
+  writeDeletedPersonalWordIds(ownerId, deletedSet);
+
   const remaining = readLocalPersonalWordsCache(ownerId).filter(
     (w) => w.wordId !== safeWordId && w.wordId !== wordId
   );
-  writeLocalPersonalWordsCache(ownerId, remaining);
+  writeLocalPersonalWordsCache(ownerId, remaining, true);
 
   try {
     await deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId));
@@ -1250,36 +1366,139 @@ export async function removePersonalWord(wordId: string): Promise<void> {
 }
 
 /**
- * Subscribes to the current user's private struggling words (`/personalWords` where `ownerId == currentOwnerId`).
+ * Actively synchronizes the user's personal struggling words between local cache and Cloud Firestore:
+ * - Pulls all words saved on other devices for this user's `ownerId`.
+ * - Pushes any locally saved struggling words that haven't been uploaded to Cloud Firestore yet.
+ */
+export async function syncPersonalWordsNow(
+  explicitUserId?: string | null
+): Promise<PersonalWordRecord[]> {
+  const ownerId = getPrivatePersonalOwnerId(explicitUserId);
+  migrateAnonymousDeviceWordsToAccount(ownerId);
+
+  const deletedSet = readDeletedPersonalWordIds(ownerId);
+  const localList = readLocalPersonalWordsCache(ownerId).filter(
+    (w) => !deletedSet.has(w.wordId)
+  );
+
+  try {
+    const q = query(
+      collection(db, PERSONAL_WORDS_PATH),
+      where('ownerId', '==', ownerId)
+    );
+    const snap = await getDocs(q);
+    const cloudWordIds = new Set<string>();
+    const mergedByWordId = new Map<string, PersonalWordRecord>();
+
+    snap.forEach((docSnap) => {
+      const d = docSnap.data();
+      if (!d.wordId || !d.word) return;
+      if (deletedSet.has(d.wordId)) {
+        void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docSnap.id)).catch(() => {});
+        return;
+      }
+      cloudWordIds.add(d.wordId);
+      const item: PersonalWordRecord = {
+        id: docSnap.id,
+        wordId: d.wordId,
+        word: d.word,
+        bangla: d.bangla || '',
+        example: d.example || '',
+        ownerId: d.ownerId || ownerId,
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      };
+      mergedByWordId.set(item.wordId, item);
+    });
+
+    // Push any local words not yet in Cloud Firestore so other devices receive them!
+    for (const loc of localList) {
+      if (!cloudWordIds.has(loc.wordId) && !deletedSet.has(loc.wordId)) {
+        const safeWordId = loc.wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44) || 'word';
+        const docId = `${ownerId}_${safeWordId}`
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
+          .slice(0, 128);
+        const updatedLoc: PersonalWordRecord = {
+          ...loc,
+          id: docId,
+          wordId: safeWordId,
+          ownerId,
+        };
+        mergedByWordId.set(safeWordId, updatedLoc);
+
+        void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
+          wordId: safeWordId,
+          word: loc.word.trim().slice(0, 120),
+          bangla: (loc.bangla || '').trim().slice(0, 200),
+          example: (loc.example || '').trim().slice(0, 300),
+          ownerId,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+    }
+
+    const finalWords = Array.from(mergedByWordId.values()).sort(
+      (a, b) => b.updatedAtMs - a.updatedAtMs
+    );
+    writeLocalPersonalWordsCache(ownerId, finalWords, false);
+    return finalWords;
+  } catch (err) {
+    console.warn('Personal words sync using local cache:', err);
+    return localList;
+  }
+}
+
+/**
+ * Subscribes to the current user's private struggling words (`/personalWords` where `ownerId == currentOwnerId`)
+ * and synchronizes across all devices logged into the same account.
  */
 export function subscribeToPersonalWords(
   userId: string | undefined | null,
   onUpdate: (words: PersonalWordRecord[]) => void
 ): Unsubscribe {
   const ownerId = getPrivatePersonalOwnerId(userId);
+  migrateAnonymousDeviceWordsToAccount(ownerId);
+
+  const emitLocal = () => {
+    const deletedSet = readDeletedPersonalWordIds(ownerId);
+    const list = readLocalPersonalWordsCache(ownerId).filter(
+      (w) => !deletedSet.has(w.wordId)
+    );
+    onUpdate(list);
+  };
 
   // Immediately emit local cached personal words so UI is instant
-  const initialLocal = readLocalPersonalWordsCache(ownerId);
-  onUpdate(initialLocal);
+  emitLocal();
+
+  // Trigger an initial two-way sync to push any local unsynced words to Cloud Firestore
+  void syncPersonalWordsNow(userId).then((synced) => {
+    onUpdate(synced);
+  });
 
   const q = query(
     collection(db, PERSONAL_WORDS_PATH),
     where('ownerId', '==', ownerId)
   );
 
-  return onSnapshot(
+  const unsubSnapshot = onSnapshot(
     q,
     (snapshot) => {
-      const localList = readLocalPersonalWordsCache(ownerId);
+      const deletedSet = readDeletedPersonalWordIds(ownerId);
+      const localList = readLocalPersonalWordsCache(ownerId).filter(
+        (w) => !deletedSet.has(w.wordId)
+      );
+      const cloudWordIds = new Set<string>();
       const mergedByWordId = new Map<string, PersonalWordRecord>();
-
-      for (const loc of localList) {
-        mergedByWordId.set(loc.wordId, loc);
-      }
 
       snapshot.forEach((docSnap) => {
         const d = docSnap.data();
         if (!d.wordId || !d.word) return;
+        if (deletedSet.has(d.wordId)) {
+          void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docSnap.id)).catch(() => {});
+          return;
+        }
+        cloudWordIds.add(d.wordId);
         const item: PersonalWordRecord = {
           id: docSnap.id,
           wordId: d.wordId,
@@ -1293,16 +1512,82 @@ export function subscribeToPersonalWords(
         mergedByWordId.set(item.wordId, item);
       });
 
+      // Preserve & auto-upload any locally added personal words not yet in Cloud Firestore
+      for (const loc of localList) {
+        if (!cloudWordIds.has(loc.wordId) && !deletedSet.has(loc.wordId)) {
+          const safeWordId =
+            loc.wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44) || 'word';
+          const docId = `${ownerId}_${safeWordId}`
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .slice(0, 128);
+          mergedByWordId.set(safeWordId, {
+            ...loc,
+            id: docId,
+            wordId: safeWordId,
+            ownerId,
+          });
+          void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
+            wordId: safeWordId,
+            word: loc.word.trim().slice(0, 120),
+            bangla: (loc.bangla || '').trim().slice(0, 200),
+            example: (loc.example || '').trim().slice(0, 300),
+            ownerId,
+            createdAt: serverTimestamp(),
+            updatedAt: serverTimestamp(),
+          }).catch(() => {});
+        }
+      }
+
       const finalWords = Array.from(mergedByWordId.values()).sort(
         (a, b) => b.updatedAtMs - a.updatedAtMs
       );
-      writeLocalPersonalWordsCache(ownerId, finalWords);
+      writeLocalPersonalWordsCache(ownerId, finalWords, false);
       onUpdate(finalWords);
     },
     (error) => {
       console.warn('Personal words operating from local private cache:', error);
-      onUpdate(readLocalPersonalWordsCache(ownerId));
+      emitLocal();
     }
   );
+
+  let bc: BroadcastChannel | null = null;
+  const onStorageChange = (e: StorageEvent) => {
+    if (!e.key || e.key.startsWith(LOCAL_PERSONAL_WORDS_PREFIX)) {
+      emitLocal();
+    }
+  };
+  const onLocalCustomUpdate = () => emitLocal();
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorageChange);
+    window.addEventListener('lw-personal-words-local-update', onLocalCustomUpdate);
+    try {
+      if ('BroadcastChannel' in window) {
+        bc = new BroadcastChannel(PERSONAL_WORDS_BROADCAST_CHANNEL);
+        bc.onmessage = () => emitLocal();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return () => {
+    unsubSnapshot();
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorageChange);
+      window.removeEventListener(
+        'lw-personal-words-local-update',
+        onLocalCustomUpdate
+      );
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore
+      }
+    }
+  };
 }
+
 

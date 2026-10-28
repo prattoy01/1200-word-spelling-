@@ -56,6 +56,7 @@ import {
   addOrUpdatePersonalWord,
   removePersonalWord,
   personalWordToWordItem,
+  syncPersonalWordsNow,
 } from './services/recordingsService';
 import {
   processAudioBlob,
@@ -89,12 +90,114 @@ type RecordingsPageFilter = 'all' | 'page1' | 'page2';
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
-  const [activeScreen, setActiveScreen] = useState<ActiveScreen>('practice');
-  const [practiceSubMode, setPracticeSubMode] = useState<'practice' | 'test'>('practice');
-  const [activeTab, setActiveTab] = useState<FilterTab>('missing');
-  const [recordingsPageFilter, setRecordingsPageFilter] = useState<RecordingsPageFilter>('all');
+  const [activeScreen, setActiveScreen] = useState<ActiveScreen>(() => {
+    try {
+      const saved = localStorage.getItem('lw_app_nav_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          parsed?.activeScreen === 'practice' ||
+          parsed?.activeScreen === 'recordings' ||
+          parsed?.activeScreen === 'contests' ||
+          parsed?.activeScreen === 'admin'
+        ) {
+          return parsed.activeScreen;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'practice';
+  });
+  const [practiceSubMode, setPracticeSubMode] = useState<'practice' | 'test'>(
+    () => {
+      try {
+        const saved = localStorage.getItem('lw_app_nav_state_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (parsed?.practiceSubMode === 'test') return 'test';
+        }
+      } catch {
+        // ignore
+      }
+      return 'practice';
+    }
+  );
+  const [activeTab, setActiveTab] = useState<FilterTab>(() => {
+    try {
+      const saved = localStorage.getItem('lw_app_nav_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (
+          parsed?.activeTab === 'missing' ||
+          parsed?.activeTab === 'uploads' ||
+          parsed?.activeTab === 'all'
+        ) {
+          return parsed.activeTab;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'missing';
+  });
+  const [recordingsPageFilter, setRecordingsPageFilter] =
+    useState<RecordingsPageFilter>(() => {
+      try {
+        const saved = localStorage.getItem('lw_app_nav_state_v1');
+        if (saved) {
+          const parsed = JSON.parse(saved);
+          if (
+            parsed?.recordingsPageFilter === 'page1' ||
+            parsed?.recordingsPageFilter === 'page2' ||
+            parsed?.recordingsPageFilter === 'all'
+          ) {
+            return parsed.recordingsPageFilter;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return 'all';
+    });
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedWordId, setSelectedWordId] = useState<string>('weekdays');
+  const [selectedWordId, setSelectedWordId] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem('lw_app_nav_state_v1');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (typeof parsed?.selectedWordId === 'string' && parsed.selectedWordId) {
+          return parsed.selectedWordId;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'weekdays';
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'lw_app_nav_state_v1',
+        JSON.stringify({
+          activeScreen,
+          practiceSubMode,
+          activeTab,
+          recordingsPageFilter,
+          selectedWordId,
+        })
+      );
+    } catch {
+      // ignore
+    }
+  }, [
+    activeScreen,
+    practiceSubMode,
+    activeTab,
+    recordingsPageFilter,
+    selectedWordId,
+  ]);
 
   // Effective recordingsMap: User's Personal Audio Override > General Cloud Audio
   const [recordingsMap, setRecordingsMap] = useState<Record<string, CloudRecording>>({});
@@ -162,6 +265,12 @@ export default function App() {
           await syncLocalRecordingsToCloud();
         } catch (err) {
           console.error('Auto-sync error:', err);
+        }
+        try {
+          const syncedWords = await syncPersonalWordsNow();
+          setPersonalWords(syncedWords);
+        } catch {
+          // ignore offline/quota fallback
         }
       } else {
         setContributorNameInput('');
@@ -1011,6 +1120,13 @@ export default function App() {
           contributions={contributions}
           generalRecordingsMap={generalRecordingsMap}
           personalRecordingsMap={recordingsMap}
+          contests={contests}
+          onRemoveContest={(cid) => {
+            setContests((prev) => prev.filter((c) => c.id !== cid));
+            setContestSubmissions((prev) =>
+              prev.filter((s) => s.contestId !== cid)
+            );
+          }}
           userEmail={user?.email}
           onBackToPractice={() => setActiveScreen('practice')}
           onRestore14General={handleRestore14Uploads}
@@ -1708,7 +1824,7 @@ export default function App() {
         restoreProgressText={restoreProgressText}
       />
 
-      {/* Personal Struggling Words Modal (Private to Current User Only) */}
+      {/* Personal Struggling Words Modal (Private to Current User Only & Synced Across Devices) */}
       <PersonalWordsModal
         isOpen={isPersonalWordsModalOpen}
         onClose={() => setIsPersonalWordsModalOpen(false)}
@@ -1725,6 +1841,8 @@ export default function App() {
           setFocusPersonalTrigger((prev) => prev + 1);
         }}
         onRefreshRecordings={() => refreshLocalAndCloudState()}
+        onSyncPersonalWords={setPersonalWords}
+        onRequestSignIn={handleSignIn}
       />
 
       {/* Sign In & Switch User Modal */}

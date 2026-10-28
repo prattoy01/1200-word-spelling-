@@ -12,6 +12,7 @@ import {
   Globe,
   Lock,
   Search,
+  Trophy,
 } from 'lucide-react';
 import { WORDS_CATALOG } from '../data/words';
 import {
@@ -22,6 +23,11 @@ import {
   deleteAudioContribution,
   deleteWordRecording,
 } from '../services/recordingsService';
+import {
+  type ContestRecord,
+  deleteOrCancelContest,
+  getContestPhase,
+} from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
 import { auth, isAdminUser, updateAdminPassword, ADMIN_EMAIL } from '../firebase';
 
@@ -29,6 +35,8 @@ interface AdminPanelViewProps {
   contributions: AudioContributionRecord[];
   generalRecordingsMap: Record<string, CloudRecording>;
   personalRecordingsMap: Record<string, CloudRecording>;
+  contests?: ContestRecord[];
+  onRemoveContest?: (contestId: string) => void;
   userEmail?: string | null;
   onBackToPractice: () => void;
   onRestore14General: () => Promise<void>;
@@ -39,12 +47,14 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   contributions,
   generalRecordingsMap,
   personalRecordingsMap,
+  contests = [],
+  onRemoveContest,
   onBackToPractice,
   onRestore14General,
   isRestoring14,
 }) => {
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'pending' | 'reviewed' | 'general'
+    'pending' | 'reviewed' | 'general' | 'contests'
   >('pending');
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [editedBanglaMap, setEditedBanglaMap] = useState<Record<string, string>>(
@@ -212,6 +222,27 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         type: 'error',
         text:
           err instanceof Error ? err.message : 'Could not remove general audio.',
+      });
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleAdminDeleteContest = async (contest: ContestRecord) => {
+    setProcessingId(contest.id);
+    setFeedbackBanner(null);
+    try {
+      await deleteOrCancelContest(contest.id);
+      onRemoveContest?.(contest.id);
+      setFeedbackBanner({
+        type: 'success',
+        text: `Removed contest "${contest.title}" permanently.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error ? err.message : 'Could not remove contest.',
       });
     } finally {
       setProcessingId(null);
@@ -401,7 +432,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       )}
 
       {/* Admin Sub-Navigation Tabs */}
-      <div className="grid grid-cols-3 gap-1.5 p-1.5 rounded-2xl bg-[#0b1812] border border-[#1d382b]">
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1.5 rounded-2xl bg-[#0b1812] border border-[#1d382b]">
         <button
           type="button"
           onClick={() => setActiveAdminTab('pending')}
@@ -426,6 +457,19 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         >
           <Globe className="w-4 h-4 shrink-0" />
           <span>General Audio ({Object.keys(generalRecordingsMap).length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveAdminTab('contests')}
+          className={`min-h-[44px] px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${
+            activeAdminTab === 'contests'
+              ? 'bg-[#fbbf24] text-[#08120e]'
+              : 'text-[#8ba89a] hover:text-white'
+          }`}
+        >
+          <Trophy className="w-4 h-4 shrink-0" />
+          <span>Contests ({contests.length})</span>
         </button>
 
         <button
@@ -788,6 +832,77 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   </div>
                 </div>
               ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* TAB 4: MANAGE & REMOVE CONTESTS */}
+      {activeAdminTab === 'contests' && (
+        <section className="rounded-3xl bg-[#0d1d16] border border-[#1f3b2e] p-4 sm:p-6 space-y-4">
+          <div className="flex items-center justify-between gap-2">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-white">
+                Manage Contests ({contests.length})
+              </h2>
+              <p className="text-xs text-[#8ba89a]">
+                As Admin, you can remove any scheduled, live, or ended contest from the platform.
+              </p>
+            </div>
+          </div>
+
+          {contests.length === 0 ? (
+            <div className="rounded-2xl bg-[#08130e] border border-[#193327] py-10 px-4 text-center text-xs text-[#8ba89a]">
+              No active contests on the platform right now.
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-[#08130e] border border-[#1a3327] divide-y divide-[#14291f] max-h-96 overflow-y-auto">
+              {contests.map((contest) => {
+                const phase = getContestPhase(contest, Date.now());
+                return (
+                  <div
+                    key={contest.id}
+                    className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-sm text-white">
+                          {contest.title}
+                        </span>
+                        <span
+                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                            phase === 'live'
+                              ? 'bg-[#10b981] text-[#04120c]'
+                              : phase === 'upcoming'
+                              ? 'bg-[#fbbf24]/20 text-[#fbbf24]'
+                              : 'bg-[#13261d] text-[#6d8a7b]'
+                          }`}
+                        >
+                          {phase}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-[#7ea090] mt-0.5">
+                        Setter: {contest.creatorName} · {contest.wordCount} words ·{' '}
+                        {new Date(contest.startTimeMs).toLocaleString()}
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={processingId === contest.id}
+                      onClick={() => void handleAdminDeleteContest(contest)}
+                      className="self-start sm:self-center min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#2a1215] hover:bg-[#3b181c] border border-[#f87171]/40 text-xs font-bold text-[#f87171] flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>
+                        {processingId === contest.id
+                          ? 'Removing...'
+                          : 'Remove Contest'}
+                      </span>
+                    </button>
+                  </div>
+                );
+              })}
             </div>
           )}
         </section>

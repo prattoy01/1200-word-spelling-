@@ -14,6 +14,9 @@ import {
   AlertCircle,
   BookOpenCheck,
   Timer,
+  RefreshCw,
+  CloudCheck,
+  LogIn,
 } from 'lucide-react';
 import {
   type PersonalWordRecord,
@@ -21,12 +24,14 @@ import {
   addOrUpdatePersonalWord,
   removePersonalWord,
   personalWordToWordItem,
+  syncPersonalWordsNow,
 } from '../services/recordingsService';
 import {
   type ProcessedAudio,
   processAudioBlob,
   playWordAudio,
 } from '../utils/audioUtils';
+import { auth } from '../firebase';
 
 interface PersonalWordsModalProps {
   isOpen: boolean;
@@ -36,6 +41,8 @@ interface PersonalWordsModalProps {
   onSelectPersonalCategoryForPractice: () => void;
   onSelectPersonalCategoryForTest: () => void;
   onRefreshRecordings: () => Promise<void>;
+  onSyncPersonalWords?: (words: PersonalWordRecord[]) => void;
+  onRequestSignIn?: () => void;
 }
 
 export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
@@ -46,6 +53,8 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
   onSelectPersonalCategoryForPractice,
   onSelectPersonalCategoryForTest,
   onRefreshRecordings,
+  onSyncPersonalWords,
+  onRequestSignIn,
 }) => {
   const [wordInput, setWordInput] = useState('');
   const [banglaInput, setBanglaInput] = useState('');
@@ -54,6 +63,7 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
   const [isRecordingMic, setIsRecordingMic] = useState(false);
   const [recordingSeconds, setRecordingSeconds] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSyncingAccount, setIsSyncingAccount] = useState(false);
   const [feedback, setFeedback] = useState<{
     type: 'success' | 'error';
     text: string;
@@ -233,20 +243,94 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-[#8ba89a] mt-0.5">
-                Add any new spelling word you struggle with. It stays strictly private to your account/device only.
+                {auth.currentUser
+                  ? `Synced to your account (${
+                      auth.currentUser.email || auth.currentUser.displayName
+                    }) across all devices.`
+                  : 'Sign in with your account to automatically sync these struggling words across all your devices.'}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="w-9 h-9 rounded-xl bg-[#132a20] text-[#9bb8aa] hover:text-white flex items-center justify-center transition-colors shrink-0"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              disabled={isSyncingAccount}
+              onClick={async () => {
+                if (!auth.currentUser && onRequestSignIn) {
+                  onClose();
+                  onRequestSignIn();
+                  return;
+                }
+                setIsSyncingAccount(true);
+                setFeedback(null);
+                try {
+                  const synced = await syncPersonalWordsNow();
+                  onSyncPersonalWords?.(synced);
+                  setFeedback({
+                    type: 'success',
+                    text: `Synced ${synced.length} struggling word${
+                      synced.length === 1 ? '' : 's'
+                    } with your cloud account across all devices!`,
+                  });
+                } catch {
+                  setFeedback({
+                    type: 'error',
+                    text: 'Could not sync right now. Words are safely saved locally and will sync when online.',
+                  });
+                } finally {
+                  setIsSyncingAccount(false);
+                }
+              }}
+              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#11281e] hover:bg-[#173528] border border-[#1f4735] text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
+            >
+              {auth.currentUser ? (
+                <>
+                  <RefreshCw
+                    className={`w-3.5 h-3.5 ${
+                      isSyncingAccount ? 'animate-spin' : ''
+                    }`}
+                  />
+                  <span>{isSyncingAccount ? 'Syncing...' : 'Sync Account'}</span>
+                </>
+              ) : (
+                <>
+                  <LogIn className="w-3.5 h-3.5" />
+                  <span>Sign In to Sync</span>
+                </>
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="w-9 h-9 rounded-xl bg-[#132a20] text-[#9bb8aa] hover:text-white flex items-center justify-center transition-colors shrink-0"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
         <div className="p-5 sm:p-6 space-y-5 max-h-[80vh] overflow-y-auto">
+          {/* Account Sync Status Banner */}
+          <div className="rounded-2xl bg-[#091712] border border-[#1d3d2f] px-4 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-[#a7f3d0]">
+              <CloudCheck className="w-4 h-4 text-[#10b981] shrink-0" />
+              <span>
+                {auth.currentUser ? (
+                  <>
+                    <strong>Cross-Device Account Sync Active:</strong> Opening{' '}
+                    <span className="text-white font-semibold">
+                      {auth.currentUser.email || auth.currentUser.displayName}
+                    </span>{' '}
+                    on any phone, tablet, or PC automatically loads your struggling words.
+                  </>
+                ) : (
+                  <>
+                    <strong>Device-Only Mode:</strong> Sign in with your account so your struggling words sync when you open from another device.
+                  </>
+                )}
+              </span>
+            </div>
+          </div>
           {feedback && (
             <div
               className={`p-3.5 rounded-2xl border text-xs flex items-start justify-between gap-2.5 ${

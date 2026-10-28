@@ -57,6 +57,31 @@ const CONTESTS_PATH = 'contests';
 const SUBMISSIONS_PATH = 'contestSubmissions';
 const LOCAL_CONTESTS_KEY = 'lw_contests_cache_v1';
 const LOCAL_SUBMISSIONS_KEY = 'lw_contest_submissions_cache_v1';
+const LOCAL_DELETED_CONTEST_IDS_KEY = 'lw_deleted_contest_ids_v1';
+
+function readDeletedContestIds(): Set<string> {
+  try {
+    const raw = localStorage.getItem(LOCAL_DELETED_CONTEST_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function markContestDeletedLocally(contestId: string): void {
+  try {
+    const set = readDeletedContestIds();
+    set.add(contestId);
+    localStorage.setItem(
+      LOCAL_DELETED_CONTEST_IDS_KEY,
+      JSON.stringify(Array.from(set).slice(-300))
+    );
+  } catch {
+    // Ignore storage quota warnings
+  }
+}
 
 function sanitizeId(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 120) || 'user';
@@ -365,7 +390,12 @@ function readLocalContests(): ContestRecord[] {
     const raw = localStorage.getItem(LOCAL_CONTESTS_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    const deletedIds = readDeletedContestIds();
+    return parsed.filter(
+      (c: ContestRecord) =>
+        c && c.id && c.status !== 'cancelled' && !deletedIds.has(c.id)
+    );
   } catch {
     return [];
   }
@@ -526,19 +556,27 @@ export async function createScheduledContest(params: {
 }
 
 export async function deleteOrCancelContest(contestId: string): Promise<void> {
+  markContestDeletedLocally(contestId);
   const existingLocal = readLocalContests().filter((c) => c.id !== contestId);
   writeLocalContests(existingLocal);
+  const existingSubs = readLocalSubmissions().filter(
+    (s) => s.contestId !== contestId
+  );
+  writeLocalSubmissions(existingSubs);
+
+  try {
+    await updateDoc(doc(db, CONTESTS_PATH, contestId), {
+      status: 'cancelled',
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Ignore if document doesn't exist or offline
+  }
+
   try {
     await deleteDoc(doc(db, CONTESTS_PATH, contestId));
   } catch {
-    try {
-      await updateDoc(doc(db, CONTESTS_PATH, contestId), {
-        status: 'cancelled',
-        updatedAt: serverTimestamp(),
-      });
-    } catch {
-      // Ignore if offline or quota reached
-    }
+    // Ignore if offline or quota reached; status: 'cancelled' & local tombstone already applied
   }
 }
 
@@ -881,15 +919,16 @@ export async function syncContestsNow(): Promise<{
     ]);
 
     const cloudIds = new Set<string>();
-    const cancelledIds = new Set<string>();
+    const cancelledIds = readDeletedContestIds();
     const list: ContestRecord[] = [];
 
     contestSnap.forEach((docSnap) => {
       const d = docSnap.data();
       const cid = d.id || docSnap.id;
       cloudIds.add(cid);
-      if (d.status === 'cancelled') {
+      if (d.status === 'cancelled' || cancelledIds.has(cid)) {
         cancelledIds.add(cid);
+        markContestDeletedLocally(cid);
         return;
       }
       list.push({
@@ -992,15 +1031,16 @@ export function subscribeToContests(
     docs: Array<{ id: string; data: () => Record<string, any> }>
   ) => {
     const cloudIds = new Set<string>();
-    const cancelledIds = new Set<string>();
+    const cancelledIds = readDeletedContestIds();
     const list: ContestRecord[] = [];
 
     docs.forEach((docSnap) => {
       const d = docSnap.data();
       const cid = d.id || docSnap.id;
       cloudIds.add(cid);
-      if (d.status === 'cancelled') {
+      if (d.status === 'cancelled' || cancelledIds.has(cid)) {
         cancelledIds.add(cid);
+        markContestDeletedLocally(cid);
         return;
       }
       list.push({

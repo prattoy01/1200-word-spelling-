@@ -24,6 +24,7 @@ import {
   FileText,
   Bookmark,
   Plus,
+  Download,
 } from 'lucide-react';
 import { WORDS_CATALOG, CATEGORIES, type WordItem } from '../data/words';
 import {
@@ -35,7 +36,13 @@ import {
   personalWordToWordItem,
   savePracticeSession,
 } from '../services/recordingsService';
-import { playWordAudio } from '../utils/audioUtils';
+import {
+  playWordAudio,
+  preloadOriginalAudioForWords,
+  getLocalOfflineAudioCount,
+  isWordOriginalAudioSavedLocally,
+  refreshOfflineOriginalAudioIndex,
+} from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
 
 interface PracticeViewProps {
@@ -194,10 +201,62 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   onOpenContests,
   liveContestsCount = 0,
 }) => {
-  // Shared Page 1 / Page 2 & Multi-Category Selection (empty array = All Categories)
-  const [pageFilter, setPageFilter] = useState<PageFilter>('page1');
-  const [selectedCategories, setSelectedCategories] = useState<string[]>([]);
-  const [deckMode, setDeckMode] = useState<'all' | 'uploads' | 'missing'>('all');
+  // Shared Page 1 / Page 2 & Multi-Category Selection (persisted across page reloads!)
+  const [pageFilter, setPageFilter] = useState<PageFilter>(() => {
+    try {
+      const raw = localStorage.getItem('lw_practice_view_state_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed?.pageFilter === 'page1' ||
+          parsed?.pageFilter === 'page2' ||
+          parsed?.pageFilter === 'all' ||
+          parsed?.pageFilter === 'personal'
+        ) {
+          return parsed.pageFilter;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'page1';
+  });
+  const [selectedCategories, setSelectedCategories] = useState<string[]>(() => {
+    try {
+      const raw = localStorage.getItem('lw_practice_view_state_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed?.selectedCategories)) {
+          return parsed.selectedCategories.filter(
+            (x: unknown) => typeof x === 'string'
+          );
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return [];
+  });
+  const [deckMode, setDeckMode] = useState<'all' | 'uploads' | 'missing'>(
+    () => {
+      try {
+        const raw = localStorage.getItem('lw_practice_view_state_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (
+            parsed?.deckMode === 'all' ||
+            parsed?.deckMode === 'uploads' ||
+            parsed?.deckMode === 'missing'
+          ) {
+            return parsed.deckMode;
+          }
+        }
+      } catch {
+        // ignore
+      }
+      return 'all';
+    }
+  );
   const [subMode, setSubMode] = useState<PracticeSubMode>(
     activeSubMode || 'practice'
   );
@@ -219,7 +278,20 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     [personalWords]
   );
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
-  const [mobilePracticeTab, setMobilePracticeTab] = useState<'card' | 'list'>('card');
+  const [mobilePracticeTab, setMobilePracticeTab] = useState<'card' | 'list'>(
+    () => {
+      try {
+        const raw = localStorage.getItem('lw_practice_view_state_v1');
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed?.mobilePracticeTab === 'list') return 'list';
+        }
+      } catch {
+        // ignore
+      }
+      return 'card';
+    }
+  );
 
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) =>
@@ -279,8 +351,24 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     onSubModeChange?.(nextMode);
   };
 
-  // Free Practice & Study State
-  const [currentIndex, setCurrentIndex] = useState(0);
+  // Free Practice & Study State (persisted across page reloads!)
+  const [currentIndex, setCurrentIndex] = useState<number>(() => {
+    try {
+      const raw = localStorage.getItem('lw_practice_view_state_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          typeof parsed?.currentIndex === 'number' &&
+          parsed.currentIndex >= 0
+        ) {
+          return parsed.currentIndex;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 0;
+  });
   const [userInput, setUserInput] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [showBanglaHint, setShowBanglaHint] = useState(true);
@@ -295,9 +383,56 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   >([]);
   const [studySortMode, setStudySortMode] = useState<
     'default' | 'weakest' | 'failedOnly'
-  >('default');
+  >(() => {
+    try {
+      const raw = localStorage.getItem('lw_practice_view_state_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed?.studySortMode === 'weakest' ||
+          parsed?.studySortMode === 'failedOnly'
+        ) {
+          return parsed.studySortMode;
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return 'default';
+  });
   const [isPlaying, setIsPlaying] = useState(false);
+  const [offlineSavedCount, setOfflineSavedCount] = useState<number>(14);
+  const [isDownloadingOfflineAudio, setIsDownloadingOfflineAudio] =
+    useState<boolean>(false);
+  const [offlineDownloadProgress, setOfflineDownloadProgress] =
+    useState<string>('');
   const practiceInputRef = useRef<HTMLInputElement>(null);
+  const isFirstFilterMountRef = useRef<boolean>(true);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'lw_practice_view_state_v1',
+        JSON.stringify({
+          pageFilter,
+          selectedCategories,
+          deckMode,
+          studySortMode,
+          mobilePracticeTab,
+          currentIndex,
+        })
+      );
+    } catch {
+      // ignore
+    }
+  }, [
+    pageFilter,
+    selectedCategories,
+    deckMode,
+    studySortMode,
+    mobilePracticeTab,
+    currentIndex,
+  ]);
 
   // Strict Exam ("Take Test") State
   const [examState, setExamState] = useState<ExamState>('setup');
@@ -536,12 +671,75 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     activeRecording?.banglaMeaning || currentWord?.bangla || '';
 
   useEffect(() => {
+    if (isFirstFilterMountRef.current) {
+      isFirstFilterMountRef.current = false;
+      return;
+    }
     setCurrentIndex(0);
     setUserInput('');
     setSubmitted(false);
     setShowStudyWord(false);
     setIsPracticingBlur(false);
   }, [pageFilter, selectedCategories, deckMode, studySortMode]);
+
+  // Refresh local offline audio count on mount & listen for newly cached original recordings
+  useEffect(() => {
+    void refreshOfflineOriginalAudioIndex().then((set) =>
+      setOfflineSavedCount(set.size)
+    );
+    const onOfflineAudioUpdated = () => {
+      void getLocalOfflineAudioCount().then((cnt) => setOfflineSavedCount(cnt));
+    };
+    window.addEventListener(
+      'lw-offline-audio-updated',
+      onOfflineAudioUpdated as EventListener
+    );
+    return () =>
+      window.removeEventListener(
+        'lw-offline-audio-updated',
+        onOfflineAudioUpdated as EventListener
+      );
+  }, []);
+
+  // Automatically save original spelling recordings for the active category deck in the background
+  // so if the user loses internet connection while practicing, the original recordings play offline!
+  useEffect(() => {
+    if (filteredDeck.length === 0) return;
+    const startIdx = currentIndex % Math.max(1, filteredDeck.length);
+    const upcomingSlice = filteredDeck
+      .slice(startIdx, startIdx + 25)
+      .filter(
+        (w) =>
+          Boolean(w.bundledAudioFile) && !isWordOriginalAudioSavedLocally(w.word)
+      );
+    if (upcomingSlice.length === 0) return;
+
+    const timer = window.setTimeout(() => {
+      void preloadOriginalAudioForWords(upcomingSlice).then(async () => {
+        const cnt = await getLocalOfflineAudioCount();
+        setOfflineSavedCount(cnt);
+      });
+    }, 600);
+
+    return () => window.clearTimeout(timer);
+  }, [filteredDeck, currentIndex]);
+
+  const handleSaveDeckOfflineNow = async () => {
+    if (isDownloadingOfflineAudio) return;
+    const targetWords = filteredDeck.length > 0 ? filteredDeck : WORDS_CATALOG;
+    setIsDownloadingOfflineAudio(true);
+    setOfflineDownloadProgress(`0/${targetWords.length}`);
+    try {
+      await preloadOriginalAudioForWords(targetWords, (done, total) => {
+        setOfflineDownloadProgress(`${done}/${total}`);
+      });
+      const cnt = await getLocalOfflineAudioCount();
+      setOfflineSavedCount(cnt);
+    } finally {
+      setIsDownloadingOfflineAudio(false);
+      setOfflineDownloadProgress('');
+    }
+  };
 
   // Helper to play pronunciation for any specific word item
   const playSpecificWord = useCallback(
@@ -925,6 +1123,20 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           </button>
           <button
             type="button"
+            disabled={isDownloadingOfflineAudio}
+            onClick={() => void handleSaveDeckOfflineNow()}
+            title="Save original spelling recordings to your local device so they play when offline"
+            className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#11281e] hover:bg-[#173528] border border-[#1f4735] text-[#10b981] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap disabled:opacity-60"
+          >
+            <Download className="w-4 h-4 text-[#10b981]" />
+            <span>
+              {isDownloadingOfflineAudio
+                ? `Saving Offline (${offlineDownloadProgress})...`
+                : `Offline Audio (${offlineSavedCount} Saved)`}
+            </span>
+          </button>
+          <button
+            type="button"
             onClick={() => onOpenRecordingsManager(currentWord?.id)}
             className="min-h-[42px] px-4 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
@@ -1067,6 +1279,20 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               </div>
 
               <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  disabled={isDownloadingOfflineAudio}
+                  onClick={() => void handleSaveDeckOfflineNow()}
+                  title="Save original spelling recordings for offline playback"
+                  className="min-h-[34px] px-2.5 py-1 rounded-xl bg-[#0e241a] border border-[#10b981]/40 text-[11px] font-bold text-[#10b981] flex items-center gap-1"
+                >
+                  <Download className="w-3 h-3 shrink-0" />
+                  <span>
+                    {isDownloadingOfflineAudio
+                      ? offlineDownloadProgress
+                      : `${offlineSavedCount} Offline`}
+                  </span>
+                </button>
                 {selectedCategories.length > 0 && pageFilter !== 'personal' && (
                   <button
                     type="button"
