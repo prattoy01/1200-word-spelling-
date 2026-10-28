@@ -39,7 +39,7 @@ import {
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
-import { signInQuickProfile, type User } from '../firebase';
+import { signInStudentWithUniqueId, type User } from '../firebase';
 
 interface ContestPlatformViewProps {
   user: User | null;
@@ -278,21 +278,42 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     return list.find((s) => s.userId === currentUserIdSanitized);
   }, [selectedContest, submissionsByContest, currentUserIdSanitized]);
 
-  const ensureSignedInForContest = useCallback(async (): Promise<User | null> => {
-    if (user) return user;
-    const randNum = Math.floor(1000 + Math.random() * 9000);
-    const chosenName =
-      participantNameInput.trim() || `Participant #${randNum}`;
-    const slug = chosenName
-      .toLowerCase()
-      .replace(/[^a-z0-9]/g, '')
-      .slice(0, 24);
-    const autoEmail = `${slug || 'student'}${randNum}@contest.listenwrite.app`;
-    return signInQuickProfile({
-      email: autoEmail,
-      displayName: chosenName,
-    });
-  }, [user, participantNameInput]);
+  // Keep participantNameInput synced when user changes
+  useEffect(() => {
+    if (user?.displayName) {
+      setParticipantNameInput(user.displayName);
+    }
+  }, [user?.uid, user?.displayName]);
+
+  const ensureSignedInForContest = useCallback(
+    async (forceNewStudentId = false): Promise<User | null> => {
+      const stripTag = (s: string) =>
+        s.replace(/\s*\(?#[A-Z0-9]{3,6}\)?$/i, '').trim().toLowerCase();
+
+      const typedName = participantNameInput.trim();
+      const currentBaseName = user?.displayName
+        ? stripTag(user.displayName)
+        : '';
+      const typedBaseName = typedName ? stripTag(typedName) : '';
+
+      // If no user is logged in, OR forceNewStudentId is requested, OR a student typed a different name in the box,
+      // create a brand-new cryptographically unique internal UID (`stu_...`) and unique `#XXXX` leaderboard tag!
+      if (
+        !user ||
+        forceNewStudentId ||
+        (typedBaseName &&
+          typedBaseName !== currentBaseName &&
+          !user.isVerifiedAdmin)
+      ) {
+        const createdProfile = await signInStudentWithUniqueId(typedName);
+        setParticipantNameInput(createdProfile.displayName || '');
+        return createdProfile;
+      }
+
+      return user;
+    },
+    [user, participantNameInput]
+  );
 
   // Launch the strict contest exam for a contest that is currently LIVE
   const handleStartLiveContestExam = useCallback(
@@ -1400,8 +1421,8 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             </div>
                           </div>
 
-                          <div className="flex flex-col gap-2 shrink-0">
-                            {!user && (
+                          <div className="flex flex-col gap-2 shrink-0 min-w-[240px]">
+                            <div className="space-y-1">
                               <input
                                 type="text"
                                 value={participantNameInput}
@@ -1409,9 +1430,27 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                   setParticipantNameInput(e.target.value)
                                 }
                                 placeholder="Your Name for Leaderboard..."
-                                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#fbbf24]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none"
+                                className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#fbbf24]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none focus:border-[#fbbf24]"
                               />
-                            )}
+                              <div className="text-[10px] text-[#9ab5a7] flex items-center justify-between gap-2 px-1">
+                                <span>
+                                  {user
+                                    ? `Active ID: ${user.displayName}`
+                                    : 'Auto-assigns unique #ID'}
+                                </span>
+                                {user && !user.isVerifiedAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void ensureSignedInForContest(true)
+                                    }
+                                    className="text-[#fbbf24] hover:underline font-semibold"
+                                  >
+                                    New #ID
+                                  </button>
+                                )}
+                              </div>
+                            </div>
                             {mySubmissionForSelected ? (
                               <div className="px-4 py-2.5 rounded-xl bg-[#0e291e] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2">
                                 <CheckCircle2 className="w-4 h-4 shrink-0" />
@@ -1467,8 +1506,8 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             </p>
                           </div>
 
-                          <div className="flex flex-col gap-2 shrink-0">
-                            {!user && (
+                          <div className="flex flex-col gap-2 shrink-0 min-w-[250px]">
+                            <div className="space-y-1">
                               <input
                                 type="text"
                                 value={participantNameInput}
@@ -1476,17 +1515,37 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                   setParticipantNameInput(e.target.value)
                                 }
                                 placeholder="Your Name for Leaderboard..."
-                                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#10b981]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none"
+                                className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#10b981]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none focus:border-[#10b981]"
                               />
-                            )}
-                            {mySubmissionForSelected?.status === 'completed' ? (
-                              <div className="px-4 py-3 rounded-xl bg-[#081610] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2 shrink-0">
-                                <CheckCircle2 className="w-4 h-4" />
+                              <div className="text-[10px] text-[#a7f3d0] flex items-center justify-between gap-2 px-1">
                                 <span>
-                                  Completed: {mySubmissionForSelected.correctCount}/
-                                  {mySubmissionForSelected.totalWords} (
-                                  {mySubmissionForSelected.accuracy}%)
+                                  {user
+                                    ? `Active ID: ${user.displayName}`
+                                    : 'Auto-assigns unique #ID'}
                                 </span>
+                                {user && !user.isVerifiedAdmin && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void ensureSignedInForContest(true)
+                                    }
+                                    className="text-[#fbbf24] hover:underline font-semibold"
+                                  >
+                                    New Student #ID
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            {mySubmissionForSelected?.status === 'completed' ? (
+                              <div className="space-y-1.5">
+                                <div className="px-4 py-3 rounded-xl bg-[#081610] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2 shrink-0">
+                                  <CheckCircle2 className="w-4 h-4" />
+                                  <span>
+                                    Completed: {mySubmissionForSelected.correctCount}/
+                                    {mySubmissionForSelected.totalWords} (
+                                    {mySubmissionForSelected.accuracy}%)
+                                  </span>
+                                </div>
                               </div>
                             ) : (
                               <button

@@ -20,6 +20,7 @@ import {
   signInWithGoogle,
   signInWithEmailPassword,
   signInQuickProfile,
+  signInStudentWithUniqueId,
   signOutUser,
 } from '../firebase';
 
@@ -85,7 +86,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
       onSignedIn(profile);
       onClose();
     } catch {
-      // Browser/iframe blocked popup or domain not in Firebase OAuth allowlist ->
+      // Browser/iframe blocked popup or third-party cookies ->
       // Switch smoothly to Instant In-Page Google Email Sign-In (no popup required)
       setQuickGoogleMode(true);
       setErrorMsg(null);
@@ -101,16 +102,8 @@ export const SignInModal: React.FC<SignInModalProps> = ({
     setErrorMsg(null);
     setIsSubmitting(true);
     try {
-      const randId = Math.floor(1000 + Math.random() * 9000);
-      const guestName = displayName.trim() || `Student #${randId}`;
-      const guestEmail =
-        email.trim().includes('@')
-          ? email.trim()
-          : `student${randId}@ielts-contest.app`;
-      const profile = await signInQuickProfile({
-        email: guestEmail,
-        displayName: guestName,
-      });
+      // Always creates a 100% unique internal UID (`stu_<timestamp>_<randomHex>`) and unique `#XXXX` name tag
+      const profile = await signInStudentWithUniqueId(displayName);
       onSignedIn(profile);
       onClose();
     } catch (err) {
@@ -128,7 +121,10 @@ export const SignInModal: React.FC<SignInModalProps> = ({
     setIsSubmitting(true);
     try {
       let profile: User;
-      if (!isTypingAdminEmail && (quickGoogleMode || password.trim().length < 6)) {
+      // If a student submitted ONLY their name (without typing an email), generate a guaranteed unique Student ID
+      if (!email.trim() && displayName.trim()) {
+        profile = await signInStudentWithUniqueId(displayName);
+      } else if (!isTypingAdminEmail && (quickGoogleMode || password.trim().length < 6)) {
         profile = await signInQuickProfile({
           email,
           displayName,
@@ -284,12 +280,12 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </div>
           )}
 
-          {/* Email & Password Form */}
+          {/* Email & Password / Student Name Form */}
           <form onSubmit={handleFormSubmit} className="space-y-3.5">
-            {(authMode === 'signup' || quickGoogleMode) && !isTypingAdminEmail && (
+            {!isTypingAdminEmail && (
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                  Your Display Name (For Contest Leaderboard)
+                  Student / Participant Name (Auto-Generates Unique #ID)
                 </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -297,7 +293,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                     type="text"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="e.g. Rahat Ahmed"
+                    placeholder="e.g. Rahat Ahmed (gets unique #ID automatically)"
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                   />
                 </div>
@@ -306,17 +302,22 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                Email / Gmail Address
+                Email / Gmail Address{' '}
+                {displayName.trim() && !isTypingAdminEmail ? (
+                  <span className="text-[#10b981] font-normal normal-case">
+                    (Optional if entering Student Name above)
+                  </span>
+                ) : null}
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   ref={emailInputRef}
                   type="email"
-                  required
+                  required={!displayName.trim() || isTypingAdminEmail}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="e.g. yourname@gmail.com"
+                  placeholder="e.g. yourname@gmail.com (or leave blank for Name-Only)"
                   className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                 />
               </div>
@@ -358,6 +359,8 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                   ? 'Signing In...'
                   : isTypingAdminEmail
                   ? 'Verify & Sign In as Admin'
+                  : !email.trim() && displayName.trim()
+                  ? `Sign In as "${displayName.trim()}" (Unique Student ID)`
                   : quickGoogleMode
                   ? 'Continue with Gmail Address'
                   : authMode === 'signup'
@@ -402,7 +405,11 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0a1812] hover:bg-[#11261d] border border-[#1d3b2d] text-xs font-semibold text-[#fbbf24] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
             >
               <Zap className="w-3.5 h-3.5 text-[#fbbf24]" />
-              <span>1-Click Instant Student Login (For Contests &amp; Practice)</span>
+              <span>
+                {displayName.trim()
+                  ? `1-Click Student Login as "${displayName.trim()}" (Unique #ID)`
+                  : '1-Click Instant Student Login (Unique #ID)'}
+              </span>
             </button>
           </div>
         </div>

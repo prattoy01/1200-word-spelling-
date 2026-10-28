@@ -475,6 +475,103 @@ export async function signInQuickProfile(params: {
 }
 
 /**
+ * Generates a cryptographically random hex string and a short unambiguous 4-char student badge code.
+ */
+function generateUniqueStudentIdentifiers(): {
+  internalUid: string;
+  badgeCode: string;
+} {
+  const bytes = new Uint8Array(6);
+  if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) {
+      bytes[i] = Math.floor(Math.random() * 256);
+    }
+  }
+  const hex = Array.from(bytes)
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+
+  const alphabet = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  let badgeCode = '';
+  for (let i = 0; i < 4; i++) {
+    badgeCode += alphabet[bytes[i] % alphabet.length];
+  }
+
+  const timestampPart = Date.now().toString(36);
+  return {
+    internalUid: `stu_${timestampPart}_${hex}`,
+    badgeCode,
+  };
+}
+
+/**
+ * Signs in a student using ONLY their name (or 1-Click Instant Student Login).
+ * Guarantees a 100% unique internal `uid` (`stu_<timestamp>_<randomHex>`) AND appends a unique
+ * `#XXXX` student ID tag to their display name so two students with the same name never collide
+ * in Firestore or on the Contest Leaderboard.
+ */
+export async function signInStudentWithUniqueId(
+  rawDisplayName?: string
+): Promise<CloudUserProfile> {
+  const { internalUid, badgeCode } = generateUniqueStudentIdentifiers();
+  const trimmed = (rawDisplayName || '').trim().replace(/\s+/g, ' ');
+
+  // Strip any existing trailing (#XXXX) or #XXXX if user re-submitted, then attach the new unique #badgeCode
+  const baseName = trimmed
+    ? trimmed.replace(/\s*\(?#[A-Z0-9]{3,6}\)?$/i, '').trim()
+    : 'Student';
+
+  const uniqueDisplayName = `${baseName || 'Student'} #${badgeCode}`.slice(
+    0,
+    120
+  );
+  const uniqueEmail = `${internalUid}@student.listenwrite.app`;
+  const passwordHash = await hashAccountPassword(
+    uniqueEmail,
+    `student_unique_${internalUid}`
+  );
+
+  try {
+    const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, internalUid);
+    await setDoc(accountRef, {
+      uid: internalUid,
+      email: uniqueEmail,
+      displayName: uniqueDisplayName,
+      passwordHash,
+      role: 'user',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch {
+    // Offline fallback — local session still works immediately
+  }
+
+  const sessionToken = await computeSessionToken(
+    internalUid,
+    uniqueEmail,
+    passwordHash
+  );
+
+  const profile: CloudUserProfile = {
+    uid: internalUid,
+    displayName: uniqueDisplayName,
+    email: uniqueEmail,
+    emailVerified: true,
+    isAnonymous: false,
+    tenantId: null,
+    role: 'user',
+    isVerifiedAdmin: false,
+    sessionToken,
+    providerData: [{ providerId: 'student_unique_id', email: uniqueEmail }],
+  };
+
+  notifyAuthListeners(profile);
+  return profile;
+}
+
+/**
  * Allows the authenticated Admin (`prattoy.photos01@gmail.com`) to update their Admin Password.
  */
 export async function updateAdminPassword(params: {
@@ -519,21 +616,22 @@ export async function updateAdminPassword(params: {
   }
 }
 
+// Pre-initialize the isolated Google OAuth Firebase App & Provider at module load time
+// so `signInWithPopup` runs synchronously inside the user click gesture without async popup delay.
+const googleAuthAppName = 'lw-google-auth';
+const googleAuthApp = getApps().some((a) => a.name === googleAuthAppName)
+  ? getApp(googleAuthAppName)
+  : initializeApp(firebaseConfig, googleAuthAppName);
+const isolatedGoogleAuth = getAuth(googleAuthApp);
+const googleOAuthProvider = new GoogleAuthProvider();
+googleOAuthProvider.setCustomParameters({ prompt: 'select_account' });
+
 /**
  * Real Google OAuth Popup sign-in via isolated Firebase App instance (`lw-google-auth`).
  * Grants Admin access ONLY if Google's official OAuth server verifies `prattoy.photos01@gmail.com`.
  */
 export async function signInWithGoogle(): Promise<CloudUserProfile> {
-  const authAppName = 'lw-google-auth';
-  const authApp = getApps().some((a) => a.name === authAppName)
-    ? getApp(authAppName)
-    : initializeApp(firebaseConfig, authAppName);
-
-  const isolatedAuth = getAuth(authApp);
-  const provider = new GoogleAuthProvider();
-  provider.setCustomParameters({ prompt: 'select_account' });
-
-  const result = await signInWithPopup(isolatedAuth, provider);
+  const result = await signInWithPopup(isolatedGoogleAuth, googleOAuthProvider);
   const fbUser = result.user;
   const email = (fbUser.email || '').trim().toLowerCase();
   if (!email) {
@@ -563,7 +661,7 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
   };
 
   try {
-    await firebaseSignOut(isolatedAuth);
+    await firebaseSignOut(isolatedGoogleAuth);
   } catch {
     // Ignore cleanup errors
   }
