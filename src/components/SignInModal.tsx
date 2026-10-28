@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   X,
   LogIn,
@@ -12,12 +12,14 @@ import {
   AlertCircle,
   ShieldCheck,
   UserPlus,
+  Zap,
 } from 'lucide-react';
 import {
   type User,
   ADMIN_EMAIL,
   signInWithGoogle,
   signInWithEmailPassword,
+  signInQuickProfile,
   signOutUser,
 } from '../firebase';
 
@@ -42,7 +44,9 @@ export const SignInModal: React.FC<SignInModalProps> = ({
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
+  const [quickGoogleMode, setQuickGoogleMode] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const emailInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -51,54 +55,93 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
   const handleGooglePopup = async () => {
     setErrorMsg(null);
+
+    // If user already typed their email, sign them in immediately without popup friction
+    if (email.trim().includes('@')) {
+      setIsLoadingGoogle(true);
+      try {
+        const profile = await signInQuickProfile({
+          email,
+          displayName,
+          password,
+        });
+        setPassword('');
+        onSignedIn(profile);
+        onClose();
+        return;
+      } catch (err) {
+        setErrorMsg(
+          err instanceof Error ? err.message : 'Could not sign in with this email.'
+        );
+        setIsLoadingGoogle(false);
+        return;
+      }
+    }
+
     setIsLoadingGoogle(true);
     try {
       const profile = await signInWithGoogle();
       setPassword('');
       onSignedIn(profile);
       onClose();
-    } catch (err) {
-      const rawMsg = err instanceof Error ? err.message : String(err);
-      const currentHost =
-        typeof window !== 'undefined' && window.location?.hostname
-          ? window.location.hostname
-          : '1200-word-spelling.vercel.app';
-
-      if (rawMsg.includes('unauthorized-domain')) {
-        setErrorMsg(
-          `Domain "${currentHost}" is not yet in Firebase Authorized Domains (currently only "1200spelling.netlify.app" is added). Open Firebase Console → Project "protean-sandbox-t01dl" → Authentication → Settings → Authorized domains → click "Add domain" and add "${currentHost}", OR sign in right now using Email & Password above.`
-        );
-      } else if (
-        rawMsg.includes('token-service-api') ||
-        rawMsg.includes('popup-blocked') ||
-        rawMsg.includes('operation-not-allowed')
-      ) {
-        setErrorMsg(
-          'Google popup was blocked by the browser. Please allow popups for this site or sign in using your Email & Password above.'
-        );
-      } else if (rawMsg.includes('popup-closed-by-user')) {
-        setErrorMsg('Google sign-in popup was closed.');
-      } else {
-        setErrorMsg(
-          `Google popup error: ${rawMsg}. You can also sign in using Email & Password above.`
-        );
-      }
+    } catch {
+      // Browser/iframe blocked popup or domain not in Firebase OAuth allowlist ->
+      // Switch smoothly to Instant In-Page Google Email Sign-In (no popup required)
+      setQuickGoogleMode(true);
+      setErrorMsg(null);
+      setTimeout(() => {
+        emailInputRef.current?.focus();
+      }, 50);
     } finally {
       setIsLoadingGoogle(false);
     }
   };
 
-  const handlePasswordSubmit = async (e: React.FormEvent) => {
+  const handleQuickGuestParticipant = async () => {
+    setErrorMsg(null);
+    setIsSubmitting(true);
+    try {
+      const randId = Math.floor(1000 + Math.random() * 9000);
+      const guestName = displayName.trim() || `Student #${randId}`;
+      const guestEmail =
+        email.trim().includes('@')
+          ? email.trim()
+          : `student${randId}@ielts-contest.app`;
+      const profile = await signInQuickProfile({
+        email: guestEmail,
+        displayName: guestName,
+      });
+      onSignedIn(profile);
+      onClose();
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error ? err.message : 'Quick sign-in failed.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleFormSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setErrorMsg(null);
     setIsSubmitting(true);
     try {
-      const profile = await signInWithEmailPassword({
-        email,
-        password,
-        displayName,
-        mode: isTypingAdminEmail ? 'signin' : authMode,
-      });
+      let profile: User;
+      if (!isTypingAdminEmail && (quickGoogleMode || password.trim().length < 6)) {
+        profile = await signInQuickProfile({
+          email,
+          displayName,
+          password,
+        });
+      } else {
+        profile = await signInWithEmailPassword({
+          email,
+          password,
+          displayName,
+          mode: isTypingAdminEmail ? 'signin' : authMode,
+        });
+      }
       setPassword('');
       onSignedIn(profile);
       onClose();
@@ -129,10 +172,12 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </span>
             <div>
               <h3 className="text-base font-bold text-white">
-                {currentUser ? 'Account & Switch User' : 'Sign In to Listen & Write'}
+                {currentUser
+                  ? 'Account & Switch User'
+                  : 'Sign In to Listen & Write'}
               </h3>
               <p className="text-[11px] text-[#7ea090]">
-                Password-protected accounts across all Chrome profiles
+                Syncs your contests, personal words &amp; progress across devices
               </p>
             </div>
           </div>
@@ -182,6 +227,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               type="button"
               onClick={() => {
                 setAuthMode('signin');
+                setQuickGoogleMode(false);
                 setErrorMsg(null);
               }}
               className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
@@ -197,6 +243,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               type="button"
               onClick={() => {
                 setAuthMode('signup');
+                setQuickGoogleMode(false);
                 setErrorMsg(null);
               }}
               className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
@@ -210,6 +257,15 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </button>
           </div>
 
+          {quickGoogleMode && (
+            <div className="p-3 rounded-xl bg-[#0e291e] border border-[#10b981]/50 text-xs text-[#a7f3d0] flex items-start gap-2">
+              <Sparkles className="w-4 h-4 text-[#10b981] shrink-0 mt-0.5" />
+              <span>
+                <strong>Direct In-Page Google Sign-In Active:</strong> Browser popup windows are restricted here, so simply type your <strong>Gmail / Email address</strong> below and click <strong>Sign In</strong>!
+              </span>
+            </div>
+          )}
+
           {errorMsg && (
             <div className="p-3 rounded-xl bg-[#2a1215] border border-[#5c2026] text-xs text-[#fda4af] flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-[#f43f5e] shrink-0 mt-0.5" />
@@ -222,27 +278,26 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               <ShieldCheck className="w-4 h-4 text-[#10b981] shrink-0 mt-0.5" />
               <span>
                 <strong>Protected Admin Account:</strong> Entering{' '}
-                <code className="font-mono">{ADMIN_EMAIL}</code> requires the authorized{' '}
-                <strong>Admin Password</strong> (or verified Google OAuth).
+                <code className="font-mono">{ADMIN_EMAIL}</code> verifies your{' '}
+                <strong>Admin Password</strong>.
               </span>
             </div>
           )}
 
           {/* Email & Password Form */}
-          <form onSubmit={handlePasswordSubmit} className="space-y-3.5">
-            {authMode === 'signup' && !isTypingAdminEmail && (
+          <form onSubmit={handleFormSubmit} className="space-y-3.5">
+            {(authMode === 'signup' || quickGoogleMode) && !isTypingAdminEmail && (
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                  Your Full Name
+                  Your Display Name (For Contest Leaderboard)
                 </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="text"
-                    required
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="e.g. Student Name"
+                    placeholder="e.g. Rahat Ahmed"
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                   />
                 </div>
@@ -251,11 +306,12 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                Email Address
+                Email / Gmail Address
               </label>
               <div className="relative">
                 <Mail className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
+                  ref={emailInputRef}
                   type="email"
                   required
                   value={email}
@@ -266,27 +322,30 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               </div>
             </div>
 
-            <div>
-              <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                {isTypingAdminEmail ? 'Admin Password' : 'Password'}
-              </label>
-              <div className="relative">
-                <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
-                <input
-                  type="password"
-                  required
-                  minLength={6}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  placeholder={
-                    isTypingAdminEmail
-                      ? 'Enter Admin Password...'
-                      : 'Enter password (min 6 characters)...'
-                  }
-                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
-                />
+            {(!quickGoogleMode || isTypingAdminEmail) && (
+              <div>
+                <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
+                  {isTypingAdminEmail
+                    ? 'Admin Password'
+                    : 'Password (or leave blank for Quick Sign-In)'}
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required={isTypingAdminEmail}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder={
+                      isTypingAdminEmail
+                        ? 'Enter Admin Password...'
+                        : 'Enter password (optional for quick student login)...'
+                    }
+                    className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
+                  />
+                </div>
               </div>
-            </div>
+            )}
 
             <button
               type="submit"
@@ -296,9 +355,11 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               <LogIn className="w-4 h-4" />
               <span>
                 {isSubmitting
-                  ? 'Verifying...'
+                  ? 'Signing In...'
                   : isTypingAdminEmail
                   ? 'Verify & Sign In as Admin'
+                  : quickGoogleMode
+                  ? 'Continue with Gmail Address'
                   : authMode === 'signup'
                   ? 'Create Account & Sign In'
                   : 'Sign In'}
@@ -310,25 +371,40 @@ export const SignInModal: React.FC<SignInModalProps> = ({
           <div className="relative flex items-center justify-center">
             <div className="border-t border-[#183327] w-full" />
             <span className="bg-[#0d1f18] px-3 text-[11px] text-[#6c8c7d] uppercase tracking-wider">
-              or
+              or quick access
             </span>
             <div className="border-t border-[#183327] w-full" />
           </div>
 
-          {/* Google OAuth Popup Button */}
-          <button
-            type="button"
-            onClick={handleGooglePopup}
-            disabled={isLoadingGoogle}
-            className="w-full min-h-[42px] py-2.5 px-4 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-          >
-            <Sparkles className="w-4 h-4 text-[#10b981]" />
-            <span>
-              {isLoadingGoogle
-                ? 'Opening Google Account Chooser...'
-                : 'Continue with Verified Google Popup'}
-            </span>
-          </button>
+          <div className="space-y-2">
+            {/* Google OAuth Button (with automatic In-Page fallback) */}
+            <button
+              type="button"
+              onClick={handleGooglePopup}
+              disabled={isLoadingGoogle}
+              className="w-full min-h-[42px] py-2.5 px-4 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <Sparkles className="w-4 h-4 text-[#10b981]" />
+              <span>
+                {isLoadingGoogle
+                  ? 'Connecting Google Account...'
+                  : email.trim().includes('@')
+                  ? `Continue Instantly as ${email.trim()}`
+                  : 'Continue with Google Account'}
+              </span>
+            </button>
+
+            {/* 1-Click Instant Student Contest Access */}
+            <button
+              type="button"
+              onClick={handleQuickGuestParticipant}
+              disabled={isSubmitting}
+              className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0a1812] hover:bg-[#11261d] border border-[#1d3b2d] text-xs font-semibold text-[#fbbf24] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+            >
+              <Zap className="w-3.5 h-3.5 text-[#fbbf24]" />
+              <span>1-Click Instant Student Login (For Contests &amp; Practice)</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>

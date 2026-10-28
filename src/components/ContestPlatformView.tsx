@@ -39,7 +39,7 @@ import {
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
-import type { User } from '../firebase';
+import { signInQuickProfile, type User } from '../firebase';
 
 interface ContestPlatformViewProps {
   user: User | null;
@@ -182,6 +182,9 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   } | null>(null);
 
   // Create Contest Form State
+  const [participantNameInput, setParticipantNameInput] = useState<string>(
+    () => user?.displayName || ''
+  );
   const [titleInput, setTitleInput] = useState<string>(
     'IELTS Live Spelling Contest'
   );
@@ -275,13 +278,33 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     return list.find((s) => s.userId === currentUserIdSanitized);
   }, [selectedContest, submissionsByContest, currentUserIdSanitized]);
 
+  const ensureSignedInForContest = useCallback(async (): Promise<User | null> => {
+    if (user) return user;
+    const randNum = Math.floor(1000 + Math.random() * 9000);
+    const chosenName =
+      participantNameInput.trim() || `Participant #${randNum}`;
+    const slug = chosenName
+      .toLowerCase()
+      .replace(/[^a-z0-9]/g, '')
+      .slice(0, 24);
+    const autoEmail = `${slug || 'student'}${randNum}@contest.listenwrite.app`;
+    return signInQuickProfile({
+      email: autoEmail,
+      displayName: chosenName,
+    });
+  }, [user, participantNameInput]);
+
   // Launch the strict contest exam for a contest that is currently LIVE
   const handleStartLiveContestExam = useCallback(
-    (contest: ContestRecord) => {
-      if (!user) {
+    async (contest: ContestRecord) => {
+      const activeUser = await ensureSignedInForContest();
+      if (!activeUser) {
         onRequestSignIn();
         return;
       }
+      const activeUserIdSanitized = activeUser.uid
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 120);
       const phase = getContestPhase(contest, Date.now());
       if (phase === 'upcoming') {
         setStatusMessage({
@@ -299,7 +322,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       }
 
       const existingSub = (submissionsByContest[contest.id] || []).find(
-        (s) => s.userId === currentUserIdSanitized
+        (s) => s.userId === activeUserIdSanitized
       );
       if (existingSub?.status === 'completed') {
         setStatusMessage({
@@ -327,7 +350,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       latestExamInputRef.current = '';
       setExamStartedAtMs(Date.now());
     },
-    [user, onRequestSignIn, submissionsByContest, currentUserIdSanitized]
+    [ensureSignedInForContest, onRequestSignIn, submissionsByContest]
   );
 
   // Auto-launch exam if the user registered for the selected contest, is waiting in the lobby,
@@ -348,7 +371,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       mySubmissionForSelected?.status === 'registered' &&
       nowMs - selectedContest.startTimeMs < 4000
     ) {
-      handleStartLiveContestExam(selectedContest);
+      void handleStartLiveContestExam(selectedContest);
     }
   }, [
     nowMs,
@@ -504,8 +527,22 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
 
   const handleCreateContestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!user) {
-      onRequestSignIn();
+    setIsCreating(true);
+    setStatusMessage(null);
+
+    try {
+      const activeUser = await ensureSignedInForContest();
+      if (!activeUser) {
+        onRequestSignIn();
+        setIsCreating(false);
+        return;
+      }
+    } catch (err) {
+      setStatusMessage({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Sign-in failed.',
+      });
+      setIsCreating(false);
       return;
     }
 
@@ -755,13 +792,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
 
           <button
             type="button"
-            onClick={() => {
-              if (!user) {
-                onRequestSignIn();
-                return;
-              }
-              setActiveTab('create');
-            }}
+            onClick={() => setActiveTab('create')}
             className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
               activeTab === 'create'
                 ? 'bg-[#fbbf24] text-[#08120e]'
@@ -849,6 +880,27 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
           </div>
 
           <form onSubmit={handleCreateContestSubmit} className="space-y-6">
+            {!user && (
+              <div>
+                <label
+                  htmlFor="setter-display-name"
+                  className="block text-xs font-bold text-[#fbbf24] mb-2"
+                >
+                  Your Display Name (Setter &amp; Leaderboard Name)
+                </label>
+                <input
+                  id="setter-display-name"
+                  type="text"
+                  required
+                  maxLength={80}
+                  value={participantNameInput}
+                  onChange={(e) => setParticipantNameInput(e.target.value)}
+                  placeholder="e.g., Prattoy / Rahat"
+                  className="w-full min-h-[46px] px-4 py-2.5 rounded-xl bg-[#08130e] border border-[#fbbf24]/50 focus:border-[#fbbf24] text-sm font-semibold text-white focus:outline-none"
+                />
+              </div>
+            )}
+
             {/* 1. Contest Title */}
             <div>
               <label
@@ -1135,13 +1187,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
               </h2>
               <button
                 type="button"
-                onClick={() => {
-                  if (!user) {
-                    onRequestSignIn();
-                    return;
-                  }
-                  setActiveTab('create');
-                }}
+                onClick={() => setActiveTab('create')}
                 className="text-xs font-bold text-[#10b981] hover:underline flex items-center gap-1"
               >
                 <Plus className="w-3.5 h-3.5" />
@@ -1157,13 +1203,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                 </p>
                 <button
                   type="button"
-                  onClick={() => {
-                    if (!user) {
-                      onRequestSignIn();
-                      return;
-                    }
-                    setActiveTab('create');
-                  }}
+                  onClick={() => setActiveTab('create')}
                   className="min-h-[42px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
                 >
                   <Plus className="w-4 h-4" />
@@ -1361,16 +1401,18 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                           </div>
 
                           <div className="flex flex-col gap-2 shrink-0">
-                            {!user ? (
-                              <button
-                                type="button"
-                                onClick={onRequestSignIn}
-                                className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] text-[#04120c] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2"
-                              >
-                                <LogIn className="w-4 h-4" />
-                                <span>Sign In to Join Lobby</span>
-                              </button>
-                            ) : mySubmissionForSelected ? (
+                            {!user && (
+                              <input
+                                type="text"
+                                value={participantNameInput}
+                                onChange={(e) =>
+                                  setParticipantNameInput(e.target.value)
+                                }
+                                placeholder="Your Name for Leaderboard..."
+                                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#fbbf24]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none"
+                              />
+                            )}
+                            {mySubmissionForSelected ? (
                               <div className="px-4 py-2.5 rounded-xl bg-[#0e291e] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2">
                                 <CheckCircle2 className="w-4 h-4 shrink-0" />
                                 <span>
@@ -1380,9 +1422,10 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             ) : (
                               <button
                                 type="button"
-                                onClick={() =>
-                                  void registerForContest(selectedContest)
-                                }
+                                onClick={async () => {
+                                  await ensureSignedInForContest();
+                                  await registerForContest(selectedContest);
+                                }}
                                 className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2"
                               >
                                 <Users className="w-4 h-4" />
@@ -1390,21 +1433,19 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                               </button>
                             )}
 
-                            {user && (
-                              <label className="flex items-center gap-2 text-[11px] text-[#9ab5a7] cursor-pointer">
-                                <input
-                                  type="checkbox"
-                                  checked={autoStartWhenLive}
-                                  onChange={(e) =>
-                                    setAutoStartWhenLive(e.target.checked)
-                                  }
-                                  className="rounded accent-[#10b981]"
-                                />
-                                <span>
-                                  Auto-launch exam when countdown hits 00:00
-                                </span>
-                              </label>
-                            )}
+                            <label className="flex items-center gap-2 text-[11px] text-[#9ab5a7] cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={autoStartWhenLive}
+                                onChange={(e) =>
+                                  setAutoStartWhenLive(e.target.checked)
+                                }
+                                className="rounded accent-[#10b981]"
+                              />
+                              <span>
+                                Auto-launch exam when countdown hits 00:00
+                              </span>
+                            </label>
                           </div>
                         </div>
                       </div>
@@ -1426,36 +1467,40 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             </p>
                           </div>
 
-                          {!user ? (
-                            <button
-                              type="button"
-                              onClick={onRequestSignIn}
-                              className="min-h-[48px] px-5 py-3 rounded-xl bg-[#10b981] text-[#04120c] font-extrabold text-xs sm:text-sm flex items-center gap-2 shrink-0"
-                            >
-                              <LogIn className="w-4 h-4" />
-                              <span>Sign In to Enter Contest</span>
-                            </button>
-                          ) : mySubmissionForSelected?.status === 'completed' ? (
-                            <div className="px-4 py-3 rounded-xl bg-[#081610] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2 shrink-0">
-                              <CheckCircle2 className="w-4 h-4" />
-                              <span>
-                                Completed: {mySubmissionForSelected.correctCount}/
-                                {mySubmissionForSelected.totalWords} (
-                                {mySubmissionForSelected.accuracy}%)
-                              </span>
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() =>
-                                handleStartLiveContestExam(selectedContest)
-                              }
-                              className="min-h-[50px] px-6 py-3 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] font-extrabold text-sm flex items-center gap-2 shrink-0 shadow-lg animate-bounce"
-                            >
-                              <Play className="w-4 h-4 fill-[#08120e]" />
-                              <span>Enter Strict Contest Exam Now</span>
-                            </button>
-                          )}
+                          <div className="flex flex-col gap-2 shrink-0">
+                            {!user && (
+                              <input
+                                type="text"
+                                value={participantNameInput}
+                                onChange={(e) =>
+                                  setParticipantNameInput(e.target.value)
+                                }
+                                placeholder="Your Name for Leaderboard..."
+                                className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#10b981]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none"
+                              />
+                            )}
+                            {mySubmissionForSelected?.status === 'completed' ? (
+                              <div className="px-4 py-3 rounded-xl bg-[#081610] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2 shrink-0">
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>
+                                  Completed: {mySubmissionForSelected.correctCount}/
+                                  {mySubmissionForSelected.totalWords} (
+                                  {mySubmissionForSelected.accuracy}%)
+                                </span>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  void handleStartLiveContestExam(selectedContest)
+                                }
+                                className="min-h-[50px] px-6 py-3 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] font-extrabold text-sm flex items-center justify-center gap-2 shrink-0 shadow-lg"
+                              >
+                                <Play className="w-4 h-4 fill-[#08120e]" />
+                                <span>Enter Strict Contest Exam Now</span>
+                              </button>
+                            )}
+                          </div>
                         </div>
                       </div>
                     ) : (
