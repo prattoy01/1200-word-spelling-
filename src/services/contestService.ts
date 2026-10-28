@@ -120,6 +120,91 @@ export function getContestCandidatePool(
   });
 }
 
+export interface ContestWordSlot {
+  index: number;
+  word: WordItem;
+  startMs: number;
+  endMs: number;
+  durationMs: number;
+  play1AtMs: number;
+  play2AtMs: number;
+  play3AtMs: number;
+}
+
+export interface ContestAttemptLockedWord {
+  userAnswer: string;
+  lockedAfterMs: number;
+  lockedAtWallMs: number;
+  autoLockedByTabSwitch?: boolean;
+  missedWhileAway?: boolean;
+}
+
+export interface ContestAttemptCheckpoint {
+  contestId: string;
+  userId: string;
+  userName: string;
+  status: 'in_progress' | 'completed';
+  lockedWords: Record<number, ContestAttemptLockedWord>;
+  tabSwitchCount: number;
+  startedAtMs: number;
+  updatedAtMs: number;
+}
+
+const LOCAL_ATTEMPT_LOCKS_KEY = 'lw_contest_attempt_locks_v2';
+
+export function computeDeterministicWordTiming(
+  word: WordItem,
+  baseWritingSec = 12
+) {
+  const singlePlayDurationMs = Math.max(
+    950,
+    Math.min(3200, word.word.length * 105)
+  );
+  const pauseBetweenPlaysMs = 2100;
+  const play1AtMs = 150;
+  const play2AtMs = play1AtMs + singlePlayDurationMs + pauseBetweenPlaysMs;
+  const play3AtMs = play2AtMs + singlePlayDurationMs + pauseBetweenPlaysMs;
+  const threePlaysTotalSec = Math.ceil(
+    (play3AtMs + singlePlayDurationMs) / 1000
+  );
+
+  const extraCharSec = Math.max(0, Math.ceil((word.word.length - 7) * 0.45));
+  const totalWindowSec = Math.max(
+    baseWritingSec,
+    threePlaysTotalSec +
+      Math.max(4, Math.floor(baseWritingSec * 0.55)) +
+      extraCharSec
+  );
+
+  return {
+    singlePlayDurationMs,
+    play1AtMs,
+    play2AtMs,
+    play3AtMs,
+    totalWindowSec,
+    durationMs: totalWindowSec * 1000,
+  };
+}
+
+function deriveDeckUnconditionalInternal(contest: ContestRecord): WordItem[] {
+  const pool = [
+    ...getContestCandidatePool(contest.pageFilter, contest.categories),
+  ];
+  if (pool.length === 0) return [];
+  pool.sort((a, b) => a.id.localeCompare(b.id));
+
+  const seedMaterial = `${contest.id}::${contest.randomSeed}::${contest.startTimeMs}::${contest.wordCount}`;
+  const rand = createSeededPrng(seedMaterial);
+
+  for (let i = pool.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [pool[i], pool[j]] = [pool[j], pool[i]];
+  }
+
+  const targetCount = Math.max(1, Math.min(pool.length, contest.wordCount));
+  return pool.slice(0, targetCount);
+}
+
 /**
  * Deterministically derives the exact contest word deck ONLY once the contest start time has arrived.
  * Before `contest.startTimeMs`, this returns `[]` so even the contest setter cannot see the words.
@@ -132,24 +217,106 @@ export function deriveContestWordDeck(
     // Strictly blind before exam start time — nobody (not even the setter) can see the words
     return [];
   }
+  return deriveDeckUnconditionalInternal(contest);
+}
 
-  const pool = [...getContestCandidatePool(contest.pageFilter, contest.categories)];
-  if (pool.length === 0) return [];
+/**
+ * Computes the exact synchronized broadcast timeline for a contest.
+ * Every participant hears Word #1 at `contest.startTimeMs` and finishes the last word at the exact same `endTimeMs`.
+ */
+export function getContestSynchronizedSummary(contest: ContestRecord): {
+  totalDurationMs: number;
+  startTimeMs: number;
+  endTimeMs: number;
+} {
+  const deck = deriveDeckUnconditionalInternal(contest);
+  let totalDurationMs = 0;
+  for (const w of deck) {
+    totalDurationMs += computeDeterministicWordTiming(
+      w,
+      contest.baseSeconds
+    ).durationMs;
+  }
+  if (totalDurationMs <= 0) {
+    totalDurationMs = Math.max(60000, contest.wordCount * 15000);
+  }
+  return {
+    totalDurationMs,
+    startTimeMs: contest.startTimeMs,
+    endTimeMs: contest.startTimeMs + totalDurationMs,
+  };
+}
 
-  // Sort by deterministic ID first so catalog order is 100% identical across all devices
-  pool.sort((a, b) => a.id.localeCompare(b.id));
+/**
+ * Returns the exact simultaneous end timestamp (ms) when the final word finishes for all participants.
+ */
+export function getContestEndTimeMs(contest: ContestRecord): number {
+  return getContestSynchronizedSummary(contest).endTimeMs;
+}
 
-  const seedMaterial = `${contest.id}::${contest.randomSeed}::${contest.startTimeMs}::${contest.wordCount}`;
-  const rand = createSeededPrng(seedMaterial);
+/**
+ * Returns the live word slots ONLY once `nowMs >= contest.startTimeMs`.
+ */
+export function getLiveContestTimeline(
+  contest: ContestRecord,
+  nowMs: number = Date.now()
+): {
+  slots: ContestWordSlot[];
+  activeSlotIndex: number;
+  startTimeMs: number;
+  endTimeMs: number;
+  isFinished: boolean;
+} {
+  const deck = deriveContestWordDeck(contest, nowMs);
+  const slots: ContestWordSlot[] = [];
+  let cursorMs = contest.startTimeMs;
 
-  // Deterministic Fisher-Yates shuffle
-  for (let i = pool.length - 1; i > 0; i--) {
-    const j = Math.floor(rand() * (i + 1));
-    [pool[i], pool[j]] = [pool[j], pool[i]];
+  for (let i = 0; i < deck.length; i++) {
+    const w = deck[i];
+    const t = computeDeterministicWordTiming(w, contest.baseSeconds);
+    slots.push({
+      index: i,
+      word: w,
+      startMs: cursorMs,
+      endMs: cursorMs + t.durationMs,
+      durationMs: t.durationMs,
+      play1AtMs: t.play1AtMs,
+      play2AtMs: t.play2AtMs,
+      play3AtMs: t.play3AtMs,
+    });
+    cursorMs += t.durationMs;
   }
 
-  const targetCount = Math.max(1, Math.min(pool.length, contest.wordCount));
-  return pool.slice(0, targetCount);
+  const endTimeMs =
+    slots.length > 0 ? slots[slots.length - 1].endMs : contest.startTimeMs;
+  if (nowMs >= endTimeMs || slots.length === 0) {
+    return {
+      slots,
+      activeSlotIndex: Math.max(0, slots.length - 1),
+      startTimeMs: contest.startTimeMs,
+      endTimeMs,
+      isFinished: nowMs >= endTimeMs,
+    };
+  }
+
+  let activeIdx = 0;
+  for (let i = 0; i < slots.length; i++) {
+    if (nowMs >= slots[i].startMs && nowMs < slots[i].endMs) {
+      activeIdx = i;
+      break;
+    }
+    if (nowMs >= slots[i].endMs) {
+      activeIdx = i;
+    }
+  }
+
+  return {
+    slots,
+    activeSlotIndex: activeIdx,
+    startTimeMs: contest.startTimeMs,
+    endTimeMs,
+    isFinished: false,
+  };
 }
 
 export function getContestPhase(
@@ -157,10 +324,40 @@ export function getContestPhase(
   nowMs: number = Date.now()
 ): 'upcoming' | 'live' | 'ended' | 'cancelled' {
   if (contest.status === 'cancelled') return 'cancelled';
-  const endTimeMs = contest.startTimeMs + contest.durationMinutes * 60 * 1000;
+  const endTimeMs = getContestEndTimeMs(contest);
   if (nowMs < contest.startTimeMs) return 'upcoming';
-  if (nowMs <= endTimeMs) return 'live';
+  if (nowMs < endTimeMs) return 'live';
   return 'ended';
+}
+
+function readAllAttemptLocks(): Record<string, ContestAttemptCheckpoint> {
+  try {
+    const raw = localStorage.getItem(LOCAL_ATTEMPT_LOCKS_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+export function getDeviceContestLock(
+  contestId: string
+): ContestAttemptCheckpoint | null {
+  const all = readAllAttemptLocks();
+  return all[contestId] || null;
+}
+
+export function saveDeviceContestCheckpoint(
+  checkpoint: ContestAttemptCheckpoint
+): void {
+  try {
+    const all = readAllAttemptLocks();
+    all[checkpoint.contestId] = checkpoint;
+    localStorage.setItem(LOCAL_ATTEMPT_LOCKS_KEY, JSON.stringify(all));
+  } catch {
+    // Ignore storage quota warnings
+  }
 }
 
 function readLocalContests(): ContestRecord[] {
@@ -174,9 +371,26 @@ function readLocalContests(): ContestRecord[] {
   }
 }
 
+const CONTEST_BROADCAST_CHANNEL = 'lw_contest_realtime_sync_v1';
+
+function notifyContestSyncListeners(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel(CONTEST_BROADCAST_CHANNEL);
+      bc.postMessage({ type: 'CONTEST_DATA_UPDATED', ts: Date.now() });
+      bc.close();
+    }
+    window.dispatchEvent(new CustomEvent('lw-contest-local-update'));
+  } catch {
+    // Ignore BroadcastChannel errors
+  }
+}
+
 function writeLocalContests(list: ContestRecord[]): void {
   try {
     localStorage.setItem(LOCAL_CONTESTS_KEY, JSON.stringify(list.slice(0, 80)));
+    notifyContestSyncListeners();
   } catch {
     // Ignore storage quota warnings
   }
@@ -199,6 +413,7 @@ function writeLocalSubmissions(list: ContestSubmissionRecord[]): void {
       LOCAL_SUBMISSIONS_KEY,
       JSON.stringify(list.slice(0, 200))
     );
+    notifyContestSyncListeners();
   } catch {
     // Ignore storage quota warnings
   }
@@ -284,24 +499,28 @@ export async function createScheduledContest(params: {
   const existingLocal = readLocalContests().filter((c) => c.id !== contestId);
   writeLocalContests([record, ...existingLocal]);
 
-  const docRef = doc(db, CONTESTS_PATH, contestId);
-  await setDoc(docRef, {
-    id: record.id,
-    title: record.title,
-    creatorId: record.creatorId,
-    creatorName: record.creatorName,
-    pageFilter: record.pageFilter,
-    categories: record.categories,
-    wordCount: record.wordCount,
-    baseSeconds: record.baseSeconds,
-    showBangla: record.showBangla,
-    startTimeMs: record.startTimeMs,
-    durationMinutes: record.durationMinutes,
-    randomSeed: record.randomSeed,
-    status: 'active',
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  try {
+    const docRef = doc(db, CONTESTS_PATH, contestId);
+    await setDoc(docRef, {
+      id: record.id,
+      title: record.title,
+      creatorId: record.creatorId,
+      creatorName: record.creatorName,
+      pageFilter: record.pageFilter,
+      categories: record.categories,
+      wordCount: record.wordCount,
+      baseSeconds: record.baseSeconds,
+      showBangla: record.showBangla,
+      startTimeMs: record.startTimeMs,
+      durationMinutes: record.durationMinutes,
+      randomSeed: record.randomSeed,
+      status: 'active',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn('Contest saved locally (cloud quota/offline fallback):', err);
+  }
 
   return record;
 }
@@ -312,10 +531,14 @@ export async function deleteOrCancelContest(contestId: string): Promise<void> {
   try {
     await deleteDoc(doc(db, CONTESTS_PATH, contestId));
   } catch {
-    await updateDoc(doc(db, CONTESTS_PATH, contestId), {
-      status: 'cancelled',
-      updatedAt: serverTimestamp(),
-    });
+    try {
+      await updateDoc(doc(db, CONTESTS_PATH, contestId), {
+        status: 'cancelled',
+        updatedAt: serverTimestamp(),
+      });
+    } catch {
+      // Ignore if offline or quota reached
+    }
   }
 }
 
@@ -364,20 +587,115 @@ export async function registerForContest(
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
-  await setDoc(doc(db, SUBMISSIONS_PATH, subId), {
-    id: record.id,
-    contestId: record.contestId,
-    userId: record.userId,
-    userName: record.userName,
-    userEmail: record.userEmail,
-    status: 'registered',
-    totalWords: record.totalWords,
-    correctCount: 0,
-    accuracy: 0,
-    timeTakenMs: 0,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  });
+  try {
+    await setDoc(doc(db, SUBMISSIONS_PATH, subId), {
+      id: record.id,
+      contestId: record.contestId,
+      userId: record.userId,
+      userName: record.userName,
+      userEmail: record.userEmail,
+      status: 'registered',
+      totalWords: record.totalWords,
+      correctCount: 0,
+      accuracy: 0,
+      timeTakenMs: 0,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn('Contest registration saved locally (cloud quota/offline fallback):', err);
+  }
+
+  return record;
+}
+
+/**
+ * Marks a user's contest attempt as 'in_progress' in both local cache and Cloud Firestore
+ * so leaving or refreshing the page can never reset their attempt back to 'registered' or Word 1.
+ */
+export async function markContestAttemptInProgress(params: {
+  contest: ContestRecord;
+  existingSubmission?: ContestSubmissionRecord;
+  correctCountSoFar?: number;
+  timeTakenMsSoFar?: number;
+}): Promise<ContestSubmissionRecord> {
+  const user = auth.currentUser;
+  if (!user) {
+    throw new Error('Please sign in to enter this contest.');
+  }
+
+  const userId = sanitizeId(user.uid);
+  const subId = getSubmissionDocId(params.contest.id, userId);
+  const userName = (
+    user.displayName ||
+    user.email?.split('@')[0] ||
+    'Participant'
+  )
+    .trim()
+    .slice(0, 120);
+  const userEmail = (user.email || '').trim().slice(0, 160);
+  const nowMs = Date.now();
+  const totalWords = Math.max(1, Math.min(200, params.contest.wordCount));
+  const correctCount = Math.max(
+    0,
+    Math.min(totalWords, Math.round(params.correctCountSoFar || 0))
+  );
+  const accuracy = Math.round((correctCount / totalWords) * 100);
+  const timeTakenMs = Math.max(
+    0,
+    Math.min(7200000, Math.round(params.timeTakenMsSoFar || 0))
+  );
+
+  const record: ContestSubmissionRecord = {
+    id: subId,
+    contestId: params.contest.id,
+    userId,
+    userName,
+    userEmail,
+    status: 'in_progress',
+    totalWords,
+    correctCount,
+    accuracy,
+    timeTakenMs,
+    createdAtMs: params.existingSubmission?.createdAtMs || nowMs,
+    updatedAtMs: nowMs,
+  };
+
+  const localList = readLocalSubmissions().filter((s) => s.id !== subId);
+  writeLocalSubmissions([record, ...localList]);
+
+  const docRef = doc(db, SUBMISSIONS_PATH, subId);
+  try {
+    if (params.existingSubmission) {
+      await updateDoc(docRef, {
+        userName: record.userName,
+        userEmail: record.userEmail,
+        status: 'in_progress',
+        totalWords: record.totalWords,
+        correctCount: record.correctCount,
+        accuracy: record.accuracy,
+        timeTakenMs: record.timeTakenMs,
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await setDoc(docRef, {
+        id: record.id,
+        contestId: record.contestId,
+        userId: record.userId,
+        userName: record.userName,
+        userEmail: record.userEmail,
+        status: 'in_progress',
+        totalWords: record.totalWords,
+        correctCount: record.correctCount,
+        accuracy: record.accuracy,
+        timeTakenMs: record.timeTakenMs,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch {
+    // Ignore transient cloud sync error; local checkpoint is already saved
+  }
 
   return record;
 }
@@ -484,22 +802,25 @@ export async function submitContestExamResult(params: {
       });
     }
   } catch {
-    // Fallback if document didn't exist in cloud yet
-    await setDoc(docRef, {
-      id: record.id,
-      contestId: record.contestId,
-      userId: record.userId,
-      userName: record.userName,
-      userEmail: record.userEmail,
-      status: 'completed',
-      totalWords: record.totalWords,
-      correctCount: record.correctCount,
-      accuracy: record.accuracy,
-      timeTakenMs: record.timeTakenMs,
-      results: sanitizedResults,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    try {
+      await setDoc(docRef, {
+        id: record.id,
+        contestId: record.contestId,
+        userId: record.userId,
+        userName: record.userName,
+        userEmail: record.userEmail,
+        status: 'completed',
+        totalWords: record.totalWords,
+        correctCount: record.correctCount,
+        accuracy: record.accuracy,
+        timeTakenMs: record.timeTakenMs,
+        results: sanitizedResults,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } catch (err) {
+      console.warn('Contest submission saved locally (cloud quota/offline fallback):', err);
+    }
   }
 
   // Also save to the user's personal Practice/Exam history so their per-word accuracy bars update!
@@ -542,133 +863,124 @@ export async function syncContestsNow(): Promise<{
   contests: ContestRecord[];
   submissions: ContestSubmissionRecord[];
 }> {
-  const qContests = query(
-    collection(db, CONTESTS_PATH),
-    where('status', 'in', ['active', 'cancelled']),
-    limit(60)
-  );
-  const qSubs = query(
-    collection(db, SUBMISSIONS_PATH),
-    where('status', 'in', ['registered', 'in_progress', 'completed']),
-    limit(200)
-  );
+  try {
+    const qContests = query(
+      collection(db, CONTESTS_PATH),
+      where('status', 'in', ['active', 'cancelled']),
+      limit(60)
+    );
+    const qSubs = query(
+      collection(db, SUBMISSIONS_PATH),
+      where('status', 'in', ['registered', 'in_progress', 'completed']),
+      limit(200)
+    );
 
-  const [contestSnap, subSnap] = await Promise.all([
-    getDocs(qContests),
-    getDocs(qSubs),
-  ]);
+    const [contestSnap, subSnap] = await Promise.all([
+      getDocs(qContests),
+      getDocs(qSubs),
+    ]);
 
-  const cloudIds = new Set<string>();
-  const cancelledIds = new Set<string>();
-  const list: ContestRecord[] = [];
+    const cloudIds = new Set<string>();
+    const cancelledIds = new Set<string>();
+    const list: ContestRecord[] = [];
 
-  contestSnap.forEach((docSnap) => {
-    const d = docSnap.data();
-    const cid = d.id || docSnap.id;
-    cloudIds.add(cid);
-    if (d.status === 'cancelled') {
-      cancelledIds.add(cid);
-      return;
-    }
-    list.push({
-      id: cid,
-      title: d.title || 'IELTS Spelling Contest',
-      creatorId: d.creatorId || 'user',
-      creatorName: d.creatorName || 'Setter',
-      pageFilter:
-        d.pageFilter === 'page1' || d.pageFilter === 'page2'
-          ? d.pageFilter
-          : 'all',
-      categories: Array.isArray(d.categories) ? d.categories : [],
-      wordCount: Number(d.wordCount) || 10,
-      baseSeconds: Number(d.baseSeconds) || 12,
-      showBangla: Boolean(d.showBangla),
-      startTimeMs: Number(d.startTimeMs) || Date.now(),
-      durationMinutes: Number(d.durationMinutes) || 30,
-      randomSeed: String(d.randomSeed || 'default_seed_12345'),
-      status: 'active',
-      createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-      updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-    });
-  });
-
-  // If this device has any local active contests that haven't synced to Firestore yet, push them to Cloud now
-  const localContests = readLocalContests();
-  for (const loc of localContests) {
-    if (
-      loc.status === 'active' &&
-      !cloudIds.has(loc.id) &&
-      !cancelledIds.has(loc.id)
-    ) {
-      list.push(loc);
-      void setDoc(doc(db, CONTESTS_PATH, loc.id), {
-        id: loc.id,
-        title: loc.title.slice(0, 140),
-        creatorId: sanitizeId(loc.creatorId),
-        creatorName: (loc.creatorName || 'Setter').slice(0, 120),
+    contestSnap.forEach((docSnap) => {
+      const d = docSnap.data();
+      const cid = d.id || docSnap.id;
+      cloudIds.add(cid);
+      if (d.status === 'cancelled') {
+        cancelledIds.add(cid);
+        return;
+      }
+      list.push({
+        id: cid,
+        title: d.title || 'IELTS Spelling Contest',
+        creatorId: d.creatorId || 'user',
+        creatorName: d.creatorName || 'Setter',
         pageFilter:
-          loc.pageFilter === 'page1' || loc.pageFilter === 'page2'
-            ? loc.pageFilter
+          d.pageFilter === 'page1' || d.pageFilter === 'page2'
+            ? d.pageFilter
             : 'all',
-        categories: Array.isArray(loc.categories)
-          ? loc.categories.slice(0, 50)
-          : [],
-        wordCount: Math.max(1, Math.min(200, Number(loc.wordCount) || 15)),
-        baseSeconds: Math.max(5, Math.min(60, Number(loc.baseSeconds) || 12)),
-        showBangla: Boolean(loc.showBangla),
-        startTimeMs: Math.max(
-          1700000000000,
-          Number(loc.startTimeMs) || Date.now()
-        ),
-        durationMinutes: Math.max(
-          5,
-          Math.min(1440, Number(loc.durationMinutes) || 30)
-        ),
-        randomSeed: String(loc.randomSeed || generateRandomSeed()),
+        categories: Array.isArray(d.categories) ? d.categories : [],
+        wordCount: Number(d.wordCount) || 10,
+        baseSeconds: Number(d.baseSeconds) || 12,
+        showBangla: Boolean(d.showBangla),
+        startTimeMs: Number(d.startTimeMs) || Date.now(),
+        durationMinutes: Number(d.durationMinutes) || 30,
+        randomSeed: String(d.randomSeed || 'default_seed_12345'),
         status: 'active',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      }).catch(() => {});
-    }
-  }
-
-  const sortedContests = sortContestsLiveFirst(list);
-  writeLocalContests(sortedContests);
-
-  const subList: ContestSubmissionRecord[] = [];
-  subSnap.forEach((docSnap) => {
-    const d = docSnap.data();
-    subList.push({
-      id: d.id || docSnap.id,
-      contestId: d.contestId || '',
-      userId: d.userId || '',
-      userName: d.userName || 'Participant',
-      userEmail: d.userEmail || '',
-      status:
-        d.status === 'completed' || d.status === 'in_progress'
-          ? d.status
-          : 'registered',
-      totalWords: Number(d.totalWords) || 10,
-      correctCount: Number(d.correctCount) || 0,
-      accuracy: Number(d.accuracy) || 0,
-      timeTakenMs: Number(d.timeTakenMs) || 0,
-      results: Array.isArray(d.results) ? d.results : undefined,
-      createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-      updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      });
     });
-  });
-  writeLocalSubmissions(subList);
 
-  return { contests: sortedContests, submissions: subList };
+    const localContests = readLocalContests();
+    for (const loc of localContests) {
+      if (
+        loc.status === 'active' &&
+        !cloudIds.has(loc.id) &&
+        !cancelledIds.has(loc.id)
+      ) {
+        list.push(loc);
+      }
+    }
+
+    const sortedContests = sortContestsLiveFirst(list);
+    writeLocalContests(sortedContests);
+
+    const cloudSubIds = new Set<string>();
+    const subList: ContestSubmissionRecord[] = [];
+    subSnap.forEach((docSnap) => {
+      const d = docSnap.data();
+      const sid = d.id || docSnap.id;
+      cloudSubIds.add(sid);
+      subList.push({
+        id: sid,
+        contestId: d.contestId || '',
+        userId: d.userId || '',
+        userName: d.userName || 'Participant',
+        userEmail: d.userEmail || '',
+        status:
+          d.status === 'completed' || d.status === 'in_progress'
+            ? d.status
+            : 'registered',
+        totalWords: Number(d.totalWords) || 10,
+        correctCount: Number(d.correctCount) || 0,
+        accuracy: Number(d.accuracy) || 0,
+        timeTakenMs: Number(d.timeTakenMs) || 0,
+        results: Array.isArray(d.results) ? d.results : undefined,
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      });
+    });
+
+    for (const locSub of readLocalSubmissions()) {
+      if (!cloudSubIds.has(locSub.id)) {
+        subList.push(locSub);
+      }
+    }
+    writeLocalSubmissions(subList);
+
+    return { contests: sortedContests, submissions: subList };
+  } catch (err) {
+    console.warn('Contest sync using local cache (quota/offline fallback):', err);
+    return {
+      contests: sortContestsLiveFirst(readLocalContests()),
+      submissions: readLocalSubmissions(),
+    };
+  }
 }
 
 /**
- * Subscribes to all active contests in real time (with active polling fallback for mobile & APK WebViews).
+ * Subscribes to all active contests in real time (with local storage & BroadcastChannel sync).
  */
 export function subscribeToContests(
   onUpdate: (contests: ContestRecord[]) => void
 ): Unsubscribe {
-  onUpdate(sortContestsLiveFirst(readLocalContests()));
+  const emitLocal = () => {
+    onUpdate(sortContestsLiveFirst(readLocalContests()));
+  };
+  emitLocal();
 
   const q = query(
     collection(db, CONTESTS_PATH),
@@ -713,7 +1025,6 @@ export function subscribeToContests(
       });
     });
 
-    // Also preserve & auto-upload any locally created active contests not yet in cloud
     const localContests = readLocalContests();
     for (const loc of localContests) {
       if (
@@ -722,39 +1033,15 @@ export function subscribeToContests(
         !cancelledIds.has(loc.id)
       ) {
         list.push(loc);
-        void setDoc(doc(db, CONTESTS_PATH, loc.id), {
-          id: loc.id,
-          title: loc.title.slice(0, 140),
-          creatorId: sanitizeId(loc.creatorId),
-          creatorName: (loc.creatorName || 'Setter').slice(0, 120),
-          pageFilter:
-            loc.pageFilter === 'page1' || loc.pageFilter === 'page2'
-              ? loc.pageFilter
-              : 'all',
-          categories: Array.isArray(loc.categories)
-            ? loc.categories.slice(0, 50)
-            : [],
-          wordCount: Math.max(1, Math.min(200, Number(loc.wordCount) || 15)),
-          baseSeconds: Math.max(5, Math.min(60, Number(loc.baseSeconds) || 12)),
-          showBangla: Boolean(loc.showBangla),
-          startTimeMs: Math.max(
-            1700000000000,
-            Number(loc.startTimeMs) || Date.now()
-          ),
-          durationMinutes: Math.max(
-            5,
-            Math.min(1440, Number(loc.durationMinutes) || 30)
-          ),
-          randomSeed: String(loc.randomSeed || generateRandomSeed()),
-          status: 'active',
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }).catch(() => {});
       }
     }
 
     const sorted = sortContestsLiveFirst(list);
-    writeLocalContests(sorted);
+    try {
+      localStorage.setItem(LOCAL_CONTESTS_KEY, JSON.stringify(sorted.slice(0, 80)));
+    } catch {
+      // ignore
+    }
     onUpdate(sorted);
   };
 
@@ -766,29 +1053,44 @@ export function subscribeToContests(
       processDocs(docs);
     },
     (err) => {
-      console.warn('Contest subscription fallback to local cache:', err);
-      onUpdate(sortContestsLiveFirst(readLocalContests()));
+      console.warn('Contest subscription operating from local cache:', err);
+      emitLocal();
     }
   );
 
-  // Active background poll every 6s so Android APK WebView & mobile carrier networks stay 100% synced
-  const pollNow = () => {
-    void getDocs(q)
-      .then((snap) => {
-        const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
-        snap.forEach((docSnap) => docs.push(docSnap));
-        processDocs(docs);
-      })
-      .catch(() => {});
+  let bc: BroadcastChannel | null = null;
+  const onStorageChange = (e: StorageEvent) => {
+    if (!e.key || e.key === LOCAL_CONTESTS_KEY) {
+      emitLocal();
+    }
   };
-  pollNow();
-  const pollIntervalId =
-    typeof window !== 'undefined' ? window.setInterval(pollNow, 6000) : null;
+  const onLocalCustomUpdate = () => emitLocal();
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorageChange);
+    window.addEventListener('lw-contest-local-update', onLocalCustomUpdate);
+    try {
+      if ('BroadcastChannel' in window) {
+        bc = new BroadcastChannel(CONTEST_BROADCAST_CHANNEL);
+        bc.onmessage = () => emitLocal();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   return () => {
     unsubSnapshot();
-    if (pollIntervalId !== null && typeof window !== 'undefined') {
-      window.clearInterval(pollIntervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorageChange);
+      window.removeEventListener('lw-contest-local-update', onLocalCustomUpdate);
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore
+      }
     }
   };
 }
@@ -799,7 +1101,10 @@ export function subscribeToContests(
 export function subscribeToContestSubmissions(
   onUpdate: (submissions: ContestSubmissionRecord[]) => void
 ): Unsubscribe {
-  onUpdate(readLocalSubmissions());
+  const emitLocal = () => {
+    onUpdate(readLocalSubmissions());
+  };
+  emitLocal();
 
   const q = query(
     collection(db, SUBMISSIONS_PATH),
@@ -810,11 +1115,14 @@ export function subscribeToContestSubmissions(
   const processSubDocs = (
     docs: Array<{ id: string; data: () => Record<string, any> }>
   ) => {
+    const cloudSubIds = new Set<string>();
     const list: ContestSubmissionRecord[] = [];
     docs.forEach((docSnap) => {
       const d = docSnap.data();
+      const sid = d.id || docSnap.id;
+      cloudSubIds.add(sid);
       list.push({
-        id: d.id || docSnap.id,
+        id: sid,
         contestId: d.contestId || '',
         userId: d.userId || '',
         userName: d.userName || 'Participant',
@@ -833,7 +1141,20 @@ export function subscribeToContestSubmissions(
       });
     });
 
-    writeLocalSubmissions(list);
+    for (const locSub of readLocalSubmissions()) {
+      if (!cloudSubIds.has(locSub.id)) {
+        list.push(locSub);
+      }
+    }
+
+    try {
+      localStorage.setItem(
+        LOCAL_SUBMISSIONS_KEY,
+        JSON.stringify(list.slice(0, 200))
+      );
+    } catch {
+      // ignore
+    }
     onUpdate(list);
   };
 
@@ -845,29 +1166,46 @@ export function subscribeToContestSubmissions(
       processSubDocs(docs);
     },
     (err) => {
-      console.warn('Contest submissions fallback to local cache:', err);
-      onUpdate(readLocalSubmissions());
+      console.warn('Contest submissions operating from local cache:', err);
+      emitLocal();
     }
   );
 
-  const pollNow = () => {
-    void getDocs(q)
-      .then((snap) => {
-        const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
-        snap.forEach((docSnap) => docs.push(docSnap));
-        processSubDocs(docs);
-      })
-      .catch(() => {});
+  let bc: BroadcastChannel | null = null;
+  const onStorageChange = (e: StorageEvent) => {
+    if (!e.key || e.key === LOCAL_SUBMISSIONS_KEY) {
+      emitLocal();
+    }
   };
-  pollNow();
-  const pollIntervalId =
-    typeof window !== 'undefined' ? window.setInterval(pollNow, 6000) : null;
+  const onLocalCustomUpdate = () => emitLocal();
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorageChange);
+    window.addEventListener('lw-contest-local-update', onLocalCustomUpdate);
+    try {
+      if ('BroadcastChannel' in window) {
+        bc = new BroadcastChannel(CONTEST_BROADCAST_CHANNEL);
+        bc.onmessage = () => emitLocal();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   return () => {
     unsubSnapshot();
-    if (pollIntervalId !== null && typeof window !== 'undefined') {
-      window.clearInterval(pollIntervalId);
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorageChange);
+      window.removeEventListener('lw-contest-local-update', onLocalCustomUpdate);
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore
+      }
     }
   };
 }
+
 

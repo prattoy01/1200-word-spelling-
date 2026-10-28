@@ -805,9 +805,24 @@ export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
-): never {
+): void {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  const isQuotaOrOffline =
+    errMsg.includes('Quota limit exceeded') ||
+    errMsg.includes('resource-exhausted') ||
+    errMsg.includes('client is offline') ||
+    errMsg.includes('unavailable');
+
+  if (isQuotaOrOffline) {
+    console.warn(
+      `[Cloud Sync Cache Mode] Firestore ${operationType} on "${path}" using local cache (quota/offline):`,
+      errMsg
+    );
+    return;
+  }
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -823,21 +838,6 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Operation Notice: ', JSON.stringify(errInfo));
 }
 
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      error.message.includes('the client is offline')
-    ) {
-      console.warn('Firestore operating in cached offline mode until network resumes.');
-    }
-  }
-}
-
-void testConnection();

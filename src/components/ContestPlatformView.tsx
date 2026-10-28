@@ -30,13 +30,19 @@ import {
 import {
   type ContestRecord,
   type ContestSubmissionRecord,
+  type ContestAttemptLockedWord,
   createScheduledContest,
   deleteOrCancelContest,
   registerForContest,
+  markContestAttemptInProgress,
   submitContestExamResult,
   deriveContestWordDeck,
   getContestCandidatePool,
   getContestPhase,
+  getContestEndTimeMs,
+  getLiveContestTimeline,
+  getDeviceContestLock,
+  saveDeviceContestCheckpoint,
   syncContestsNow,
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
@@ -91,40 +97,6 @@ function checkSpellingCorrect(answer: string, targetWord: string): boolean {
   const group = SPELLING_ALTERNATIVE_GROUPS.find((g) => g.includes(normTarget));
   const accepted = group || slashAlternatives;
   return accepted.includes(normAns);
-}
-
-function computeStrictWordExamTiming(
-  word: WordItem,
-  recording?: CloudRecording,
-  baseWritingSec = 12
-) {
-  const singlePlayDurationMs = recording?.durationMs
-    ? Math.max(900, Math.min(4500, recording.durationMs))
-    : Math.max(950, Math.min(3200, word.word.length * 105));
-
-  const pauseBetweenPlaysMs = 2100;
-  const play1AtMs = 150;
-  const play2AtMs = play1AtMs + singlePlayDurationMs + pauseBetweenPlaysMs;
-  const play3AtMs = play2AtMs + singlePlayDurationMs + pauseBetweenPlaysMs;
-  const threePlaysTotalSec = Math.ceil(
-    (play3AtMs + singlePlayDurationMs) / 1000
-  );
-
-  const extraCharSec = Math.max(0, Math.ceil((word.word.length - 7) * 0.45));
-  const totalWindowSec = Math.max(
-    baseWritingSec,
-    threePlaysTotalSec +
-      Math.max(4, Math.floor(baseWritingSec * 0.55)) +
-      extraCharSec
-  );
-
-  return {
-    singlePlayDurationMs,
-    play1AtMs,
-    play2AtMs,
-    play3AtMs,
-    totalWindowSec,
-  };
 }
 
 function formatCountdown(msRemaining: number): string {
@@ -227,14 +199,20 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   const [durationMinutes, setDurationMinutes] = useState<number>(30);
   const [isCreating, setIsCreating] = useState<boolean>(false);
 
-  // Active Running Contest Exam State
+  // Active Running Contest Exam State (Synchronized Global Clock + Anti-Cheat Lock)
   const [runningContest, setRunningContest] = useState<ContestRecord | null>(
     null
   );
   const [contestDeck, setContestDeck] = useState<WordItem[]>([]);
   const [examIndex, setExamIndex] = useState<number>(0);
   const [examInput, setExamInput] = useState<string>('');
-  const [examAnswers, setExamAnswers] = useState<SessionWordResult[]>([]);
+  const [lockedWordsMap, setLockedWordsMap] = useState<
+    Record<number, ContestAttemptLockedWord>
+  >({});
+  const [tabSwitchCount, setTabSwitchCount] = useState<number>(0);
+  const [proctorAlertText, setProctorAlertText] = useState<string | null>(null);
+  const [confirmEarlyForfeit, setConfirmEarlyForfeit] =
+    useState<boolean>(false);
   const [examRemainingMs, setExamRemainingMs] = useState<number>(12000);
   const [examTotalMs, setExamTotalMs] = useState<number>(12000);
   const [examPlayCount, setExamPlayCount] = useState<number>(0);
@@ -244,6 +222,14 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   const examInputRef = useRef<HTMLInputElement>(null);
   const latestExamInputRef = useRef<string>('');
   latestExamInputRef.current = examInput;
+  const lockedWordsMapRef = useRef<Record<number, ContestAttemptLockedWord>>(
+    {}
+  );
+  lockedWordsMapRef.current = lockedWordsMap;
+  const tabSwitchCountRef = useRef<number>(0);
+  tabSwitchCountRef.current = tabSwitchCount;
+  const prevSlotIndexRef = useRef<number>(0);
+  const isFinalizingRef = useRef<boolean>(false);
 
   // Candidate pool for the Create Contest form
   const candidatePool = useMemo(
@@ -275,7 +261,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     // Sort each contest's leaderboard:
     // 1. 'completed' before 'in_progress' / 'registered'
     // 2. Higher correctCount first
-    // 3. Faster timeTakenMs first (tie-breaker!)
+    // 3. Faster active typing timeTakenMs first (tie-breaker!)
     for (const cid of Object.keys(map)) {
       map[cid].sort((a, b) => {
         const aDone = a.status === 'completed' ? 1 : 0;
@@ -306,7 +292,34 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   }, [user?.uid, user?.displayName]);
 
   const ensureSignedInForContest = useCallback(
-    async (forceNewStudentId = false): Promise<User | null> => {
+    async (
+      forceNewStudentId = false,
+      targetContestId?: string
+    ): Promise<User | null> => {
+      // Anti-Cheat Device Lock: Once this browser/device has entered or completed a specific contest,
+      // block creating a second student ID or switching names to retake the same contest!
+      const cidToCheck = targetContestId || selectedContest?.id;
+      if (cidToCheck) {
+        const deviceLock = getDeviceContestLock(cidToCheck);
+        if (
+          deviceLock &&
+          (deviceLock.status === 'in_progress' ||
+            deviceLock.status === 'completed')
+        ) {
+          if (forceNewStudentId) {
+            setStatusMessage({
+              type: 'error',
+              text: `Anti-Cheat Device Lock: This device is already locked to "${deviceLock.userName}" for this contest (1 attempt per device).`,
+            });
+            return user;
+          }
+          if (user) {
+            setParticipantNameInput(user.displayName || deviceLock.userName);
+            return user;
+          }
+        }
+      }
+
       const stripTag = (s: string) =>
         s.replace(/\s*\(?#[A-Z0-9]{3,6}\)?$/i, '').trim().toLowerCase();
 
@@ -316,8 +329,6 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         : '';
       const typedBaseName = typedName ? stripTag(typedName) : '';
 
-      // If no user is logged in, OR forceNewStudentId is requested, OR a student typed a different name in the box,
-      // create a brand-new cryptographically unique internal UID (`stu_...`) and unique `#XXXX` leaderboard tag!
       if (
         !user ||
         forceNewStudentId ||
@@ -332,13 +343,124 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
 
       return user;
     },
-    [user, participantNameInput]
+    [user, participantNameInput, selectedContest?.id]
   );
 
-  // Launch the strict contest exam for a contest that is currently LIVE
+  // Finalize and submit the synchronized contest exam (either when the global timer ends or on explicit forfeit)
+  const finalizeAndSubmitContestExam = useCallback(
+    async (
+      contest: ContestRecord,
+      deck: WordItem[],
+      finalLockedMap: Record<number, ContestAttemptLockedWord>,
+      startedAtWallMs: number
+    ) => {
+      if (isFinalizingRef.current) return;
+      isFinalizingRef.current = true;
+      setIsSubmittingResult(true);
+
+      const timeline = getLiveContestTimeline(
+        contest,
+        Math.max(Date.now(), contest.startTimeMs + 1000)
+      );
+      const compiledResults: SessionWordResult[] = [];
+      let totalActiveTypingTimeMs = 0;
+
+      for (let i = 0; i < deck.length; i++) {
+        const w = deck[i];
+        const rec = recordingsMap[w.id];
+        const lockedEntry = finalLockedMap[i];
+        const slotDurMs =
+          timeline.slots[i]?.durationMs || contest.baseSeconds * 1000;
+        const cleanTyped = (lockedEntry?.userAnswer || '').trim();
+        const isCorrect = checkSpellingCorrect(cleanTyped, w.word);
+        const wordTimeMs = lockedEntry
+          ? Math.max(400, Math.min(slotDurMs, lockedEntry.lockedAfterMs))
+          : slotDurMs;
+        totalActiveTypingTimeMs += wordTimeMs;
+
+        compiledResults.push({
+          wordId: w.id,
+          word: w.word,
+          userAnswer: cleanTyped,
+          isCorrect,
+          bangla: rec?.banglaMeaning || w.bangla,
+          category: w.category,
+          page: w.page,
+        });
+      }
+
+      const correctTotal = compiledResults.filter((a) => a.isCorrect).length;
+      const existingSub = (submissionsByContest[contest.id] || []).find(
+        (s) => s.userId === currentUserIdSanitized
+      );
+
+      // Permanently mark device lock as 'completed' so this browser/device can never re-enter
+      saveDeviceContestCheckpoint({
+        contestId: contest.id,
+        userId: currentUserIdSanitized || 'user',
+        userName: user?.displayName || participantNameInput || 'Participant',
+        status: 'completed',
+        lockedWords: finalLockedMap,
+        tabSwitchCount: tabSwitchCountRef.current,
+        startedAtMs: startedAtWallMs || contest.startTimeMs,
+        updatedAtMs: Date.now(),
+      });
+
+      try {
+        await submitContestExamResult({
+          contest,
+          totalWords: compiledResults.length,
+          correctCount: correctTotal,
+          timeTakenMs: Math.max(1000, Math.round(totalActiveTypingTimeMs)),
+          results: compiledResults,
+          existingSubmission: existingSub,
+        });
+        setSelectedContestId(contest.id);
+        setRunningContest(null);
+        setConfirmEarlyForfeit(false);
+        setStatusMessage({
+          type: 'success',
+          text: `Contest completed & locked! You scored ${correctTotal}/${compiledResults.length} (Active typing time: ${formatDurationMs(
+            totalActiveTypingTimeMs
+          )}). Official words unlock when the contest timer finishes for everyone.`,
+        });
+      } catch (err) {
+        setRunningContest(null);
+        setConfirmEarlyForfeit(false);
+        setStatusMessage({
+          type: 'error',
+          text:
+            err instanceof Error
+              ? err.message
+              : 'Submitted locally; cloud sync will retry automatically.',
+        });
+      } finally {
+        setIsSubmittingResult(false);
+        isFinalizingRef.current = false;
+      }
+    },
+    [
+      recordingsMap,
+      submissionsByContest,
+      currentUserIdSanitized,
+      user?.displayName,
+      participantNameInput,
+    ]
+  );
+
+  // Launch or Resume the strict synchronized contest exam
   const handleStartLiveContestExam = useCallback(
     async (contest: ContestRecord) => {
-      const activeUser = await ensureSignedInForContest();
+      const existingDeviceLock = getDeviceContestLock(contest.id);
+      if (existingDeviceLock?.status === 'completed') {
+        setStatusMessage({
+          type: 'error',
+          text: `Anti-Cheat Lock: This device has already completed and submitted "${contest.title}" (${existingDeviceLock.userName}). Re-entry is blocked.`,
+        });
+        return;
+      }
+
+      const activeUser = await ensureSignedInForContest(false, contest.id);
       if (!activeUser) {
         onRequestSignIn();
         return;
@@ -346,7 +468,8 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       const activeUserIdSanitized = activeUser.uid
         .replace(/[^a-zA-Z0-9_-]/g, '_')
         .slice(0, 120);
-      const phase = getContestPhase(contest, Date.now());
+      const nowWall = Date.now();
+      const phase = getContestPhase(contest, nowWall);
       if (phase === 'upcoming') {
         setStatusMessage({
           type: 'error',
@@ -357,7 +480,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       if (phase !== 'live') {
         setStatusMessage({
           type: 'error',
-          text: 'This contest window has already closed.',
+          text: 'This contest has already ended simultaneously for all participants.',
         });
         return;
       }
@@ -368,49 +491,103 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       if (existingSub?.status === 'completed') {
         setStatusMessage({
           type: 'error',
-          text: 'You have already completed and submitted this contest exam!',
+          text: 'You have already completed and submitted this contest exam! Only 1 attempt is permitted.',
         });
         return;
       }
 
-      // Derive the deterministic word deck (identical for all logged-in participants!)
-      const derivedDeck = deriveContestWordDeck(contest, Date.now());
-      if (derivedDeck.length === 0) {
+      const timeline = getLiveContestTimeline(contest, nowWall);
+      if (timeline.slots.length === 0 || timeline.isFinished) {
         setStatusMessage({
           type: 'error',
-          text: 'Could not load contest words.',
+          text: 'This contest broadcast has just finished.',
         });
         return;
       }
 
+      // Restore any existing in_progress checkpoint from this device so backing out / refreshing NEVER restarts from Word 1
+      const restoredLocks: Record<number, ContestAttemptLockedWord> = {
+        ...(existingDeviceLock?.lockedWords || {}),
+      };
+      // Any earlier word slot (0 .. activeSlotIndex - 1) that already passed on the global clock while the user was away or late
+      // is permanently locked as missed so nobody can ever go back to earlier words!
+      for (let i = 0; i < timeline.activeSlotIndex; i++) {
+        if (!restoredLocks[i]) {
+          restoredLocks[i] = {
+            userAnswer: '',
+            lockedAfterMs: timeline.slots[i].durationMs,
+            lockedAtWallMs: nowWall,
+            missedWhileAway: true,
+          };
+        }
+      }
+
+      const initialStartedAt = existingDeviceLock?.startedAtMs || nowWall;
+      const initialTabSwitches = existingDeviceLock?.tabSwitchCount || 0;
+
+      saveDeviceContestCheckpoint({
+        contestId: contest.id,
+        userId: activeUserIdSanitized,
+        userName: activeUser.displayName || 'Participant',
+        status: 'in_progress',
+        lockedWords: restoredLocks,
+        tabSwitchCount: initialTabSwitches,
+        startedAtMs: initialStartedAt,
+        updatedAtMs: nowWall,
+      });
+
+      void markContestAttemptInProgress({
+        contest,
+        existingSubmission: existingSub,
+      });
+
+      const activeSlot = timeline.slots[timeline.activeSlotIndex];
+      isFinalizingRef.current = false;
+      prevSlotIndexRef.current = timeline.activeSlotIndex;
+      setContestDeck(timeline.slots.map((s) => s.word));
+      setLockedWordsMap(restoredLocks);
+      lockedWordsMapRef.current = restoredLocks;
+      setTabSwitchCount(initialTabSwitches);
+      tabSwitchCountRef.current = initialTabSwitches;
+      setProctorAlertText(null);
+      setConfirmEarlyForfeit(false);
+      setExamIndex(timeline.activeSlotIndex);
+      const currentLocked = restoredLocks[timeline.activeSlotIndex];
+      setExamInput(currentLocked ? currentLocked.userAnswer : '');
+      latestExamInputRef.current = currentLocked
+        ? currentLocked.userAnswer
+        : '';
+      setExamTotalMs(activeSlot.durationMs);
+      setExamRemainingMs(Math.max(0, activeSlot.endMs - nowWall));
+      setExamStartedAtMs(initialStartedAt);
       setRunningContest(contest);
-      setContestDeck(derivedDeck);
-      setExamAnswers([]);
-      setExamIndex(0);
-      setExamInput('');
-      latestExamInputRef.current = '';
-      setExamStartedAtMs(Date.now());
     },
     [ensureSignedInForContest, onRequestSignIn, submissionsByContest]
   );
 
   // Auto-launch exam if the user registered for the selected contest, is waiting in the lobby,
-  // and the countdown just transitioned to LIVE
+  // OR had an in-progress attempt on this device and reloaded the page while the contest is LIVE
   useEffect(() => {
-    if (
-      !autoStartWhenLive ||
-      !user ||
-      !selectedContest ||
-      runningContest ||
-      activeTab !== 'contests'
-    ) {
+    if (!selectedContest || runningContest || activeTab !== 'contests') {
       return;
     }
     const phase = getContestPhase(selectedContest, nowMs);
+    if (phase !== 'live') return;
+
+    const deviceLock = getDeviceContestLock(selectedContest.id);
     if (
-      phase === 'live' &&
+      deviceLock?.status === 'in_progress' &&
+      mySubmissionForSelected?.status !== 'completed'
+    ) {
+      void handleStartLiveContestExam(selectedContest);
+      return;
+    }
+
+    if (
+      autoStartWhenLive &&
+      user &&
       mySubmissionForSelected?.status === 'registered' &&
-      nowMs - selectedContest.startTimeMs < 4000
+      nowMs - selectedContest.startTimeMs < 5000
     ) {
       void handleStartLiveContestExam(selectedContest);
     }
@@ -425,106 +602,184 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     handleStartLiveContestExam,
   ]);
 
-  // Strict Contest Exam: Advance word & auto-submit when finished
-  const advanceContestWord = useCallback(
-    (typedValue: string) => {
+  // Lock the user's answer for a specific word slot WITHOUT advancing early (so everyone stays on the exact same word)
+  const lockWordAnswerAtSlot = useCallback(
+    (
+      slotIdx: number,
+      typedValue: string,
+      options?: { autoLockedByTabSwitch?: boolean }
+    ) => {
       if (!runningContest) return;
-      const currentWord = contestDeck[examIndex];
-      if (!currentWord) return;
+      if (lockedWordsMapRef.current[slotIdx]) {
+        // Already locked for this word! Cannot be unlocked or modified.
+        return;
+      }
 
-      const rec = recordingsMap[currentWord.id];
-      const cleanTyped = typedValue.trim();
-      const matched = checkSpellingCorrect(cleanTyped, currentWord.word);
+      const nowWall = Date.now();
+      const timeline = getLiveContestTimeline(runningContest, nowWall);
+      const slot = timeline.slots[slotIdx];
+      const elapsedInSlotMs = slot
+        ? Math.max(400, Math.min(slot.durationMs, nowWall - slot.startMs))
+        : runningContest.baseSeconds * 1000;
 
-      const newResult: SessionWordResult = {
-        wordId: currentWord.id,
-        word: currentWord.word,
-        userAnswer: cleanTyped,
-        isCorrect: matched,
-        bangla: rec?.banglaMeaning || currentWord.bangla,
-        category: currentWord.category,
-        page: currentWord.page,
+      const entry: ContestAttemptLockedWord = {
+        userAnswer: typedValue.trim(),
+        lockedAfterMs: elapsedInSlotMs,
+        lockedAtWallMs: nowWall,
+        autoLockedByTabSwitch: options?.autoLockedByTabSwitch,
       };
 
-      const nextAnswers = [...examAnswers, newResult];
-      setExamAnswers(nextAnswers);
+      const nextMap: Record<number, ContestAttemptLockedWord> = {
+        ...lockedWordsMapRef.current,
+        [slotIdx]: entry,
+      };
+      lockedWordsMapRef.current = nextMap;
+      setLockedWordsMap(nextMap);
 
-      if (examIndex + 1 >= contestDeck.length) {
-        // Contest Exam Completed! Submit immediately to live leaderboard
-        const totalElapsedMs = Math.max(1000, Date.now() - examStartedAtMs);
-        const correctTotal = nextAnswers.filter((a) => a.isCorrect).length;
-        const existingSub = (
-          submissionsByContest[runningContest.id] || []
-        ).find((s) => s.userId === currentUserIdSanitized);
+      saveDeviceContestCheckpoint({
+        contestId: runningContest.id,
+        userId: currentUserIdSanitized || 'user',
+        userName: user?.displayName || participantNameInput || 'Participant',
+        status: 'in_progress',
+        lockedWords: nextMap,
+        tabSwitchCount: tabSwitchCountRef.current,
+        startedAtMs: examStartedAtMs || runningContest.startTimeMs,
+        updatedAtMs: nowWall,
+      });
 
-        setIsSubmittingResult(true);
-        void submitContestExamResult({
-          contest: runningContest,
-          totalWords: nextAnswers.length,
-          correctCount: correctTotal,
-          timeTakenMs: totalElapsedMs,
-          results: nextAnswers,
-          existingSubmission: existingSub,
-        })
-          .then(() => {
-            setSelectedContestId(runningContest.id);
-            setRunningContest(null);
-            setStatusMessage({
-              type: 'success',
-              text: `Contest submitted! You scored ${correctTotal}/${nextAnswers.length} in ${formatDurationMs(
-                totalElapsedMs
-              )}.`,
-            });
-          })
-          .catch((err) => {
-            setRunningContest(null);
-            setStatusMessage({
-              type: 'error',
-              text:
-                err instanceof Error
-                  ? err.message
-                  : 'Failed to submit contest score.',
-            });
-          })
-          .finally(() => {
-            setIsSubmittingResult(false);
-          });
-      } else {
-        setExamInput('');
-        latestExamInputRef.current = '';
-        setExamIndex((idx) => idx + 1);
+      // Compute partial score so live leaderboard shows real-time progress
+      let partialCorrect = 0;
+      let partialTimeMs = 0;
+      for (const [k, v] of Object.entries(nextMap)) {
+        const w = contestDeck[Number(k)];
+        if (w && checkSpellingCorrect(v.userAnswer, w.word)) {
+          partialCorrect++;
+        }
+        partialTimeMs += v.lockedAfterMs;
       }
+      const existingSub = (submissionsByContest[runningContest.id] || []).find(
+        (s) => s.userId === currentUserIdSanitized
+      );
+      void markContestAttemptInProgress({
+        contest: runningContest,
+        existingSubmission: existingSub,
+        correctCountSoFar: partialCorrect,
+        timeTakenMsSoFar: partialTimeMs,
+      });
     },
     [
       runningContest,
-      contestDeck,
-      examIndex,
-      examAnswers,
-      recordingsMap,
-      examStartedAtMs,
-      submissionsByContest,
       currentUserIdSanitized,
+      user?.displayName,
+      participantNameInput,
+      examStartedAtMs,
+      contestDeck,
+      submissionsByContest,
     ]
   );
 
-  // Schedule 3 automatic audio plays with pauses + strict countdown timer for the active contest word
+  // Global Synchronized Contest Clock Driver:
+  // Keeps every participant on the exact same word at the exact same millisecond,
+  // auto-locks any unlocked answer when a word's timer expires, and ends the contest simultaneously for everyone!
+  useEffect(() => {
+    if (!runningContest || contestDeck.length === 0) return;
+
+    const tickSynchronizedClock = () => {
+      const wallNow = Date.now();
+      const timeline = getLiveContestTimeline(runningContest, wallNow);
+
+      // If any previous slot (<= timeline.activeSlotIndex - 1, or all slots if finished) was not locked yet,
+      // auto-lock it now with whatever was typed on the active slot!
+      const prevIdx = prevSlotIndexRef.current;
+      if (timeline.isFinished) {
+        const finalMap: Record<number, ContestAttemptLockedWord> = {
+          ...lockedWordsMapRef.current,
+        };
+        if (!finalMap[prevIdx]) {
+          const prevSlot = timeline.slots[prevIdx];
+          finalMap[prevIdx] = {
+            userAnswer: latestExamInputRef.current.trim(),
+            lockedAfterMs:
+              prevSlot?.durationMs || runningContest.baseSeconds * 1000,
+            lockedAtWallMs: wallNow,
+          };
+        }
+        for (let i = 0; i < timeline.slots.length; i++) {
+          if (!finalMap[i]) {
+            finalMap[i] = {
+              userAnswer: '',
+              lockedAfterMs: timeline.slots[i].durationMs,
+              lockedAtWallMs: wallNow,
+              missedWhileAway: true,
+            };
+          }
+        }
+        lockedWordsMapRef.current = finalMap;
+        setLockedWordsMap(finalMap);
+        void finalizeAndSubmitContestExam(
+          runningContest,
+          contestDeck,
+          finalMap,
+          examStartedAtMs
+        );
+        return;
+      }
+
+      if (timeline.activeSlotIndex !== prevIdx) {
+        // Auto-lock the word that just finished!
+        if (!lockedWordsMapRef.current[prevIdx]) {
+          lockWordAnswerAtSlot(prevIdx, latestExamInputRef.current);
+        }
+        // Also mark any intermediate skipped slots if the tab was frozen
+        for (let i = prevIdx + 1; i < timeline.activeSlotIndex; i++) {
+          if (!lockedWordsMapRef.current[i]) {
+            lockWordAnswerAtSlot(i, '');
+          }
+        }
+        prevSlotIndexRef.current = timeline.activeSlotIndex;
+        setExamIndex(timeline.activeSlotIndex);
+        const alreadyLockedForNew =
+          lockedWordsMapRef.current[timeline.activeSlotIndex];
+        const nextVal = alreadyLockedForNew
+          ? alreadyLockedForNew.userAnswer
+          : '';
+        setExamInput(nextVal);
+        latestExamInputRef.current = nextVal;
+      }
+
+      const activeSlot = timeline.slots[timeline.activeSlotIndex];
+      if (activeSlot) {
+        setExamTotalMs(activeSlot.durationMs);
+        setExamRemainingMs(Math.max(0, activeSlot.endMs - wallNow));
+      }
+    };
+
+    tickSynchronizedClock();
+    const intervalId = window.setInterval(tickSynchronizedClock, 80);
+    return () => window.clearInterval(intervalId);
+  }, [
+    runningContest,
+    contestDeck,
+    examStartedAtMs,
+    lockWordAnswerAtSlot,
+    finalizeAndSubmitContestExam,
+  ]);
+
+  // Schedule 3 automatic audio plays synchronized to the current word slot
   useEffect(() => {
     if (!runningContest) return;
     const wordObj = contestDeck[examIndex];
     if (!wordObj) return;
 
+    const wallNow = Date.now();
+    const timeline = getLiveContestTimeline(runningContest, wallNow);
+    const slot = timeline.slots[examIndex];
+    if (!slot) return;
+
     const rec = recordingsMap[wordObj.id];
-    const timing = computeStrictWordExamTiming(
-      wordObj,
-      rec,
-      runningContest.baseSeconds
-    );
-    const totalMs = timing.totalWindowSec * 1000;
+    const elapsedInSlotMs = Math.max(0, wallNow - slot.startMs);
 
-    setExamTotalMs(totalMs);
-    setExamRemainingMs(totalMs);
     setExamPlayCount(0);
-
     setTimeout(() => {
       examInputRef.current?.focus();
     }, 60);
@@ -541,30 +796,76 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       });
     };
 
-    const t1 = window.setTimeout(() => triggerPlay(1), timing.play1AtMs);
-    const t2 = window.setTimeout(() => triggerPlay(2), timing.play2AtMs);
-    const t3 = window.setTimeout(() => triggerPlay(3), timing.play3AtMs);
-
-    const startPerf = performance.now();
-    const intervalId = window.setInterval(() => {
-      if (cancelled) return;
-      const elapsed = performance.now() - startPerf;
-      const left = Math.max(0, totalMs - elapsed);
-      setExamRemainingMs(left);
-      if (left <= 0) {
-        window.clearInterval(intervalId);
-        advanceContestWord(latestExamInputRef.current);
+    const timers: number[] = [];
+    const schedulePlayIfUpcoming = (playNum: number, targetOffsetMs: number) => {
+      const delay = targetOffsetMs - elapsedInSlotMs;
+      if (delay >= -350) {
+        const tid = window.setTimeout(
+          () => triggerPlay(playNum),
+          Math.max(20, delay)
+        );
+        timers.push(tid);
+      } else {
+        setExamPlayCount((c) => Math.max(c, playNum));
       }
-    }, 80);
+    };
+
+    schedulePlayIfUpcoming(1, slot.play1AtMs);
+    schedulePlayIfUpcoming(2, slot.play2AtMs);
+    schedulePlayIfUpcoming(3, slot.play3AtMs);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(t1);
-      window.clearTimeout(t2);
-      window.clearTimeout(t3);
-      window.clearInterval(intervalId);
+      timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [runningContest, examIndex, contestDeck, recordingsMap, advanceContestWord]);
+  }, [runningContest, examIndex, contestDeck, recordingsMap]);
+
+  // Anti-Cheat Proctoring: Tab-Switch / Window Blur Detector & BeforeUnload Guard
+  useEffect(() => {
+    if (!runningContest) return;
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue =
+        'Live contest is in progress! The synchronized broadcast clock does not pause if you leave.';
+      return e.returnValue;
+    };
+
+    let lastViolationMs = 0;
+    const recordFocusViolation = (reason: string) => {
+      const now = Date.now();
+      if (now - lastViolationMs < 1200) return;
+      lastViolationMs = now;
+
+      const nextCount = tabSwitchCountRef.current + 1;
+      tabSwitchCountRef.current = nextCount;
+      setTabSwitchCount(nextCount);
+      setProctorAlertText(
+        `Anti-Cheat Proctoring Alert (#${nextCount}): ${reason}. Your current word answer has been automatically locked to prevent external lookup!`
+      );
+
+      // Immediately lock the active word so the user cannot look up the spelling in another tab and come back to type it!
+      const activeIdx = prevSlotIndexRef.current;
+      if (!lockedWordsMapRef.current[activeIdx]) {
+        lockWordAnswerAtSlot(activeIdx, latestExamInputRef.current, {
+          autoLockedByTabSwitch: true,
+        });
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        recordFocusViolation('Tab switch or app minimize detected');
+      }
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [runningContest, lockWordAnswerAtSlot]);
 
   const handleCreateContestSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -600,12 +901,13 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
           type: 'error',
           text: 'Please choose a valid start date and time.',
         });
+        setIsCreating(false);
         return;
       }
       scheduledStartMs = parsed;
     } else if (startPresetMins === 0) {
-      // Immediate live contest (starts 3 seconds from now so setter also experiences the blind lock)
-      scheduledStartMs = Date.now() + 3000;
+      // Starts in 15 seconds so participants in the lobby can see the countdown and start Word #1 simultaneously
+      scheduledStartMs = Date.now() + 15000;
     } else {
       scheduledStartMs = Date.now() + startPresetMins * 60 * 1000;
     }
@@ -629,7 +931,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       setActiveTab('contests');
       setStatusMessage({
         type: 'success',
-        text: `Contest "${created.title}" scheduled! Words are cryptographically locked until start time — even you (the setter) cannot see them in advance.`,
+        text: `Contest "${created.title}" scheduled! All participants will start Word #1 and finish the final word at the exact same synchronized second.`,
       });
     } catch (err) {
       setStatusMessage({
@@ -643,7 +945,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   };
 
   // ============================================================================
-  // ACTIVE STRICT CONTEST EXAM FULLSCREEN VIEW
+  // ACTIVE SYNCHRONIZED CONTEST EXAM FULLSCREEN VIEW (ANTI-CHEAT LOCKED)
   // ============================================================================
   if (runningContest) {
     const activeExamWord = contestDeck[examIndex];
@@ -657,29 +959,105 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       Math.min(100, (examRemainingMs / Math.max(1, examTotalMs)) * 100)
     );
     const examSecondsLeft = (examRemainingMs / 1000).toFixed(1);
+    const contestEndMs = getContestEndTimeMs(runningContest);
+    const totalContestLeftMs = Math.max(0, contestEndMs - nowMs);
+    const currentWordLocked = lockedWordsMap[examIndex];
+    const isCurrentWordLocked = Boolean(currentWordLocked);
 
     return (
-      <main className="flex-1 max-w-3xl w-full mx-auto px-4 sm:px-6 pt-6 pb-24 space-y-6">
-        <section className="rounded-3xl bg-[#0d1d16] border-2 border-[#fbbf24]/60 p-5 sm:p-8 space-y-6 shadow-2xl">
-          {/* Top Contest Lock Header */}
+      <main
+        onCopy={(e) => e.preventDefault()}
+        onCut={(e) => e.preventDefault()}
+        onPaste={(e) => e.preventDefault()}
+        onContextMenu={(e) => e.preventDefault()}
+        className="flex-1 max-w-3xl w-full mx-auto px-3.5 sm:px-6 pt-4 sm:pt-6 pb-28 space-y-4 select-none"
+      >
+        <section className="rounded-3xl bg-[#0d1d16] border-2 border-[#fbbf24]/70 p-4 sm:p-7 space-y-5 shadow-2xl">
+          {/* Top Synchronized Contest Lock Header */}
           <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#1c382b]">
-            <div className="flex items-center gap-2">
-              <span className="px-2.5 py-1 rounded-lg bg-[#fbbf24]/15 border border-[#fbbf24]/40 text-[#fbbf24] text-xs font-bold flex items-center gap-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="px-2.5 py-1 rounded-lg bg-[#fbbf24] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5">
                 <Trophy className="w-3.5 h-3.5" />
-                <span>LIVE CONTEST: {runningContest.title}</span>
+                <span>SYNCED LIVE EXAM: {runningContest.title}</span>
               </span>
-              <span className="text-xs font-mono font-bold text-white">
+              <span className="px-2.5 py-1 rounded-lg bg-[#122b20] border border-[#10b981]/40 text-xs font-mono font-bold text-white">
                 Word {examIndex + 1} of {contestDeck.length}
               </span>
             </div>
 
-            <div className="flex items-center gap-2 text-xs font-mono font-bold text-[#fbbf24]">
-              <Timer className="w-4 h-4 animate-pulse" />
-              <span>{examSecondsLeft}s remaining</span>
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <div className="text-[10px] uppercase tracking-wider text-[#8ba89a]">
+                  Global Exam Ends In
+                </div>
+                <div className="text-xs font-mono font-bold text-[#10b981]">
+                  {formatCountdown(totalContestLeftMs)}
+                </div>
+              </div>
+              <div className="px-3 py-1.5 rounded-xl bg-[#1f1909] border border-[#fbbf24]/50 flex items-center gap-1.5 text-xs font-mono font-extrabold text-[#fbbf24]">
+                <Timer className="w-4 h-4 animate-pulse" />
+                <span>{examSecondsLeft}s</span>
+              </div>
             </div>
           </div>
 
-          {/* Countdown Progress Bar */}
+          {/* Anti-Cheat Proctoring Status Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2 px-3.5 py-2 rounded-xl bg-[#08130e] border border-[#1b3629] text-[11px]">
+            <div className="flex items-center gap-2 text-[#a7f3d0] font-semibold">
+              <Lock className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+              <span>
+                Synchronized Broadcast: All participants are on Word #
+                {examIndex + 1} right now and finish at the exact same second.
+              </span>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span
+                className={`px-2 py-0.5 rounded font-mono font-bold ${
+                  tabSwitchCount === 0
+                    ? 'bg-[#10b981]/15 text-[#10b981]'
+                    : 'bg-[#f87171]/20 text-[#f87171]'
+                }`}
+              >
+                {tabSwitchCount === 0
+                  ? 'Proctor: Clean (0 Tab Switches)'
+                  : `⚠️ Tab Switches: ${tabSwitchCount}`}
+              </span>
+            </div>
+          </div>
+
+          {proctorAlertText && (
+            <div className="p-3 rounded-xl bg-[#2a1215] border border-[#f87171] text-xs text-[#fecaca] font-semibold flex items-center gap-2">
+              <ShieldAlert className="w-4 h-4 text-[#f87171] shrink-0" />
+              <span>{proctorAlertText}</span>
+            </div>
+          )}
+
+          {/* Word Slot Progress Pills (Shows Locked vs Current vs Future Encrypted Words) */}
+          <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+            {contestDeck.map((_, idx) => {
+              const locked = lockedWordsMap[idx];
+              const isCurrent = idx === examIndex;
+              const isPast = idx < examIndex;
+              return (
+                <div
+                  key={idx}
+                  className={`h-7 min-w-[32px] px-2 rounded-lg font-mono text-[11px] font-bold flex items-center justify-center shrink-0 border ${
+                    isCurrent
+                      ? 'bg-[#fbbf24] border-[#fbbf24] text-[#08120e] scale-105'
+                      : locked && !locked.missedWhileAway
+                      ? 'bg-[#113022] border-[#10b981]/50 text-[#10b981]'
+                      : isPast
+                      ? 'bg-[#261316] border-[#f87171]/40 text-[#f87171]'
+                      : 'bg-[#08130e] border-[#173024] text-[#5c786a]'
+                  }`}
+                >
+                  {idx + 1}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Countdown Progress Bar for Current Word */}
           <div className="w-full h-3 rounded-full bg-[#07110c] border border-[#1c382b] overflow-hidden">
             <div
               className={`h-full transition-all duration-100 ${
@@ -701,10 +1079,11 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
               </div>
               <div>
                 <div className="text-xs font-bold text-white">
-                  Automatic 3x Pronunciation Playback (Synchronized Exam)
+                  Automatic 3x Pronunciation Playback (Live Broadcast)
                 </div>
                 <div className="text-[11px] text-[#8ba89a] mt-0.5">
-                  Everyone in this contest receives the exact same words. No manual replay or going back.
+                  No skipping ahead and no going back. Everyone advances to Word #
+                  {Math.min(contestDeck.length, examIndex + 2)} when the timer hits 0.0s.
                 </div>
               </div>
             </div>
@@ -748,51 +1127,125 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
             </div>
           )}
 
-          {/* Write-Only Input Box (No form wrapper so mobile keyboards never show password/suggestion popups) */}
+          {/* Write-Only Input Box or Locked Waiting State */}
           <div className="space-y-4">
-            <div>
-              <label
-                htmlFor="contest-exam-input"
-                className="block text-xs font-semibold text-[#9ab5a7] mb-2"
-              >
-                Type the word before the timer reaches 0.0s (Press Enter to submit early for faster tie-breaker time):
-              </label>
-              <NoSuggestSpellingInput
-                id="contest-exam-input"
-                inputRef={examInputRef}
-                value={examInput}
-                onChange={(val) => {
-                  setExamInput(val);
-                  latestExamInputRef.current = val;
-                }}
-                onEnterPress={() => advanceContestWord(examInput)}
-                disabled={isSubmittingResult}
-                placeholder="Write spelling here..."
-                enterKeyHint="next"
-                variant="exam"
-              />
-            </div>
+            {isCurrentWordLocked ? (
+              <div className="rounded-2xl bg-[#0b2419] border-2 border-[#10b981] p-5 space-y-2 text-center">
+                <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-[#10b981]/20 text-[#10b981] text-xs font-extrabold">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>
+                    Answer Locked for Word #{examIndex + 1} in{' '}
+                    {(currentWordLocked.lockedAfterMs / 1000).toFixed(1)}s!
+                  </span>
+                </div>
+                <div className="font-mono text-lg font-bold text-white tracking-wider">
+                  {currentWordLocked.userAnswer || '(blank)'}
+                </div>
+                <p className="text-xs text-[#9ab5a7]">
+                  {examIndex + 1 < contestDeck.length
+                    ? `Waiting ${examSecondsLeft}s for all participants to advance to Word #${
+                        examIndex + 2
+                      } simultaneously (prevents early word leakage)...`
+                    : `Waiting ${examSecondsLeft}s for the final word timer to finish for all participants...`}
+                </p>
+              </div>
+            ) : (
+              <div>
+                <label
+                  htmlFor="contest-exam-input"
+                  className="block text-xs font-semibold text-[#9ab5a7] mb-2"
+                >
+                  Type the spelling and press Enter (or Lock Answer) to record your fast typing time:
+                </label>
+                <NoSuggestSpellingInput
+                  id="contest-exam-input"
+                  inputRef={examInputRef}
+                  value={examInput}
+                  onChange={(val) => {
+                    setExamInput(val);
+                    latestExamInputRef.current = val;
+                  }}
+                  onEnterPress={() => lockWordAnswerAtSlot(examIndex, examInput)}
+                  disabled={isSubmittingResult || isCurrentWordLocked}
+                  placeholder="Write spelling here..."
+                  enterKeyHint="done"
+                  variant="exam"
+                />
+              </div>
+            )}
 
-            <div className="flex items-center justify-between gap-3 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
               <div className="flex items-center gap-1.5 text-[11px] text-[#7ea090]">
                 <ShieldAlert className="w-4 h-4 text-[#fbbf24] shrink-0" />
                 <span>
-                  Strict Contest Lock: Ties on score are broken by fastest total completion time.
+                  Anti-Leakage Lock: Next word unlocks simultaneously for everyone when the timer hits 0.0s.
                 </span>
               </div>
 
-              <button
-                type="button"
-                disabled={isSubmittingResult}
-                onClick={() => advanceContestWord(examInput)}
-                className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-xs sm:text-sm flex items-center gap-2 shrink-0 transition-colors"
-              >
-                <span>
-                  {examIndex + 1 >= contestDeck.length
-                    ? 'Finish & Submit Contest'
-                    : 'Submit & Next Word'}
-                </span>
-              </button>
+              <div className="flex items-center gap-2 ml-auto">
+                {!isCurrentWordLocked && (
+                  <button
+                    type="button"
+                    disabled={isSubmittingResult}
+                    onClick={() => lockWordAnswerAtSlot(examIndex, examInput)}
+                    className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-xs sm:text-sm flex items-center gap-2 shrink-0 transition-colors"
+                  >
+                    <Lock className="w-4 h-4" />
+                    <span>Lock Answer for Word #{examIndex + 1}</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {/* Optional Emergency Forfeit (With Strict Anti-Re-Entry Warning) */}
+            <div className="pt-3 border-t border-[#183126] flex flex-wrap items-center justify-between gap-2">
+              {!confirmEarlyForfeit ? (
+                <button
+                  type="button"
+                  onClick={() => setConfirmEarlyForfeit(true)}
+                  className="text-[11px] text-[#6d8a7b] hover:text-[#f87171] underline"
+                >
+                  Forfeit &amp; Exit Contest Early (Cannot Re-Enter)
+                </button>
+              ) : (
+                <div className="w-full p-3 rounded-xl bg-[#261114] border border-[#f87171]/50 flex flex-wrap items-center justify-between gap-2">
+                  <span className="text-xs text-[#fecaca] font-semibold">
+                    Are you sure? Remaining words will be marked blank and you CANNOT re-enter this contest!
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setConfirmEarlyForfeit(false)}
+                      className="px-3 py-1.5 rounded-lg bg-[#14291f] text-xs font-bold text-white"
+                    >
+                      Stay in Exam
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isSubmittingResult}
+                      onClick={() => {
+                        const finalMap = { ...lockedWordsMapRef.current };
+                        if (!finalMap[examIndex] && examInput.trim()) {
+                          finalMap[examIndex] = {
+                            userAnswer: examInput.trim(),
+                            lockedAfterMs: Math.max(1000, examTotalMs - examRemainingMs),
+                            lockedAtWallMs: Date.now(),
+                          };
+                        }
+                        void finalizeAndSubmitContestExam(
+                          runningContest,
+                          contestDeck,
+                          finalMap,
+                          examStartedAtMs
+                        );
+                      }}
+                      className="px-3 py-1.5 rounded-lg bg-[#f87171] text-[#08120e] text-xs font-extrabold"
+                    >
+                      Confirm Forfeit &amp; Lock Attempt
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         </section>
@@ -1303,8 +1756,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                     const phase = getContestPhase(contest, nowMs);
                     const isSelected = selectedContest?.id === contest.id;
                     const contestSubs = submissionsByContest[contest.id] || [];
-                    const endTimeMs =
-                      contest.startTimeMs + contest.durationMinutes * 60 * 1000;
+                    const endTimeMs = getContestEndTimeMs(contest);
 
                     return (
                       <div
@@ -1365,7 +1817,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                   second: '2-digit',
                                 })}`
                               : phase === 'live'
-                              ? `Closes in ${formatCountdown(endTimeMs - nowMs)}`
+                              ? `Ends for all in ${formatCountdown(endTimeMs - nowMs)}`
                               : new Date(contest.startTimeMs).toLocaleDateString()}
                           </span>
 
@@ -1387,7 +1839,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                 <div className="py-12 text-center space-y-3">
                   <Trophy className="w-8 h-8 text-[#fbbf24] mx-auto opacity-80" />
                   <p className="text-xs sm:text-sm text-[#8ba89a]">
-                    No active contest selected yet. Tap &ldquo;+ Host Contest&rdquo; above to start a Live Spelling Contest in 3 seconds!
+                    No active contest selected yet. Tap &ldquo;+ Host Contest&rdquo; above to schedule or start a Synchronized Live Contest!
                   </p>
                   <button
                     type="button"
@@ -1401,9 +1853,23 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
               ) : (
               (() => {
                 const phase = getContestPhase(selectedContest, nowMs);
-                const endTimeMs =
-                  selectedContest.startTimeMs +
-                  selectedContest.durationMinutes * 60 * 1000;
+                const endTimeMs = getContestEndTimeMs(selectedContest);
+                const liveTimeline =
+                  phase === 'live'
+                    ? getLiveContestTimeline(selectedContest, nowMs)
+                    : null;
+                const deviceLockForSelected = getDeviceContestLock(
+                  selectedContest.id
+                );
+                const isDeviceLockedForSelected = Boolean(
+                  deviceLockForSelected &&
+                    (deviceLockForSelected.status === 'in_progress' ||
+                      deviceLockForSelected.status === 'completed')
+                );
+                const isCompletedOnDeviceOrCloud =
+                  mySubmissionForSelected?.status === 'completed' ||
+                  deviceLockForSelected?.status === 'completed';
+
                 const contestSubs =
                   submissionsByContest[selectedContest.id] || [];
                 const canDelete =
@@ -1411,10 +1877,9 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                   (Boolean(user) &&
                     selectedContest.creatorId === currentUserIdSanitized);
 
-                // Words are ONLY revealed if the user has completed the contest OR the contest has ended
-                const canRevealWords =
-                  phase === 'ended' ||
-                  mySubmissionForSelected?.status === 'completed';
+                // Anti-Leakage Security Rule:
+                // Contest words and correct spellings are ONLY revealed once `phase === 'ended'` (when the exam finishes simultaneously for EVERYONE).
+                const canRevealWords = phase === 'ended';
                 const revealedWords = canRevealWords
                   ? deriveContestWordDeck(selectedContest, Date.now())
                   : [];
@@ -1430,7 +1895,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                           </h2>
                           {phase === 'live' && (
                             <span className="px-2.5 py-0.5 rounded-full bg-[#10b981] text-[#04120c] text-[10px] font-extrabold uppercase tracking-wider">
-                              OPEN FOR ALL LOGGED-IN USERS
+                              SYNCHRONIZED LIVE BROADCAST
                             </span>
                           )}
                         </div>
@@ -1451,7 +1916,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                           <strong className="text-white">
                             {selectedContest.wordCount} Words
                           </strong>{' '}
-                          ({selectedContest.baseSeconds}s+ strict timer)
+                          ({selectedContest.baseSeconds}s+ synchronized timer)
                         </p>
                       </div>
 
@@ -1519,7 +1984,10 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                   <button
                                     type="button"
                                     onClick={() =>
-                                      void ensureSignedInForContest(true)
+                                      void ensureSignedInForContest(
+                                        true,
+                                        selectedContest.id
+                                      )
                                     }
                                     className="text-[#fbbf24] hover:underline font-semibold"
                                   >
@@ -1539,7 +2007,10 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  await ensureSignedInForContest();
+                                  await ensureSignedInForContest(
+                                    false,
+                                    selectedContest.id
+                                  );
                                   await registerForContest(selectedContest);
                                 }}
                                 className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] font-extrabold text-xs sm:text-sm flex items-center justify-center gap-2"
@@ -1572,14 +2043,17 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             <div className="text-xs font-extrabold uppercase tracking-wider text-[#10b981] flex items-center gap-1.5">
                               <Play className="w-4 h-4 fill-[#10b981]" />
                               <span>
-                                Contest is LIVE Now! Open for All Logged-In Users
+                                Synchronized Contest is LIVE! (Broadcast: Word #
+                                {(liveTimeline?.activeSlotIndex ?? 0) + 1} of{' '}
+                                {selectedContest.wordCount})
                               </span>
                             </div>
                             <div className="text-lg sm:text-xl font-bold text-white">
-                              Closes in {formatCountdown(endTimeMs - nowMs)}
+                              Ends simultaneously for all in{' '}
+                              {formatCountdown(endTimeMs - nowMs)}
                             </div>
                             <p className="text-xs text-[#a7f3d0]">
-                              Same rules as Strict Test: 3x automatic audio per word, strict timer, no replay.
+                              Anti-Leakage Lock: Everyone hears the same word at the same second and finishes together. Re-entering never resets to Word 1.
                             </p>
                           </div>
 
@@ -1587,40 +2061,52 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                             <div className="space-y-1">
                               <input
                                 type="text"
-                                value={participantNameInput}
+                                disabled={isDeviceLockedForSelected}
+                                value={
+                                  deviceLockForSelected?.userName ||
+                                  participantNameInput
+                                }
                                 onChange={(e) =>
                                   setParticipantNameInput(e.target.value)
                                 }
                                 placeholder="Your Name for Leaderboard..."
-                                className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#10b981]/50 text-xs text-white placeholder-[#6d8a7b] focus:outline-none focus:border-[#10b981]"
+                                className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#08130e] border border-[#10b981]/50 disabled:opacity-60 text-xs text-white placeholder-[#6d8a7b] focus:outline-none focus:border-[#10b981]"
                               />
                               <div className="text-[10px] text-[#a7f3d0] flex items-center justify-between gap-2 px-1">
                                 <span>
-                                  {user
+                                  {isDeviceLockedForSelected
+                                    ? `🔒 Device Locked: ${deviceLockForSelected?.userName}`
+                                    : user
                                     ? `Active ID: ${user.displayName}`
                                     : 'Auto-assigns unique #ID'}
                                 </span>
-                                {user && !user.isVerifiedAdmin && (
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      void ensureSignedInForContest(true)
-                                    }
-                                    className="text-[#fbbf24] hover:underline font-semibold"
-                                  >
-                                    New Student #ID
-                                  </button>
-                                )}
+                                {user &&
+                                  !user.isVerifiedAdmin &&
+                                  !isDeviceLockedForSelected && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void ensureSignedInForContest(
+                                          true,
+                                          selectedContest.id
+                                        )
+                                      }
+                                      className="text-[#fbbf24] hover:underline font-semibold"
+                                    >
+                                      New Student #ID
+                                    </button>
+                                  )}
                               </div>
                             </div>
-                            {mySubmissionForSelected?.status === 'completed' ? (
+                            {isCompletedOnDeviceOrCloud ? (
                               <div className="space-y-1.5">
                                 <div className="px-4 py-3 rounded-xl bg-[#081610] border border-[#10b981]/50 text-[#10b981] text-xs font-bold flex items-center gap-2 shrink-0">
-                                  <CheckCircle2 className="w-4 h-4" />
+                                  <Lock className="w-4 h-4 shrink-0" />
                                   <span>
-                                    Completed: {mySubmissionForSelected.correctCount}/
-                                    {mySubmissionForSelected.totalWords} (
-                                    {mySubmissionForSelected.accuracy}%)
+                                    Attempt Locked &amp; Submitted
+                                    {mySubmissionForSelected
+                                      ? `: ${mySubmissionForSelected.correctCount}/${mySubmissionForSelected.totalWords} (${mySubmissionForSelected.accuracy}%)`
+                                      : ''}
                                   </span>
                                 </div>
                               </div>
@@ -1633,7 +2119,13 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                 className="min-h-[50px] px-6 py-3 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] font-extrabold text-sm flex items-center justify-center gap-2 shrink-0 shadow-lg"
                               >
                                 <Play className="w-4 h-4 fill-[#08120e]" />
-                                <span>Enter Strict Contest Exam Now</span>
+                                <span>
+                                  {deviceLockForSelected?.status === 'in_progress'
+                                    ? `Resume Synced Exam (Word #${
+                                        (liveTimeline?.activeSlotIndex ?? 0) + 1
+                                      })`
+                                    : 'Enter Strict Contest Exam Now'}
+                                </span>
                               </button>
                             )}
                           </div>
@@ -1642,7 +2134,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                     ) : (
                       <div className="rounded-2xl bg-[#09140f] border border-[#183126] p-4 flex items-center justify-between gap-3">
                         <div className="text-xs text-[#8ba89a]">
-                          This contest has ended. Official standings and contest words are unlocked below.
+                          This contest has ended for all participants. Official standings and contest words are unlocked below.
                         </div>
                         <span className="px-2.5 py-1 rounded-lg bg-[#13291f] text-xs font-bold text-[#9ab5a7]">
                           Contest Finished
@@ -1661,7 +2153,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                           </span>
                         </h3>
                         <span className="text-[11px] text-[#7ea090]">
-                          Ranked by Score &rarr; Fastest Time
+                          Ranked by Score &rarr; Fastest Active Typing Time
                         </span>
                       </div>
 
@@ -1723,10 +2215,12 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                     </div>
                                     <div className="text-[11px] text-[#7ea090]">
                                       {sub.status === 'completed'
-                                        ? `Finished in ${formatDurationMs(
+                                        ? `Active typing time: ${formatDurationMs(
                                             sub.timeTakenMs
                                           )}`
-                                        : 'Waiting in Lobby / In Progress'}
+                                        : sub.status === 'in_progress'
+                                        ? `Live in Exam (${sub.correctCount}/${sub.totalWords} so far)`
+                                        : 'Waiting in Lobby'}
                                     </div>
                                   </div>
                                 </div>
@@ -1738,6 +2232,10 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                       {sub.accuracy}%)
                                     </span>
                                   </div>
+                                ) : sub.status === 'in_progress' ? (
+                                  <span className="px-2.5 py-1 rounded-lg bg-[#123123] border border-[#10b981]/30 text-[11px] font-mono font-bold text-[#10b981]">
+                                    In Exam · {sub.correctCount}/{sub.totalWords}
+                                  </span>
                                 ) : (
                                   <span className="px-2.5 py-1 rounded-lg bg-[#13291f] text-[11px] font-semibold text-[#fbbf24]">
                                     Registered
@@ -1750,7 +2248,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                       )}
                     </div>
 
-                    {/* Post-Completion / Post-Contest Word & Answer Sheet Reveal */}
+                    {/* Post-Contest Word & Answer Sheet Reveal (Strictly Locked Until Contest Ends Globally) */}
                     <div className="pt-2 border-t border-[#183126] space-y-3">
                       <div className="flex items-center justify-between">
                         <h3 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
@@ -1770,10 +2268,11 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                         <div className="p-4 rounded-2xl bg-[#09140f] border border-[#173024] text-xs text-[#8ba89a] flex items-center gap-2.5">
                           <Lock className="w-4 h-4 text-[#fbbf24] shrink-0" />
                           <span>
-                            <strong>Cryptographic Blind Lock Active:</strong>{' '}
-                            Neither the contest setter nor participants can view
-                            the contest words until they complete the live exam
-                            (or the contest ends).
+                            <strong>Anti-Leakage Blind Lock Active:</strong>{' '}
+                            Official contest words and correct spellings are
+                            strictly hidden from everyone (even after early
+                            submission) until the synchronized contest ends for
+                            all participants simultaneously.
                           </span>
                         </div>
                       ) : mySubmissionForSelected?.results &&

@@ -191,6 +191,63 @@ export function subscribeToPublishedRecordings(
     where('status', '==', 'published')
   );
 
+  const emitFromLocalCacheOnly = async () => {
+    try {
+      const localMap = await getAllLocalCachedRecordings();
+      const merged: Record<string, CloudRecording> = {};
+      const generalOnly: Record<string, CloudRecording> = {};
+      const activeUserId = auth.currentUser?.uid;
+
+      for (const [wordId, item] of Object.entries(localMap)) {
+        if (isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
+          continue;
+        }
+        const rec: CloudRecording = {
+          wordId: item.wordId,
+          word: item.word,
+          banglaMeaning: item.banglaMeaning,
+          audioDataUrl: item.audioDataUrl,
+          mimeType: item.mimeType,
+          fileName: item.fileName,
+          fileSize: item.fileSize,
+          durationMs: item.durationMs,
+          ownerId: item.ownerId,
+          ownerName: item.ownerName,
+          status: 'published',
+          updatedAtMs: item.updatedAtMs,
+          source: item.isPersonalOverride
+            ? 'personal'
+            : item.syncedToCloud
+            ? 'cloud'
+            : 'local-unsynced',
+          isPersonalOverride: Boolean(item.isPersonalOverride),
+          contributedToAdmin: Boolean(item.contributedToAdmin),
+        };
+
+        if (!item.isPersonalOverride) {
+          generalOnly[wordId] = rec;
+          merged[wordId] = rec;
+        } else {
+          const belongsToCurrentUser =
+            !activeUserId ||
+            !item.ownerId ||
+            item.ownerId === 'personal_user' ||
+            item.ownerId === activeUserId;
+          if (belongsToCurrentUser) {
+            merged[wordId] = rec;
+          }
+        }
+      }
+
+      onGeneralCloudUpdate?.(generalOnly);
+      onUpdate(merged);
+    } catch {
+      // Ignore local IndexedDB read error
+    }
+  };
+
+  void emitFromLocalCacheOnly();
+
   return onSnapshot(
     q,
     async (snapshot) => {
@@ -292,7 +349,8 @@ export function subscribeToPublishedRecordings(
       onUpdate(merged);
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, RECORDINGS_PATH);
+      console.warn('Recordings subscription operating from local IndexedDB cache:', error);
+      void emitFromLocalCacheOnly();
     }
   );
 }
@@ -631,7 +689,8 @@ export function subscribeToAudioContributions(
       }
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, CONTRIBUTIONS_PATH);
+      console.warn('Audio contributions subscription using local fallback:', error);
+      onUpdate([]);
     }
   );
 }
@@ -931,6 +990,16 @@ export function subscribeToUserPracticeSessions(
     limit(40)
   );
 
+  const getLocalUserSessions = (): PracticeSessionRecord[] => {
+    const localCached = readLocalSessionsCache();
+    return localCached
+      .filter((loc) => !loc.ownerId || loc.ownerId === targetOwnerId)
+      .sort((a, b) => b.createdAtMs - a.createdAtMs)
+      .slice(0, 20);
+  };
+
+  onUpdate(getLocalUserSessions());
+
   return onSnapshot(
     q,
     (snapshot) => {
@@ -978,7 +1047,8 @@ export function subscribeToUserPracticeSessions(
       onUpdate(list.slice(0, 20));
     },
     (error) => {
-      handleFirestoreError(error, OperationType.LIST, SESSIONS_PATH);
+      console.warn('Practice sessions operating from local cache:', error);
+      onUpdate(getLocalUserSessions());
     }
   );
 }

@@ -510,14 +510,14 @@ service cloud.firestore {
       allow update: if isValidId(submissionId)
         && isValidContestSubmission(incoming())
         && existing().status != 'completed'
+        && (existing().status != 'in_progress' || incoming().status in ['in_progress', 'completed'])
         && incoming().id == existing().id
         && incoming().contestId == existing().contestId
         && incoming().userId == existing().userId
         && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time;
 
-      allow delete: if isValidId(submissionId)
-        && existing().status in ['registered', 'in_progress', 'completed'];
+      allow delete: if false;
     }
   }
 }
