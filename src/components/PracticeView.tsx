@@ -218,6 +218,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     () => new Set(personalWords.map((w) => w.wordId)),
     [personalWords]
   );
+  const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
+  const [mobilePracticeTab, setMobilePracticeTab] = useState<'card' | 'list'>('card');
 
   const toggleCategory = (cat: string) => {
     setSelectedCategories((prev) =>
@@ -885,9 +887,9 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       : 0;
 
   return (
-    <div className="max-w-5xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-8 space-y-6">
-      {/* Top Banner: Switch to Recordings Manager & Personal Struggling Words */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
+    <div className="max-w-5xl w-full mx-auto px-3.5 sm:px-6 pt-3 pb-28 md:py-8 space-y-4 md:space-y-6">
+      {/* Top Banner: Switch to Recordings Manager & Personal Struggling Words (Desktop/Tablet only; Mobile uses Bottom Nav) */}
+      <div className="hidden md:flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
         <div className="min-w-0">
           <div className="text-xs font-bold text-[#10b981]">
             Pronunciation Audio Studio &amp; Personal Words
@@ -933,71 +935,71 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       </div>
 
       {/* Mode Switcher: Free Practice vs. Take Strict Exam Test */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-[#183126]">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 pb-3 sm:pb-4 border-b border-[#183126]">
         <div>
-          <h1 className="text-xl sm:text-3xl font-bold text-white tracking-tight">
+          <h1 className="text-lg sm:text-3xl font-bold text-white tracking-tight">
             {subMode === 'test'
-              ? 'Strict IELTS Spelling Exam (Take Test)'
-              : 'IELTS Listening & Spelling Practice'}
+              ? 'Strict IELTS Spelling Exam'
+              : 'IELTS Listening & Spelling'}
           </h1>
-          <p className="mt-1 text-xs sm:text-sm text-[#8ba89a]">
+          <p className="mt-0.5 text-[11px] sm:text-sm text-[#8ba89a] hidden sm:block">
             {subMode === 'test'
               ? 'Each word plays 3 times with pauses, then automatically advances. No replay or going back.'
               : 'Select Page 1, Page 2, or your private Struggling Words, and practice at your own pace.'}
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-1.5 p-1.5 rounded-2xl bg-[#0b1812] border border-[#1d382b] shrink-0">
+        <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl sm:rounded-2xl bg-[#0b1812] border border-[#1d382b] shrink-0">
           <button
             type="button"
             onClick={() => handleSwitchSubMode('practice')}
-            className={`min-h-[42px] px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
+            className={`min-h-[38px] sm:min-h-[42px] px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 sm:gap-2 whitespace-nowrap ${
               subMode === 'practice'
                 ? 'bg-[#10b981] text-[#04120c]'
                 : 'text-[#8ba89a] hover:text-white'
             }`}
           >
-            <Volume2 className="w-4 h-4 shrink-0" />
-            <span>Practice by Category</span>
+            <Volume2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+            <span>Free Practice</span>
           </button>
 
           <button
             type="button"
             onClick={() => handleSwitchSubMode('test')}
-            className={`min-h-[42px] px-4 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-2 whitespace-nowrap ${
+            className={`min-h-[38px] sm:min-h-[42px] px-3 sm:px-4 py-1.5 sm:py-2 rounded-lg sm:rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 sm:gap-2 whitespace-nowrap ${
               subMode === 'test'
                 ? 'bg-[#fbbf24] text-[#08120e]'
                 : 'text-[#8ba89a] hover:text-white'
             }`}
           >
-            <Timer className="w-4 h-4 shrink-0" />
-            <span>Take Strict Test</span>
+            <Timer className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+            <span>Strict Test</span>
           </button>
         </div>
       </div>
 
       {/* Page 1 / Page 2 / My Struggling Words Selector + Category Selector Cards */}
       {!(subMode === 'test' && examState === 'running') && (
-        <section className="rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5">
+        <section className="rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-3 sm:p-6 space-y-3 sm:space-y-5">
           {/* Row 1: Page 1 | Page 2 | All Pages | My Struggling Words + Audio Deck Filter */}
           <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
             <div className="space-y-1.5">
-              <div className="text-xs font-semibold text-[#8ba89a] flex items-center gap-1.5">
+              <div className="hidden sm:flex text-xs font-semibold text-[#8ba89a] items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-[#10b981]" />
                 <span>Select Word Book Page or Personal Struggling Words</span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
+              <div className="grid grid-cols-4 gap-1 sm:gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
                 <button
                   type="button"
                   onClick={() => handlePageFilterChange('page1')}
-                  className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-bold transition-colors flex flex-col sm:flex-row items-center justify-center sm:gap-1.5 whitespace-nowrap ${
                     pageFilter === 'page1'
                       ? 'bg-[#10b981] text-[#04120c]'
                       : 'text-[#9ab5a7] hover:text-white'
                   }`}
                 >
                   <span>Page 1</span>
-                  <span className="font-mono tabular-nums text-[11px] opacity-85">
+                  <span className="font-mono tabular-nums text-[10px] sm:text-[11px] opacity-85">
                     ({pageCounts.page1})
                   </span>
                 </button>
@@ -1005,14 +1007,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handlePageFilterChange('page2')}
-                  className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-bold transition-colors flex flex-col sm:flex-row items-center justify-center sm:gap-1.5 whitespace-nowrap ${
                     pageFilter === 'page2'
                       ? 'bg-[#10b981] text-[#04120c]'
                       : 'text-[#9ab5a7] hover:text-white'
                   }`}
                 >
                   <span>Page 2</span>
-                  <span className="font-mono tabular-nums text-[11px] opacity-85">
+                  <span className="font-mono tabular-nums text-[10px] sm:text-[11px] opacity-85">
                     ({pageCounts.page2})
                   </span>
                 </button>
@@ -1020,14 +1022,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handlePageFilterChange('all')}
-                  className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-bold transition-colors flex flex-col sm:flex-row items-center justify-center sm:gap-1.5 whitespace-nowrap ${
                     pageFilter === 'all'
                       ? 'bg-[#10b981] text-[#04120c]'
                       : 'text-[#9ab5a7] hover:text-white'
                   }`}
                 >
                   <span>All Pages</span>
-                  <span className="font-mono tabular-nums text-[11px] opacity-85">
+                  <span className="font-mono tabular-nums text-[10px] sm:text-[11px] opacity-85">
                     ({pageCounts.all})
                   </span>
                 </button>
@@ -1035,23 +1037,78 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => handlePageFilterChange('personal')}
-                  className={`min-h-[42px] px-3 py-2 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-bold transition-colors flex flex-col sm:flex-row items-center justify-center sm:gap-1.5 whitespace-nowrap ${
                     pageFilter === 'personal'
                       ? 'bg-[#38bdf8] text-[#04120c]'
                       : 'text-[#7dd3fc] hover:text-white'
                   }`}
                 >
-                  <Bookmark className="w-3.5 h-3.5 shrink-0" />
-                  <span>My Words</span>
-                  <span className="font-mono tabular-nums text-[11px] opacity-90">
+                  <span className="flex items-center gap-1">
+                    <Bookmark className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 hidden sm:inline" />
+                    <span>My Words</span>
+                  </span>
+                  <span className="font-mono tabular-nums text-[10px] sm:text-[11px] opacity-90">
                     ({personalWords.length})
                   </span>
                 </button>
               </div>
             </div>
 
+            {/* Mobile Compact Summary + Drawer Toggle Bar */}
+            <div className="flex md:hidden items-center justify-between gap-2 pt-0.5">
+              <div className="min-w-0 flex items-center gap-1.5 text-xs">
+                <FolderOpen className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
+                <span className="text-[#c4d9ce] font-semibold truncate">
+                  {selectedCategoriesLabel}
+                </span>
+                <span className="font-mono tabular-nums text-[11px] text-[#10b981] font-bold shrink-0">
+                  ({filteredDeck.length}w)
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 shrink-0">
+                {selectedCategories.length > 0 && pageFilter !== 'personal' && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategories([])}
+                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[#29200e] border border-[#fbbf24]/40 text-[11px] font-bold text-[#fbbf24]"
+                  >
+                    Reset
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setIsMobileFilterOpen((v) => !v)}
+                  className={`min-h-[34px] px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                    isMobileFilterOpen
+                      ? 'bg-[#10b981] border-[#10b981] text-[#04120c]'
+                      : 'bg-[#12281e] border-[#254b3a] text-[#10b981]'
+                  }`}
+                >
+                  <span>
+                    {isMobileFilterOpen
+                      ? 'Hide Categories'
+                      : `Categories (${
+                          selectedCategories.length > 0
+                            ? selectedCategories.length
+                            : 'All'
+                        })`}
+                  </span>
+                  <ChevronRight
+                    className={`w-3.5 h-3.5 transition-transform ${
+                      isMobileFilterOpen ? 'rotate-90' : ''
+                    }`}
+                  />
+                </button>
+              </div>
+            </div>
+
             {/* Audio Source Filter */}
-            <div className="space-y-1.5">
+            <div
+              className={`${
+                isMobileFilterOpen ? 'block' : 'hidden md:block'
+              } space-y-1.5`}
+            >
               <div className="text-xs font-semibold text-[#8ba89a]">
                 Audio Filter
               </div>
@@ -1059,7 +1116,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setDeckMode('all')}
-                  className={`min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                     deckMode === 'all'
                       ? 'bg-[#183529] text-[#10b981]'
                       : 'text-[#8ba89a] hover:text-white'
@@ -1070,7 +1127,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setDeckMode('uploads')}
-                  className={`min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                     deckMode === 'uploads'
                       ? 'bg-[#183529] text-[#fbbf24]'
                       : 'text-[#8ba89a] hover:text-white'
@@ -1081,7 +1138,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setDeckMode('missing')}
-                  className={`min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                  className={`min-h-[38px] sm:min-h-[42px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
                     deckMode === 'missing'
                       ? 'bg-[#183529] text-[#f87171]'
                       : 'text-[#8ba89a] hover:text-white'
@@ -1094,7 +1151,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           </div>
 
           {/* Row 2: Visual Multi-Category Selection Grid */}
-          <div className="space-y-2.5">
+          <div
+            className={`${
+              isMobileFilterOpen ? 'block' : 'hidden md:block'
+            } space-y-2.5`}
+          >
             <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
               <span className="font-semibold text-[#8ba89a] flex items-center gap-1.5">
                 <FolderOpen className="w-3.5 h-3.5 text-[#10b981]" />
@@ -1739,17 +1800,53 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
         /* =================================================================== */
         /* SUB-MODE 2: FREE PRACTICE BY PAGE & CATEGORY                        */
         /* =================================================================== */
-        <div className="space-y-5">
-          {/* Top Row: Side-by-Side on Tablet & PC (md:grid-cols-12), Stacked Up & Down on Phone (grid-cols-1) */}
+        <div className="space-y-4 sm:space-y-5">
+          {/* Mobile Sub-View Switcher: Practice Card vs Study Word List */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 rounded-xl bg-[#0b1812] border border-[#1d382b] md:hidden">
+            <button
+              type="button"
+              onClick={() => setMobilePracticeTab('card')}
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                mobilePracticeTab === 'card'
+                  ? 'bg-[#10b981] text-[#04120c]'
+                  : 'text-[#8ba89a] hover:text-white'
+              }`}
+            >
+              <Volume2 className="w-3.5 h-3.5 shrink-0" />
+              <span>
+                Practice Card (
+                {filteredDeck.length > 0
+                  ? `${(currentIndex % filteredDeck.length) + 1}/${filteredDeck.length}`
+                  : '0'}
+                )
+              </span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMobilePracticeTab('list')}
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                mobilePracticeTab === 'list'
+                  ? 'bg-[#10b981] text-[#04120c]'
+                  : 'text-[#8ba89a] hover:text-white'
+              }`}
+            >
+              <ListMusic className="w-3.5 h-3.5 shrink-0" />
+              <span>Word List ({filteredDeck.length})</span>
+            </button>
+          </div>
+
+          {/* Top Row: Side-by-Side on Tablet & PC (md:grid-cols-12), Tabbed on Phone */}
           <div className="grid grid-cols-1 md:grid-cols-12 gap-5 items-start">
-            {/* LEFT (6 cols on Tablet/PC, Full width on Phone): Interactive Spelling Practice Card */}
+            {/* LEFT (6 cols on Tablet/PC, Tab 1 on Phone): Interactive Spelling Practice Card */}
             <div
               onClick={() => {
                 if (!submitted) {
                   setIsPracticingBlur(true);
                 }
               }}
-              className="md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5"
+              className={`${
+                mobilePracticeTab === 'card' ? 'block' : 'hidden md:block'
+              } md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5`}
             >
               {!currentWord ? (
                 <div className="py-12 text-center space-y-3">
@@ -2189,12 +2286,14 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               )}
             </div>
 
-            {/* RIGHT (6 cols on Tablet/PC, Stacked Below on Phone): Selected Category Study Words & Pronunciation */}
+            {/* RIGHT (6 cols on Tablet/PC, Tab 2 on Phone): Selected Category Study Words & Pronunciation */}
             <div
               onClick={() => {
                 setIsPracticingBlur(false);
               }}
-              className="md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-4"
+              className={`${
+                mobilePracticeTab === 'list' ? 'block' : 'hidden md:block'
+              } md:col-span-6 rounded-2xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-4`}
             >
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-[#162d22]">
                 <div>
@@ -2340,6 +2439,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           setSubmitted(false);
                           setUserInput('');
                           setIsPracticingBlur(false);
+                          setMobilePracticeTab('card');
                         }}
                         role="button"
                         tabIndex={0}
@@ -2351,6 +2451,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             setSubmitted(false);
                             setUserInput('');
                             setIsPracticingBlur(false);
+                            setMobilePracticeTab('card');
                           }
                         }}
                         className={`w-full p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col gap-2 ${

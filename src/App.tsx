@@ -775,18 +775,31 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: 1 Primary Action */}
+        {/* Zone 3: Mobile Quick APK Trigger + Primary Auth Action */}
         <div className="flex items-center gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => {
+              triggerAndroidApkDownload();
+              setIsSyncModalOpen(true);
+            }}
+            title="Download Android APK & Mobile Link"
+            className="md:hidden min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#11281e] border border-[#1f4735] text-[11px] font-bold text-[#10b981] flex items-center gap-1 whitespace-nowrap shrink-0"
+          >
+            <Smartphone className="w-3.5 h-3.5 shrink-0" />
+            <span>.APK</span>
+          </button>
+
           {user ? (
             <div className="flex items-center bg-[#11281e] border border-[#1f4735] rounded-xl overflow-hidden">
               <button
                 type="button"
                 onClick={() => setIsSignInModalOpen(true)}
                 title={`Signed in as ${user.email} — Click to switch account`}
-                className="min-h-[38px] pl-3 pr-2 py-1.5 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[38px] pl-2.5 pr-2 py-1.5 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 <CloudCheck className="w-4 h-4 shrink-0" />
-                <span className="max-w-[130px] sm:max-w-none truncate">
+                <span className="max-w-[96px] sm:max-w-none truncate">
                   {user.displayName || user.email?.split('@')[0] || 'Synced'}
                 </span>
               </button>
@@ -809,9 +822,9 @@ export default function App() {
             <button
               type="button"
               onClick={handleSignIn}
-              className="min-h-[40px] px-3.5 py-1.5 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+              className="min-h-[38px] px-3 py-1.5 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
-              <LogIn className="w-4 h-4 shrink-0" />
+              <LogIn className="w-3.5 h-3.5 shrink-0" />
               <span>Sign in</span>
             </button>
           )}
@@ -1386,9 +1399,9 @@ export default function App() {
       {/* Fixed Mobile Bottom Navigation Bar (Visible on Phone Viewports) */}
       <nav
         aria-label="Mobile navigation"
-        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#08120e]/95 backdrop-blur-md border-t border-[#183327] grid ${
-          isAdmin ? 'grid-cols-5' : 'grid-cols-4'
-        } items-center h-16 px-2`}
+        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#07110d]/95 backdrop-blur-md border-t border-[#183327] grid ${
+          isAdmin ? 'grid-cols-6' : 'grid-cols-5'
+        } items-center h-16 px-1`}
       >
         <button
           type="button"
@@ -1396,13 +1409,13 @@ export default function App() {
             setActiveScreen('practice');
             setPracticeSubMode('practice');
           }}
-          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+          className={`flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'practice' && practiceSubMode === 'practice'
-              ? 'text-[#10b981] font-bold'
+              ? 'text-[#10b981] font-bold border-t-2 border-[#10b981]'
               : 'text-[#8ba89a]'
           }`}
         >
-          <BookOpenCheck className="w-5 h-5" />
+          <BookOpenCheck className="w-4 h-4" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
             Practice
           </span>
@@ -1414,45 +1427,56 @@ export default function App() {
             setActiveScreen('practice');
             setPracticeSubMode('test');
           }}
-          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+          className={`flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'practice' && practiceSubMode === 'test'
-              ? 'text-[#fbbf24] font-bold'
+              ? 'text-[#fbbf24] font-bold border-t-2 border-[#fbbf24]'
               : 'text-[#8ba89a]'
           }`}
         >
-          <Timer className="w-5 h-5" />
+          <Timer className="w-4 h-4" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            Take Test
+            Strict Test
           </span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveScreen('contests')}
-          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+          className={`flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'contests'
-              ? 'text-[#fbbf24] font-bold'
+              ? 'text-[#fbbf24] font-bold border-t-2 border-[#fbbf24]'
               : 'text-[#8ba89a]'
           }`}
         >
-          <Trophy className="w-5 h-5" />
+          <Trophy className="w-4 h-4" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            Contests ({contests.length})
+            Contests{contests.length > 0 ? ` (${contests.length})` : ''}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setIsPersonalWordsModalOpen(true)}
+          className="flex flex-col items-center justify-center h-full text-[#7dd3fc] transition-colors"
+        >
+          <Bookmark className="w-4 h-4" />
+          <span className="text-[10px] mt-1 whitespace-nowrap">
+            My Words{personalWords.length > 0 ? ` (${personalWords.length})` : ''}
           </span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveScreen('recordings')}
-          className={`flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+          className={`flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'recordings'
-              ? 'text-[#10b981] font-bold'
+              ? 'text-[#10b981] font-bold border-t-2 border-[#10b981]'
               : 'text-[#8ba89a]'
           }`}
         >
-          <ListMusic className="w-5 h-5" />
+          <ListMusic className="w-4 h-4" />
           <span className="text-[10px] mt-1 whitespace-nowrap">
-            Recordings
+            Audio
           </span>
         </button>
 
@@ -1460,15 +1484,15 @@ export default function App() {
           <button
             type="button"
             onClick={() => setActiveScreen('admin')}
-            className={`relative flex flex-col items-center justify-center h-full rounded-xl transition-colors ${
+            className={`relative flex flex-col items-center justify-center h-full transition-colors ${
               activeScreen === 'admin'
-                ? 'text-[#10b981] font-bold'
+                ? 'text-[#10b981] font-bold border-t-2 border-[#10b981]'
                 : 'text-[#8ba89a]'
             }`}
           >
-            <ShieldCheck className="w-5 h-5" />
+            <ShieldCheck className="w-4 h-4" />
             <span className="text-[10px] mt-1 whitespace-nowrap">
-              Admin {pendingContributionsCount > 0 ? `(${pendingContributionsCount})` : ''}
+              Admin{pendingContributionsCount > 0 ? ` (${pendingContributionsCount})` : ''}
             </span>
           </button>
         )}
