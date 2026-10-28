@@ -612,8 +612,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [subMode, submitted, selectedHistorySession, handlePracticeAgainWord]);
 
-  const handleSubmitPractice = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSubmitPractice = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (!currentWord) return;
 
     if (!submitted) {
@@ -934,8 +934,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
         </div>
       </div>
 
-      {/* Mode Switcher: Free Practice vs. Take Strict Exam Test */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 pb-3 sm:pb-4 border-b border-[#183126]">
+      {/* Mode Switcher: Free Practice vs. Take Strict Exam Test (Desktop/Tablet only; Mobile uses Bottom App Dock) */}
+      <div className="hidden md:flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 sm:gap-4 pb-3 sm:pb-4 border-b border-[#183126]">
         <div>
           <h1 className="text-lg sm:text-3xl font-bold text-white tracking-tight">
             {subMode === 'test'
@@ -1621,13 +1621,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             )}
 
             {/* Write-Only Exam Input Box */}
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                advanceStrictExamWord(examInput);
-              }}
-              className="space-y-4"
-            >
+            <div className="space-y-4">
               <div>
                 <label
                   htmlFor="strict-exam-input"
@@ -1640,6 +1634,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   inputRef={examInputRef}
                   value={examInput}
                   onChange={setExamInput}
+                  onEnterPress={() => advanceStrictExamWord(examInput)}
                   placeholder="Write spelling here..."
                   enterKeyHint="next"
                   variant="exam"
@@ -1655,14 +1650,15 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </div>
 
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={() => advanceStrictExamWord(examInput)}
                   className="min-h-[48px] px-6 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-xs sm:text-sm flex items-center gap-2 transition-colors whitespace-nowrap shrink-0"
                 >
                   <span>Lock Answer &amp; Next</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
               </div>
-            </form>
+            </div>
           </section>
         ) : (
           /* STRICT EXAM RESULTS & REVIEW SHEET */
@@ -2144,8 +2140,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     </div>
                   )}
 
-                  {/* Spelling Input Form */}
-                  <form onSubmit={handleSubmitPractice} className="space-y-4">
+                  {/* Spelling Input Box (No form wrapper so mobile keyboards never show password/autofill/suggestion popups) */}
+                  <div className="space-y-4">
                     <div
                       onClick={(e) => {
                         e.stopPropagation();
@@ -2168,6 +2164,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           setShowStudyWord(false);
                           setIsPracticingBlur(true);
                         }}
+                        onEnterPress={() => handleSubmitPractice()}
                         onFocus={() => {
                           setShowStudyWord(false);
                           setIsPracticingBlur(true);
@@ -2273,7 +2270,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         </button>
                       ) : (
                         <button
-                          type="submit"
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSubmitPractice();
+                          }}
                           className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
                         >
                           <span>Check Spelling</span>
@@ -2281,7 +2282,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         </button>
                       )}
                     </div>
-                  </form>
+                  </div>
                 </>
               )}
             </div>

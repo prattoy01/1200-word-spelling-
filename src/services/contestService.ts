@@ -1,6 +1,7 @@
 import {
   collection,
   doc,
+  getDocs,
   setDoc,
   updateDoc,
   deleteDoc,
@@ -512,13 +513,162 @@ export async function submitContestExamResult(params: {
   return record;
 }
 
+function sortContestsLiveFirst(list: ContestRecord[]): ContestRecord[] {
+  const now = Date.now();
+  const phaseRank = (c: ContestRecord) => {
+    const p = getContestPhase(c, now);
+    if (p === 'live') return 0;
+    if (p === 'upcoming') return 1;
+    if (p === 'ended') return 2;
+    return 3;
+  };
+  return [...list].sort((a, b) => {
+    const rA = phaseRank(a);
+    const rB = phaseRank(b);
+    if (rA !== rB) return rA - rB;
+    if (rA === 1) {
+      // Upcoming: soonest start time first
+      return a.startTimeMs - b.startTimeMs;
+    }
+    // Live or Ended: newest start time first
+    return b.startTimeMs - a.startTimeMs;
+  });
+}
+
 /**
- * Subscribes to all active contests in real time.
+ * Actively fetches all contests & submissions from Cloud Firestore and merges any unsynced local contests.
+ */
+export async function syncContestsNow(): Promise<{
+  contests: ContestRecord[];
+  submissions: ContestSubmissionRecord[];
+}> {
+  const qContests = query(
+    collection(db, CONTESTS_PATH),
+    where('status', 'in', ['active', 'cancelled']),
+    limit(60)
+  );
+  const qSubs = query(
+    collection(db, SUBMISSIONS_PATH),
+    where('status', 'in', ['registered', 'in_progress', 'completed']),
+    limit(200)
+  );
+
+  const [contestSnap, subSnap] = await Promise.all([
+    getDocs(qContests),
+    getDocs(qSubs),
+  ]);
+
+  const cloudIds = new Set<string>();
+  const cancelledIds = new Set<string>();
+  const list: ContestRecord[] = [];
+
+  contestSnap.forEach((docSnap) => {
+    const d = docSnap.data();
+    const cid = d.id || docSnap.id;
+    cloudIds.add(cid);
+    if (d.status === 'cancelled') {
+      cancelledIds.add(cid);
+      return;
+    }
+    list.push({
+      id: cid,
+      title: d.title || 'IELTS Spelling Contest',
+      creatorId: d.creatorId || 'user',
+      creatorName: d.creatorName || 'Setter',
+      pageFilter:
+        d.pageFilter === 'page1' || d.pageFilter === 'page2'
+          ? d.pageFilter
+          : 'all',
+      categories: Array.isArray(d.categories) ? d.categories : [],
+      wordCount: Number(d.wordCount) || 10,
+      baseSeconds: Number(d.baseSeconds) || 12,
+      showBangla: Boolean(d.showBangla),
+      startTimeMs: Number(d.startTimeMs) || Date.now(),
+      durationMinutes: Number(d.durationMinutes) || 30,
+      randomSeed: String(d.randomSeed || 'default_seed_12345'),
+      status: 'active',
+      createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+      updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+    });
+  });
+
+  // If this device has any local active contests that haven't synced to Firestore yet, push them to Cloud now
+  const localContests = readLocalContests();
+  for (const loc of localContests) {
+    if (
+      loc.status === 'active' &&
+      !cloudIds.has(loc.id) &&
+      !cancelledIds.has(loc.id)
+    ) {
+      list.push(loc);
+      void setDoc(doc(db, CONTESTS_PATH, loc.id), {
+        id: loc.id,
+        title: loc.title.slice(0, 140),
+        creatorId: sanitizeId(loc.creatorId),
+        creatorName: (loc.creatorName || 'Setter').slice(0, 120),
+        pageFilter:
+          loc.pageFilter === 'page1' || loc.pageFilter === 'page2'
+            ? loc.pageFilter
+            : 'all',
+        categories: Array.isArray(loc.categories)
+          ? loc.categories.slice(0, 50)
+          : [],
+        wordCount: Math.max(1, Math.min(200, Number(loc.wordCount) || 15)),
+        baseSeconds: Math.max(5, Math.min(60, Number(loc.baseSeconds) || 12)),
+        showBangla: Boolean(loc.showBangla),
+        startTimeMs: Math.max(
+          1700000000000,
+          Number(loc.startTimeMs) || Date.now()
+        ),
+        durationMinutes: Math.max(
+          5,
+          Math.min(1440, Number(loc.durationMinutes) || 30)
+        ),
+        randomSeed: String(loc.randomSeed || generateRandomSeed()),
+        status: 'active',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+  }
+
+  const sortedContests = sortContestsLiveFirst(list);
+  writeLocalContests(sortedContests);
+
+  const subList: ContestSubmissionRecord[] = [];
+  subSnap.forEach((docSnap) => {
+    const d = docSnap.data();
+    subList.push({
+      id: d.id || docSnap.id,
+      contestId: d.contestId || '',
+      userId: d.userId || '',
+      userName: d.userName || 'Participant',
+      userEmail: d.userEmail || '',
+      status:
+        d.status === 'completed' || d.status === 'in_progress'
+          ? d.status
+          : 'registered',
+      totalWords: Number(d.totalWords) || 10,
+      correctCount: Number(d.correctCount) || 0,
+      accuracy: Number(d.accuracy) || 0,
+      timeTakenMs: Number(d.timeTakenMs) || 0,
+      results: Array.isArray(d.results) ? d.results : undefined,
+      createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+      updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+    });
+  });
+  writeLocalSubmissions(subList);
+
+  return { contests: sortedContests, submissions: subList };
+}
+
+/**
+ * Subscribes to all active contests in real time (with active polling fallback for mobile & APK WebViews).
  */
 export function subscribeToContests(
   onUpdate: (contests: ContestRecord[]) => void
 ): Unsubscribe {
-  onUpdate(readLocalContests());
+  onUpdate(sortContestsLiveFirst(readLocalContests()));
 
   const q = query(
     collection(db, CONTESTS_PATH),
@@ -526,44 +676,121 @@ export function subscribeToContests(
     limit(60)
   );
 
-  return onSnapshot(
+  const processDocs = (
+    docs: Array<{ id: string; data: () => Record<string, any> }>
+  ) => {
+    const cloudIds = new Set<string>();
+    const cancelledIds = new Set<string>();
+    const list: ContestRecord[] = [];
+
+    docs.forEach((docSnap) => {
+      const d = docSnap.data();
+      const cid = d.id || docSnap.id;
+      cloudIds.add(cid);
+      if (d.status === 'cancelled') {
+        cancelledIds.add(cid);
+        return;
+      }
+      list.push({
+        id: cid,
+        title: d.title || 'IELTS Spelling Contest',
+        creatorId: d.creatorId || 'user',
+        creatorName: d.creatorName || 'Setter',
+        pageFilter:
+          d.pageFilter === 'page1' || d.pageFilter === 'page2'
+            ? d.pageFilter
+            : 'all',
+        categories: Array.isArray(d.categories) ? d.categories : [],
+        wordCount: Number(d.wordCount) || 10,
+        baseSeconds: Number(d.baseSeconds) || 12,
+        showBangla: Boolean(d.showBangla),
+        startTimeMs: Number(d.startTimeMs) || Date.now(),
+        durationMinutes: Number(d.durationMinutes) || 30,
+        randomSeed: String(d.randomSeed || 'default_seed_12345'),
+        status: 'active',
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      });
+    });
+
+    // Also preserve & auto-upload any locally created active contests not yet in cloud
+    const localContests = readLocalContests();
+    for (const loc of localContests) {
+      if (
+        loc.status === 'active' &&
+        !cloudIds.has(loc.id) &&
+        !cancelledIds.has(loc.id)
+      ) {
+        list.push(loc);
+        void setDoc(doc(db, CONTESTS_PATH, loc.id), {
+          id: loc.id,
+          title: loc.title.slice(0, 140),
+          creatorId: sanitizeId(loc.creatorId),
+          creatorName: (loc.creatorName || 'Setter').slice(0, 120),
+          pageFilter:
+            loc.pageFilter === 'page1' || loc.pageFilter === 'page2'
+              ? loc.pageFilter
+              : 'all',
+          categories: Array.isArray(loc.categories)
+            ? loc.categories.slice(0, 50)
+            : [],
+          wordCount: Math.max(1, Math.min(200, Number(loc.wordCount) || 15)),
+          baseSeconds: Math.max(5, Math.min(60, Number(loc.baseSeconds) || 12)),
+          showBangla: Boolean(loc.showBangla),
+          startTimeMs: Math.max(
+            1700000000000,
+            Number(loc.startTimeMs) || Date.now()
+          ),
+          durationMinutes: Math.max(
+            5,
+            Math.min(1440, Number(loc.durationMinutes) || 30)
+          ),
+          randomSeed: String(loc.randomSeed || generateRandomSeed()),
+          status: 'active',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+    }
+
+    const sorted = sortContestsLiveFirst(list);
+    writeLocalContests(sorted);
+    onUpdate(sorted);
+  };
+
+  const unsubSnapshot = onSnapshot(
     q,
     (snapshot) => {
-      const list: ContestRecord[] = [];
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        if (d.status === 'cancelled') return;
-        list.push({
-          id: d.id || docSnap.id,
-          title: d.title || 'IELTS Spelling Contest',
-          creatorId: d.creatorId || 'user',
-          creatorName: d.creatorName || 'Setter',
-          pageFilter:
-            d.pageFilter === 'page1' || d.pageFilter === 'page2'
-              ? d.pageFilter
-              : 'all',
-          categories: Array.isArray(d.categories) ? d.categories : [],
-          wordCount: Number(d.wordCount) || 10,
-          baseSeconds: Number(d.baseSeconds) || 12,
-          showBangla: Boolean(d.showBangla),
-          startTimeMs: Number(d.startTimeMs) || Date.now(),
-          durationMinutes: Number(d.durationMinutes) || 30,
-          randomSeed: String(d.randomSeed || 'default_seed_12345'),
-          status: 'active',
-          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-          updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-        });
-      });
-
-      list.sort((a, b) => b.startTimeMs - a.startTimeMs);
-      writeLocalContests(list);
-      onUpdate(list);
+      const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
+      snapshot.forEach((docSnap) => docs.push(docSnap));
+      processDocs(docs);
     },
     (err) => {
       console.warn('Contest subscription fallback to local cache:', err);
-      onUpdate(readLocalContests());
+      onUpdate(sortContestsLiveFirst(readLocalContests()));
     }
   );
+
+  // Active background poll every 6s so Android APK WebView & mobile carrier networks stay 100% synced
+  const pollNow = () => {
+    void getDocs(q)
+      .then((snap) => {
+        const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
+        snap.forEach((docSnap) => docs.push(docSnap));
+        processDocs(docs);
+      })
+      .catch(() => {});
+  };
+  pollNow();
+  const pollIntervalId =
+    typeof window !== 'undefined' ? window.setInterval(pollNow, 6000) : null;
+
+  return () => {
+    unsubSnapshot();
+    if (pollIntervalId !== null && typeof window !== 'undefined') {
+      window.clearInterval(pollIntervalId);
+    }
+  };
 }
 
 /**
@@ -580,38 +807,67 @@ export function subscribeToContestSubmissions(
     limit(200)
   );
 
-  return onSnapshot(
+  const processSubDocs = (
+    docs: Array<{ id: string; data: () => Record<string, any> }>
+  ) => {
+    const list: ContestSubmissionRecord[] = [];
+    docs.forEach((docSnap) => {
+      const d = docSnap.data();
+      list.push({
+        id: d.id || docSnap.id,
+        contestId: d.contestId || '',
+        userId: d.userId || '',
+        userName: d.userName || 'Participant',
+        userEmail: d.userEmail || '',
+        status:
+          d.status === 'completed' || d.status === 'in_progress'
+            ? d.status
+            : 'registered',
+        totalWords: Number(d.totalWords) || 10,
+        correctCount: Number(d.correctCount) || 0,
+        accuracy: Number(d.accuracy) || 0,
+        timeTakenMs: Number(d.timeTakenMs) || 0,
+        results: Array.isArray(d.results) ? d.results : undefined,
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      });
+    });
+
+    writeLocalSubmissions(list);
+    onUpdate(list);
+  };
+
+  const unsubSnapshot = onSnapshot(
     q,
     (snapshot) => {
-      const list: ContestSubmissionRecord[] = [];
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        list.push({
-          id: d.id || docSnap.id,
-          contestId: d.contestId || '',
-          userId: d.userId || '',
-          userName: d.userName || 'Participant',
-          userEmail: d.userEmail || '',
-          status:
-            d.status === 'completed' || d.status === 'in_progress'
-              ? d.status
-              : 'registered',
-          totalWords: Number(d.totalWords) || 10,
-          correctCount: Number(d.correctCount) || 0,
-          accuracy: Number(d.accuracy) || 0,
-          timeTakenMs: Number(d.timeTakenMs) || 0,
-          results: Array.isArray(d.results) ? d.results : undefined,
-          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-          updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-        });
-      });
-
-      writeLocalSubmissions(list);
-      onUpdate(list);
+      const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
+      snapshot.forEach((docSnap) => docs.push(docSnap));
+      processSubDocs(docs);
     },
     (err) => {
       console.warn('Contest submissions fallback to local cache:', err);
       onUpdate(readLocalSubmissions());
     }
   );
+
+  const pollNow = () => {
+    void getDocs(q)
+      .then((snap) => {
+        const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
+        snap.forEach((docSnap) => docs.push(docSnap));
+        processSubDocs(docs);
+      })
+      .catch(() => {});
+  };
+  pollNow();
+  const pollIntervalId =
+    typeof window !== 'undefined' ? window.setInterval(pollNow, 6000) : null;
+
+  return () => {
+    unsubSnapshot();
+    if (pollIntervalId !== null && typeof window !== 'undefined') {
+      window.clearInterval(pollIntervalId);
+    }
+  };
 }
+

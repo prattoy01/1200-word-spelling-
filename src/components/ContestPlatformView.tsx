@@ -20,6 +20,7 @@ import {
   Award,
   Check,
   Flame,
+  RefreshCw,
 } from 'lucide-react';
 import { CATEGORIES, type WordItem } from '../data/words';
 import {
@@ -36,6 +37,7 @@ import {
   deriveContestWordDeck,
   getContestCandidatePool,
   getContestPhase,
+  syncContestsNow,
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
@@ -49,6 +51,10 @@ interface ContestPlatformViewProps {
   contests: ContestRecord[];
   submissions: ContestSubmissionRecord[];
   onBackToPractice: () => void;
+  onSyncContests?: (
+    contests: ContestRecord[],
+    submissions: ContestSubmissionRecord[]
+  ) => void;
 }
 
 const SPELLING_ALTERNATIVE_GROUPS: string[][] = [
@@ -163,13 +169,27 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
   contests,
   submissions,
   onBackToPractice,
+  onSyncContests,
 }) => {
   // Real-time 1-second clock so scheduled contests automatically unlock at the exact second
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [isSyncingCloud, setIsSyncingCloud] = useState<boolean>(false);
+
+  const handleManualSync = useCallback(async () => {
+    setIsSyncingCloud(true);
+    try {
+      const { contests: c, submissions: s } = await syncContestsNow();
+      onSyncContests?.(c, s);
+    } finally {
+      setTimeout(() => setIsSyncingCloud(false), 350);
+    }
+  }, [onSyncContests]);
+
   useEffect(() => {
+    void handleManualSync();
     const id = window.setInterval(() => setNowMs(Date.now()), 500);
     return () => window.clearInterval(id);
-  }, []);
+  }, [handleManualSync]);
 
   const [activeTab, setActiveTab] = useState<'contests' | 'create'>('contests');
   const [selectedContestId, setSelectedContestId] = useState<string | null>(
@@ -728,14 +748,8 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
             </div>
           )}
 
-          {/* Write-Only Input Form */}
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              advanceContestWord(examInput);
-            }}
-            className="space-y-4"
-          >
+          {/* Write-Only Input Box (No form wrapper so mobile keyboards never show password/suggestion popups) */}
+          <div className="space-y-4">
             <div>
               <label
                 htmlFor="contest-exam-input"
@@ -751,6 +765,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                   setExamInput(val);
                   latestExamInputRef.current = val;
                 }}
+                onEnterPress={() => advanceContestWord(examInput)}
                 disabled={isSubmittingResult}
                 placeholder="Write spelling here..."
                 enterKeyHint="next"
@@ -767,8 +782,9 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
               </div>
 
               <button
-                type="submit"
+                type="button"
                 disabled={isSubmittingResult}
+                onClick={() => advanceContestWord(examInput)}
                 className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-xs sm:text-sm flex items-center gap-2 shrink-0 transition-colors"
               >
                 <span>
@@ -778,56 +794,68 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                 </span>
               </button>
             </div>
-          </form>
+          </div>
         </section>
       </main>
     );
   }
 
   return (
-    <main className="flex-1 max-w-6xl w-full mx-auto px-4 sm:px-6 pt-5 pb-28 md:py-6 space-y-5">
-      {/* Top Navigation & Blind Fair-Play Banner */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <main className="flex-1 max-w-6xl w-full mx-auto px-3.5 sm:px-6 pt-3 sm:pt-5 pb-28 md:py-6 space-y-4 sm:space-y-5">
+      {/* Top Navigation & Blind Fair-Play Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <button
           type="button"
           onClick={onBackToPractice}
-          className="min-h-[40px] text-xs sm:text-sm font-semibold text-[#10b981] hover:text-[#34d399] flex items-center gap-1.5 transition-colors"
+          className="min-h-[38px] text-xs sm:text-sm font-semibold text-[#10b981] hover:text-[#34d399] flex items-center gap-1.5 transition-colors"
         >
           <ArrowLeft className="w-4 h-4" />
-          <span>Back to Practice &amp; Study</span>
+          <span>Back to Practice</span>
         </button>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
+          <button
+            type="button"
+            onClick={() => void handleManualSync()}
+            title="Sync Live Contests from Cloud"
+            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#11241b] hover:bg-[#173326] border border-[#1f3d2f] text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 ${isSyncingCloud ? 'animate-spin' : ''}`}
+            />
+            <span>Sync</span>
+          </button>
+
           <button
             type="button"
             onClick={() => setActiveTab('contests')}
-            className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
+            className={`min-h-[38px] px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors ${
               activeTab === 'contests'
                 ? 'bg-[#10b981] text-[#04120c]'
                 : 'bg-[#11241b] text-[#9ab5a7] hover:text-white border border-[#1f3d2f]'
             }`}
           >
-            <Trophy className="w-4 h-4" />
-            <span>Live &amp; Scheduled Contests ({contests.length})</span>
+            <Trophy className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span>Contests ({contests.length})</span>
           </button>
 
           <button
             type="button"
             onClick={() => setActiveTab('create')}
-            className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
+            className={`min-h-[38px] px-3 sm:px-4 py-1.5 sm:py-2 rounded-xl text-xs font-extrabold flex items-center gap-1.5 transition-colors ${
               activeTab === 'create'
                 ? 'bg-[#fbbf24] text-[#08120e]'
                 : 'bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 text-[#fbbf24] border border-[#fbbf24]/40'
             }`}
           >
-            <Plus className="w-4 h-4" />
-            <span>Schedule New Contest</span>
+            <Plus className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            <span>+ Host Contest</span>
           </button>
         </div>
       </div>
 
-      {/* Hero Explanation Banner */}
-      <section className="rounded-3xl bg-gradient-to-r from-[#0e241b] via-[#102a20] to-[#1a2514] border border-[#244b39] p-5 sm:p-6 flex flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
+      {/* Hero Explanation Banner (Desktop/Tablet only so Mobile shows Active Live Contest Card immediately at top) */}
+      <section className="hidden md:flex rounded-3xl bg-gradient-to-r from-[#0e241b] via-[#102a20] to-[#1a2514] border border-[#244b39] p-5 sm:p-6 flex-col md:flex-row md:items-center justify-between gap-4 shadow-xl">
         <div className="space-y-1.5">
           <div className="inline-flex items-center gap-2 px-2.5 py-1 rounded-lg bg-[#fbbf24]/15 border border-[#fbbf24]/40 text-[#fbbf24] text-[11px] font-extrabold uppercase tracking-wider">
             <Lock className="w-3.5 h-3.5" />
@@ -1198,130 +1226,179 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         /* =================================================================== */
         /* LIVE & SCHEDULED CONTESTS LOBBY + REAL-TIME LEADERBOARD             */
         /* =================================================================== */
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-          {/* LEFT COLUMN (5 cols): Contest List */}
-          <div className="lg:col-span-5 rounded-3xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-5 space-y-3.5">
-            <div className="flex items-center justify-between pb-2 border-b border-[#162d22]">
-              <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
-                <Flame className="w-4 h-4 text-[#fbbf24]" />
-                <span>All Contests ({contests.length})</span>
-              </h2>
-              <button
-                type="button"
-                onClick={() => setActiveTab('create')}
-                className="text-xs font-bold text-[#10b981] hover:underline flex items-center gap-1"
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>New Contest</span>
-              </button>
+        <div className="space-y-4">
+          {/* Mobile Horizontal Contest Switcher Strip (so mobile users see & switch contests at the very top!) */}
+          {contests.length > 0 && (
+            <div className="lg:hidden flex items-center gap-2 overflow-x-auto no-scrollbar pb-1">
+              {contests.map((c) => {
+                const p = getContestPhase(c, nowMs);
+                const active = selectedContest?.id === c.id;
+                return (
+                  <button
+                    key={c.id}
+                    type="button"
+                    onClick={() => setSelectedContestId(c.id)}
+                    className={`min-h-[40px] px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-2 whitespace-nowrap shrink-0 transition-all ${
+                      active
+                        ? 'bg-[#132c21] border-[#10b981] text-white shadow-md'
+                        : 'bg-[#09140f] border-[#183126] text-[#8ba89a]'
+                    }`}
+                  >
+                    {p === 'live' ? (
+                      <span className="px-1.5 py-0.5 rounded bg-[#fbbf24] text-[#08120e] text-[9px] font-extrabold uppercase">
+                        LIVE
+                      </span>
+                    ) : p === 'upcoming' ? (
+                      <span className="px-1.5 py-0.5 rounded bg-[#fbbf24]/20 text-[#fbbf24] text-[9px] font-mono font-bold">
+                        SOON
+                      </span>
+                    ) : (
+                      <span className="px-1.5 py-0.5 rounded bg-[#152a20] text-[#6d8a7b] text-[9px] font-bold">
+                        END
+                      </span>
+                    )}
+                    <span className="max-w-[150px] truncate">{c.title}</span>
+                  </button>
+                );
+              })}
             </div>
+          )}
 
-            {contests.length === 0 ? (
-              <div className="py-10 text-center space-y-3">
-                <Trophy className="w-8 h-8 text-[#fbbf24] mx-auto opacity-80" />
-                <p className="text-xs sm:text-sm text-[#8ba89a]">
-                  No contests scheduled yet. Be the first to schedule a live spelling contest!
-                </p>
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+            {/* LEFT COLUMN on Desktop / SECOND on Mobile: Contest List */}
+            <div className="order-2 lg:order-1 lg:col-span-5 rounded-3xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-5 space-y-3.5">
+              <div className="flex items-center justify-between pb-2 border-b border-[#162d22]">
+                <h2 className="text-sm sm:text-base font-bold text-white flex items-center gap-2">
+                  <Flame className="w-4 h-4 text-[#fbbf24]" />
+                  <span>All Contests ({contests.length})</span>
+                </h2>
                 <button
                   type="button"
                   onClick={() => setActiveTab('create')}
-                  className="min-h-[42px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
+                  className="text-xs font-bold text-[#10b981] hover:underline flex items-center gap-1"
                 >
-                  <Plus className="w-4 h-4" />
-                  <span>Schedule First Contest</span>
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>New Contest</span>
                 </button>
               </div>
-            ) : (
-              <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
-                {contests.map((contest) => {
-                  const phase = getContestPhase(contest, nowMs);
-                  const isSelected = selectedContest?.id === contest.id;
-                  const contestSubs = submissionsByContest[contest.id] || [];
-                  const endTimeMs =
-                    contest.startTimeMs + contest.durationMinutes * 60 * 1000;
 
-                  return (
-                    <div
-                      key={contest.id}
-                      onClick={() => setSelectedContestId(contest.id)}
-                      role="button"
-                      tabIndex={0}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          setSelectedContestId(contest.id);
-                        }
-                      }}
-                      className={`p-3.5 rounded-2xl border transition-all cursor-pointer space-y-2 ${
-                        isSelected
-                          ? 'bg-[#132c21] border-[#10b981] ring-1 ring-[#10b981]/30'
-                          : 'bg-[#09140f] hover:bg-[#10231a] border-[#183126]'
-                      }`}
-                    >
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="text-sm font-bold text-white truncate">
-                            {contest.title}
+              {contests.length === 0 ? (
+                <div className="py-10 text-center space-y-3">
+                  <Trophy className="w-8 h-8 text-[#fbbf24] mx-auto opacity-80" />
+                  <p className="text-xs sm:text-sm text-[#8ba89a]">
+                    No contests scheduled yet. Be the first to schedule a live spelling contest!
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('create')}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Schedule First Contest</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-[600px] overflow-y-auto pr-1">
+                  {contests.map((contest) => {
+                    const phase = getContestPhase(contest, nowMs);
+                    const isSelected = selectedContest?.id === contest.id;
+                    const contestSubs = submissionsByContest[contest.id] || [];
+                    const endTimeMs =
+                      contest.startTimeMs + contest.durationMinutes * 60 * 1000;
+
+                    return (
+                      <div
+                        key={contest.id}
+                        onClick={() => setSelectedContestId(contest.id)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedContestId(contest.id);
+                          }
+                        }}
+                        className={`p-3.5 rounded-2xl border transition-all cursor-pointer space-y-2 ${
+                          isSelected
+                            ? 'bg-[#132c21] border-[#10b981] ring-1 ring-[#10b981]/30'
+                            : 'bg-[#09140f] hover:bg-[#10231a] border-[#183126]'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-white truncate">
+                              {contest.title}
+                            </div>
+                            <div className="text-[11px] text-[#7ea090] mt-0.5">
+                              Set by{' '}
+                              <span className="text-[#c4d9ce] font-semibold">
+                                {contest.creatorName}
+                              </span>{' '}
+                              · {contest.wordCount} words · {contest.baseSeconds}s+
+                            </div>
                           </div>
-                          <div className="text-[11px] text-[#7ea090] mt-0.5">
-                            Set by{' '}
-                            <span className="text-[#c4d9ce] font-semibold">
-                              {contest.creatorName}
-                            </span>{' '}
-                            · {contest.wordCount} words · {contest.baseSeconds}s+
-                          </div>
+
+                          {phase === 'live' ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#10b981] text-[#04120c] text-[10px] font-extrabold uppercase tracking-wider animate-pulse shrink-0">
+                              LIVE NOW
+                            </span>
+                          ) : phase === 'upcoming' ? (
+                            <span className="px-2.5 py-0.5 rounded-full bg-[#fbbf24]/20 border border-[#fbbf24]/50 text-[#fbbf24] text-[10px] font-mono font-bold shrink-0">
+                              In {formatCountdown(contest.startTimeMs - nowMs)}
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-md bg-[#13261d] text-[#6d8a7b] text-[10px] font-bold uppercase shrink-0">
+                              Ended
+                            </span>
+                          )}
                         </div>
 
-                        {phase === 'live' ? (
-                          <span className="px-2.5 py-0.5 rounded-full bg-[#10b981] text-[#04120c] text-[10px] font-extrabold uppercase tracking-wider animate-pulse shrink-0">
-                            LIVE NOW
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#8ba89a] pt-1 border-t border-[#152a20]">
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-[#10b981]" />
+                            {phase === 'upcoming'
+                              ? `Starts ${new Date(
+                                  contest.startTimeMs
+                                ).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit',
+                                  second: '2-digit',
+                                })}`
+                              : phase === 'live'
+                              ? `Closes in ${formatCountdown(endTimeMs - nowMs)}`
+                              : new Date(contest.startTimeMs).toLocaleDateString()}
                           </span>
-                        ) : phase === 'upcoming' ? (
-                          <span className="px-2.5 py-0.5 rounded-full bg-[#fbbf24]/20 border border-[#fbbf24]/50 text-[#fbbf24] text-[10px] font-mono font-bold shrink-0">
-                            In {formatCountdown(contest.startTimeMs - nowMs)}
+
+                          <span className="flex items-center gap-1 font-mono text-[#10b981] font-semibold">
+                            <Users className="w-3 h-3" />
+                            {contestSubs.length} joined
                           </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-md bg-[#13261d] text-[#6d8a7b] text-[10px] font-bold uppercase shrink-0">
-                            Ended
-                          </span>
-                        )}
+                        </div>
                       </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
 
-                      <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-[#8ba89a] pt-1 border-t border-[#152a20]">
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-[#10b981]" />
-                          {phase === 'upcoming'
-                            ? `Starts ${new Date(
-                                contest.startTimeMs
-                              ).toLocaleTimeString([], {
-                                hour: '2-digit',
-                                minute: '2-digit',
-                                second: '2-digit',
-                              })}`
-                            : phase === 'live'
-                            ? `Closes in ${formatCountdown(endTimeMs - nowMs)}`
-                            : new Date(contest.startTimeMs).toLocaleDateString()}
-                        </span>
-
-                        <span className="flex items-center gap-1 font-mono text-[#10b981] font-semibold">
-                          <Users className="w-3 h-3" />
-                          {contestSubs.length} joined
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-
-          {/* RIGHT COLUMN (7 cols): Selected Contest Lobby, Blind Lock Status & Live Leaderboard */}
-          <div className="lg:col-span-7 rounded-3xl bg-[#0d1d16] border border-[#1d382b] p-5 sm:p-6 space-y-5">
-            {!selectedContest ? (
-              <div className="py-16 text-center text-sm text-[#8ba89a]">
-                Select a contest on the left or schedule a new one to view the lobby and live leaderboard.
-              </div>
-            ) : (
+            {/* RIGHT COLUMN on Desktop / FIRST AT TOP on Mobile: Selected Contest Lobby & Live Leaderboard */}
+            <div className="order-1 lg:order-2 lg:col-span-7 rounded-3xl bg-[#0d1d16] border border-[#1d382b] p-4 sm:p-6 space-y-5">
+              {!selectedContest ? (
+                <div className="py-12 text-center space-y-3">
+                  <Trophy className="w-8 h-8 text-[#fbbf24] mx-auto opacity-80" />
+                  <p className="text-xs sm:text-sm text-[#8ba89a]">
+                    No active contest selected yet. Tap &ldquo;+ Host Contest&rdquo; above to start a Live Spelling Contest in 3 seconds!
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('create')}
+                    className="min-h-[42px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Schedule or Start Live Contest</span>
+                  </button>
+                </div>
+              ) : (
               (() => {
                 const phase = getContestPhase(selectedContest, nowMs);
                 const endTimeMs =
@@ -1791,6 +1868,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
               })()
             )}
           </div>
+        </div>
         </div>
       )}
     </main>
