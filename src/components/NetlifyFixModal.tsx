@@ -110,7 +110,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
         mimeType: r.mimeType,
         fileName: r.fileName,
         fileSize: r.fileSize,
-        durationMs: r.fileSize,
+        durationMs: r.durationMs || 1200,
       })),
     };
 

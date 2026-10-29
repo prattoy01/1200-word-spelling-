@@ -335,6 +335,11 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     return map;
   }, [submissions]);
 
+  const recordingsMapRef = useRef(recordingsMap);
+  recordingsMapRef.current = recordingsMap;
+  const submissionsByContestRef = useRef(submissionsByContest);
+  submissionsByContestRef.current = submissionsByContest;
+
   const mySubmissionForSelected = useMemo(() => {
     if (!selectedContest || !currentUserIdSanitized) return undefined;
     const list = submissionsByContest[selectedContest.id] || [];
@@ -424,7 +429,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
 
       for (let i = 0; i < deck.length; i++) {
         const w = deck[i];
-        const rec = recordingsMap[w.id];
+        const rec = recordingsMapRef.current[w.id];
         const lockedEntry = finalLockedMap[i];
         const slotDurMs =
           timeline.slots[i]?.durationMs || contest.baseSeconds * 1000;
@@ -447,9 +452,9 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       }
 
       const correctTotal = compiledResults.filter((a) => a.isCorrect).length;
-      const existingSub = (submissionsByContest[contest.id] || []).find(
-        (s) => s.userId === currentUserIdSanitized
-      );
+      const existingSub = (
+        submissionsByContestRef.current[contest.id] || []
+      ).find((s) => s.userId === currentUserIdSanitized);
 
       // Permanently mark device lock as 'completed' so this browser/device can never re-enter
       saveDeviceContestCheckpoint({
@@ -496,13 +501,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         isFinalizingRef.current = false;
       }
     },
-    [
-      recordingsMap,
-      submissionsByContest,
-      currentUserIdSanitized,
-      user?.displayName,
-      participantNameInput,
-    ]
+    [currentUserIdSanitized, user?.displayName, participantNameInput]
   );
 
   // Launch or Resume the strict synchronized contest exam
@@ -714,9 +713,9 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         }
         partialTimeMs += v.lockedAfterMs;
       }
-      const existingSub = (submissionsByContest[runningContest.id] || []).find(
-        (s) => s.userId === currentUserIdSanitized
-      );
+      const existingSub = (
+        submissionsByContestRef.current[runningContest.id] || []
+      ).find((s) => s.userId === currentUserIdSanitized);
       void markContestAttemptInProgress({
         contest: runningContest,
         existingSubmission: existingSub,
@@ -731,7 +730,6 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       participantNameInput,
       examStartedAtMs,
       contestDeck,
-      submissionsByContest,
     ]
   );
 
@@ -833,7 +831,6 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     const slot = timeline.slots[examIndex];
     if (!slot) return;
 
-    const rec = recordingsMap[wordObj.id];
     const elapsedInSlotMs = Math.max(0, wallNow - slot.startMs);
 
     setExamPlayCount(0);
@@ -845,6 +842,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     const triggerPlay = (playNumber: number) => {
       if (cancelled) return;
       setExamPlayCount(playNumber);
+      const rec = recordingsMapRef.current[wordObj.id];
       void playWordAudio({
         word: wordObj.word,
         audioDataUrl: rec?.audioDataUrl,
@@ -875,7 +873,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       cancelled = true;
       timers.forEach((t) => window.clearTimeout(t));
     };
-  }, [runningContest, examIndex, contestDeck, recordingsMap]);
+  }, [runningContest, examIndex, contestDeck]);
 
   // Anti-Cheat Proctoring: Tab-Switch / Window Blur Detector & BeforeUnload Guard
   useEffect(() => {

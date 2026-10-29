@@ -417,10 +417,16 @@ function notifyContestSyncListeners(): void {
   }
 }
 
-function writeLocalContests(list: ContestRecord[]): void {
+function writeLocalContests(list: ContestRecord[], notify = true): void {
   try {
-    localStorage.setItem(LOCAL_CONTESTS_KEY, JSON.stringify(list.slice(0, 80)));
-    notifyContestSyncListeners();
+    const nextJson = JSON.stringify(list.slice(0, 80));
+    const prevJson = localStorage.getItem(LOCAL_CONTESTS_KEY);
+    if (prevJson !== nextJson) {
+      localStorage.setItem(LOCAL_CONTESTS_KEY, nextJson);
+      if (notify) {
+        notifyContestSyncListeners();
+      }
+    }
   } catch {
     // Ignore storage quota warnings
   }
@@ -437,13 +443,19 @@ function readLocalSubmissions(): ContestSubmissionRecord[] {
   }
 }
 
-function writeLocalSubmissions(list: ContestSubmissionRecord[]): void {
+function writeLocalSubmissions(
+  list: ContestSubmissionRecord[],
+  notify = true
+): void {
   try {
-    localStorage.setItem(
-      LOCAL_SUBMISSIONS_KEY,
-      JSON.stringify(list.slice(0, 200))
-    );
-    notifyContestSyncListeners();
+    const nextJson = JSON.stringify(list.slice(0, 200));
+    const prevJson = localStorage.getItem(LOCAL_SUBMISSIONS_KEY);
+    if (prevJson !== nextJson) {
+      localStorage.setItem(LOCAL_SUBMISSIONS_KEY, nextJson);
+      if (notify) {
+        notifyContestSyncListeners();
+      }
+    }
   } catch {
     // Ignore storage quota warnings
   }
@@ -1146,14 +1158,23 @@ export async function syncContestsNow(): Promise<{
 export function subscribeToContests(
   onUpdate: (contests: ContestRecord[]) => void
 ): Unsubscribe {
+  let lastEmittedJson = '';
+  const emitIfChanged = (list: ContestRecord[]) => {
+    const sig = JSON.stringify(list);
+    if (sig !== lastEmittedJson) {
+      lastEmittedJson = sig;
+      onUpdate(list);
+    }
+  };
+
   const emitLocal = () => {
-    onUpdate(sortContestsLiveFirst(readLocalContests()));
+    emitIfChanged(sortContestsLiveFirst(readLocalContests()));
   };
   emitLocal();
 
   // Immediately sync with shared server & Firestore
   void syncContestsNow().then(({ contests }) => {
-    onUpdate(contests);
+    emitIfChanged(contests);
   });
 
   // Poll shared server every 2.5s so any contest created or deleted by another user syncs immediately
@@ -1161,7 +1182,7 @@ export function subscribeToContests(
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void syncContestsNow().then(({ contests }) => {
-            onUpdate(contests);
+            emitIfChanged(contests);
           });
         }, 2500)
       : null;
@@ -1222,13 +1243,9 @@ export function subscribeToContests(
     }
 
     const sorted = sortContestsLiveFirst(list);
-    try {
-      localStorage.setItem(LOCAL_CONTESTS_KEY, JSON.stringify(sorted.slice(0, 80)));
-    } catch {
-      // ignore
-    }
+    writeLocalContests(sorted, false);
     void pushContestsToSharedServer(sorted);
-    onUpdate(sorted);
+    emitIfChanged(sorted);
   };
 
   const unsubSnapshot = onSnapshot(
@@ -1289,8 +1306,17 @@ export function subscribeToContests(
 export function subscribeToContestSubmissions(
   onUpdate: (submissions: ContestSubmissionRecord[]) => void
 ): Unsubscribe {
+  let lastEmittedSubJson = '';
+  const emitSubsIfChanged = (list: ContestSubmissionRecord[]) => {
+    const sig = JSON.stringify(list);
+    if (sig !== lastEmittedSubJson) {
+      lastEmittedSubJson = sig;
+      onUpdate(list);
+    }
+  };
+
   const emitLocal = () => {
-    onUpdate(readLocalSubmissions());
+    emitSubsIfChanged(readLocalSubmissions());
   };
   emitLocal();
 
@@ -1328,16 +1354,9 @@ export function subscribeToContestSubmissions(
     });
 
     const merged = mergeSubmissionsLists(list, readLocalSubmissions());
-    try {
-      localStorage.setItem(
-        LOCAL_SUBMISSIONS_KEY,
-        JSON.stringify(merged.slice(0, 200))
-      );
-    } catch {
-      // ignore
-    }
+    writeLocalSubmissions(merged, false);
     void pushSubmissionsToSharedServer(merged);
-    onUpdate(merged);
+    emitSubsIfChanged(merged);
   };
 
   const unsubSnapshot = onSnapshot(

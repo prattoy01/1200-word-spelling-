@@ -359,6 +359,8 @@ export function subscribeToPublishedRecordings(
 
   let latestFirestoreGeneral: Record<string, CloudRecording> = {};
   let latestServerGeneral: Record<string, CloudRecording> = {};
+  let lastEmittedGeneralSig = '';
+  let lastEmittedMergedSig = '';
 
   const buildAndEmitMerged = async () => {
     try {
@@ -468,8 +470,23 @@ export function subscribeToPublishedRecordings(
         }
       }
 
-      onGeneralCloudUpdate?.(generalOnly);
-      onUpdate(merged);
+      const generalSig = JSON.stringify(
+        Object.values(generalOnly).map((r) => `${r.wordId}:${r.updatedAtMs}:${r.banglaMeaning}`)
+      );
+      if (generalSig !== lastEmittedGeneralSig) {
+        lastEmittedGeneralSig = generalSig;
+        onGeneralCloudUpdate?.(generalOnly);
+      }
+
+      const mergedSig = JSON.stringify(
+        Object.values(merged).map(
+          (r) => `${r.wordId}:${r.updatedAtMs}:${r.banglaMeaning}:${r.source}:${r.contributedToAdmin}`
+        )
+      );
+      if (mergedSig !== lastEmittedMergedSig) {
+        lastEmittedMergedSig = mergedSig;
+        onUpdate(merged);
+      }
     } catch {
       // Ignore local IndexedDB read error
     }
@@ -929,6 +946,7 @@ export function subscribeToAudioContributions(
 ): Unsubscribe {
   let firestoreList: AudioContributionRecord[] = [];
   let serverList: AudioContributionRecord[] = [];
+  let lastEmittedContribSig = '';
 
   const emitMerged = () => {
     const deletedSet = readDeletedContributionIds();
@@ -959,15 +977,24 @@ export function subscribeToAudioContributions(
 
     const deduped = deduplicateContributions(Array.from(byId.values()), deletedSet);
     writeLocalContributionsCache(deduped, false);
-    onUpdate(deduped);
+
+    const sig = JSON.stringify(
+      deduped.map((c) => `${c.id}:${c.status}:${c.updatedAtMs}:${c.banglaMeaning}`)
+    );
+    if (sig !== lastEmittedContribSig) {
+      lastEmittedContribSig = sig;
+      onUpdate(deduped);
+    }
   };
 
   const syncWithSharedServerAndRecoverLocal = async () => {
     const state = await fetchSharedServerAudioState(true);
     const serverWordIds = new Set<string>();
+    const deletedSet = readDeletedContributionIds();
     if (state) {
       for (const delId of state.deletedContributionIds) {
         markContributionDeletedLocally(delId);
+        deletedSet.add(delId);
       }
       serverList = state.contributions || [];
       for (const c of serverList) {
@@ -975,11 +1002,12 @@ export function subscribeToAudioContributions(
       }
     }
 
-    // Push any local cached contributions or personal recordings that haven't reached the shared server yet
+    // Push any local cached contributions that haven't reached the shared server yet (unless deleted by Admin)
     const localContribs = readLocalContributionsCache();
     for (const loc of localContribs) {
-      if (!serverWordIds.has(loc.wordId)) {
+      if (!serverWordIds.has(loc.wordId) && !deletedSet.has(loc.id)) {
         await pushContributionToSharedServer(loc);
+        serverWordIds.add(loc.wordId);
       }
     }
 
@@ -988,9 +1016,14 @@ export function subscribeToAudioContributions(
       try {
         const localMap = await getAllLocalCachedRecordings();
         for (const item of Object.values(localMap)) {
+          const pendingId = `pending_${item.wordId}`
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .slice(0, 120);
           if (
             item.isPersonalOverride &&
+            item.contributedToAdmin !== false &&
             !serverWordIds.has(item.wordId) &&
+            !deletedSet.has(pendingId) &&
             !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
           ) {
             await submitAudioContribution({
@@ -1362,15 +1395,34 @@ export async function deleteWordRecording(
 }
 
 /**
- * Pushes any local unsynced recordings to Shared Server & Firestore Cloud.
+ * Pushes any local unsynced recordings to Shared Server & Firestore Cloud without overwriting
+ * contributions that have already been approved, rejected, or deleted by the Admin.
  */
 export async function syncLocalRecordingsToCloud(): Promise<number> {
   try {
+    const state = await fetchSharedServerAudioState(false);
+    const deletedSet = readDeletedContributionIds();
+    const existingServerWordIds = new Set<string>();
+    if (state) {
+      for (const delId of state.deletedContributionIds) {
+        deletedSet.add(delId);
+      }
+      for (const c of state.contributions) {
+        if (c?.wordId) existingServerWordIds.add(c.wordId);
+      }
+    }
+
     const localMap = await getAllLocalCachedRecordings();
     let count = 0;
     for (const item of Object.values(localMap)) {
+      const pendingId = `pending_${item.wordId}`
+        .replace(/[^a-zA-Z0-9_-]/g, '_')
+        .slice(0, 120);
       if (
         item.isPersonalOverride &&
+        item.contributedToAdmin !== false &&
+        !existingServerWordIds.has(item.wordId) &&
+        !deletedSet.has(pendingId) &&
         !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
       ) {
         await submitAudioContribution({

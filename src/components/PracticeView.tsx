@@ -925,12 +925,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setExamState('running');
   };
 
+  const recordingsMapRef = useRef(recordingsMap);
+  recordingsMapRef.current = recordingsMap;
+
   const advanceStrictExamWord = useCallback(
     (typedValue: string) => {
       const currentExamWord = examDeck[examIndex];
       if (!currentExamWord) return;
 
-      const rec = recordingsMap[currentExamWord.id];
+      const latestRecordings = recordingsMapRef.current;
+      const rec = latestRecordings[currentExamWord.id];
       const timing = computeStrictWordExamTiming(
         currentExamWord,
         rec,
@@ -958,7 +962,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             userAnswer: a.userAnswer,
             isCorrect: a.isCorrect,
             bangla:
-              recordingsMap[a.wordItem.id]?.banglaMeaning || a.wordItem.bangla,
+              latestRecordings[a.wordItem.id]?.banglaMeaning ||
+              a.wordItem.bangla,
             category: a.wordItem.category,
             page: a.wordItem.page,
           }));
@@ -983,7 +988,6 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     [
       examDeck,
       examIndex,
-      recordingsMap,
       baseExamSeconds,
       pageFilter,
       selectedCategoriesLabel,
@@ -996,7 +1000,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     const wordObj = examDeck[examIndex];
     if (!wordObj) return;
 
-    const rec = recordingsMap[wordObj.id];
+    const rec = recordingsMapRef.current[wordObj.id];
     const timing = computeStrictWordExamTiming(wordObj, rec, baseExamSeconds);
     const totalMs = timing.totalWindowSec * 1000;
 
@@ -1013,7 +1017,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       setExamPlayCount(1);
       void playWordAudio({
         word: wordObj.word,
-        audioDataUrl: rec?.audioDataUrl,
+        audioDataUrl: recordingsMapRef.current[wordObj.id]?.audioDataUrl,
         bundledAudioFile: wordObj.bundledAudioFile,
         playbackRate: 1.0,
       });
@@ -1023,7 +1027,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       setExamPlayCount(2);
       void playWordAudio({
         word: wordObj.word,
-        audioDataUrl: rec?.audioDataUrl,
+        audioDataUrl: recordingsMapRef.current[wordObj.id]?.audioDataUrl,
         bundledAudioFile: wordObj.bundledAudioFile,
         playbackRate: 0.95,
       });
@@ -1033,7 +1037,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       setExamPlayCount(3);
       void playWordAudio({
         word: wordObj.word,
-        audioDataUrl: rec?.audioDataUrl,
+        audioDataUrl: recordingsMapRef.current[wordObj.id]?.audioDataUrl,
         bundledAudioFile: wordObj.bundledAudioFile,
         playbackRate: 0.9,
       });
@@ -1061,7 +1065,6 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     examState,
     examIndex,
     examDeck,
-    recordingsMap,
     baseExamSeconds,
     advanceStrictExamWord,
   ]);

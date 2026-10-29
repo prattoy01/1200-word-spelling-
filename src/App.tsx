@@ -203,6 +203,8 @@ export default function App() {
   const [recordingsMap, setRecordingsMap] = useState<Record<string, CloudRecording>>({});
   // Raw General Cloud Audio Map (Admin-approved general audio for all users)
   const [generalRecordingsMap, setGeneralRecordingsMap] = useState<Record<string, CloudRecording>>({});
+  const generalRecordingsMapRef = useRef<Record<string, CloudRecording>>({});
+  generalRecordingsMapRef.current = generalRecordingsMap;
   // Community contributions queue for Admin Panel
   const [contributions, setContributions] = useState<AudioContributionRecord[]>([]);
   const [recentSessions, setRecentSessions] = useState<PracticeSessionRecord[]>([]);
@@ -285,7 +287,7 @@ export default function App() {
     generalSnapshotMap?: Record<string, CloudRecording>
   ) => {
     const localMap = await getAllLocalCachedRecordings();
-    const baseGeneral = generalSnapshotMap || generalRecordingsMap;
+    const baseGeneral = generalSnapshotMap || generalRecordingsMapRef.current;
     const merged: Record<string, CloudRecording> = { ...baseGeneral };
     const activeUserId = auth.currentUser?.uid;
 
@@ -335,6 +337,7 @@ export default function App() {
       },
       (generalOnlyMap) => {
         if (isMounted) {
+          generalRecordingsMapRef.current = generalOnlyMap;
           setGeneralRecordingsMap(generalOnlyMap);
         }
       }
