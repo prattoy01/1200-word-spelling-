@@ -25,8 +25,17 @@ import {
   Bookmark,
   Plus,
   Download,
+  Edit3,
+  Save,
 } from 'lucide-react';
-import { WORDS_CATALOG, CATEGORIES, type WordItem } from '../data/words';
+import {
+  WORDS_CATALOG,
+  CATEGORIES,
+  hasGlobalWordOverride,
+  getOriginalCatalogWord,
+  type WordItem,
+  type GlobalWordOverride,
+} from '../data/words';
 import {
   type CloudRecording,
   type PracticeSessionRecord,
@@ -35,6 +44,8 @@ import {
   PERSONAL_STRUGGLING_CATEGORY,
   personalWordToWordItem,
   savePracticeSession,
+  saveGlobalWordSpellingOverride,
+  resetGlobalWordSpellingOverride,
 } from '../services/recordingsService';
 import {
   playWordAudio,
@@ -57,6 +68,8 @@ interface PracticeViewProps {
   focusPersonalTrigger?: number;
   onOpenContests?: () => void;
   liveContestsCount?: number;
+  isAdmin?: boolean;
+  wordOverridesMap?: Record<string, GlobalWordOverride>;
 }
 
 type PageFilter = 'page1' | 'page2' | 'all' | 'personal';
@@ -143,11 +156,18 @@ function normalizeSpelling(s: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function checkSpellingCorrect(answer: string, targetWord: string): boolean {
+function checkSpellingCorrect(
+  answer: string,
+  targetWord: string,
+  wordId?: string
+): boolean {
   const normAns = normalizeSpelling(answer);
   if (!normAns) return false;
   const normTarget = normalizeSpelling(targetWord);
   const slashAlternatives = normTarget.split(/\s*\/\s*/);
+  if (wordId && hasGlobalWordOverride(wordId)) {
+    return slashAlternatives.includes(normAns);
+  }
   const group = SPELLING_ALTERNATIVE_GROUPS.find((g) => g.includes(normTarget));
   const accepted = group || slashAlternatives;
   return accepted.includes(normAns);
@@ -200,6 +220,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   focusPersonalTrigger,
   onOpenContests,
   liveContestsCount = 0,
+  isAdmin = false,
+  wordOverridesMap = {},
 }) => {
   // Shared Page 1 / Page 2 & Multi-Category Selection (persisted across page reloads!)
   const [pageFilter, setPageFilter] = useState<PageFilter>(() => {
@@ -614,11 +636,18 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       const hasCustom = Boolean(recordingsMap[item.id]);
       if (deckMode === 'uploads' && !hasCustom) continue;
       if (deckMode === 'missing' && (item.hasBundledAudio || hasCustom)) continue;
-      combinedPool.push(item);
+      combinedPool.push({ ...item });
     }
 
     return combinedPool;
-  }, [pageFilter, selectedCategories, deckMode, recordingsMap, personalWordItems]);
+  }, [
+    pageFilter,
+    selectedCategories,
+    deckMode,
+    recordingsMap,
+    personalWordItems,
+    wordOverridesMap,
+  ]);
 
   const failedWordsInDeckCount = useMemo(
     () => baseFilteredDeck.filter((w) => getWordStats(w).failed > 0).length,
@@ -669,6 +698,72 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const activeRecording = currentWord ? recordingsMap[currentWord.id] : undefined;
   const displayBangla =
     activeRecording?.banglaMeaning || currentWord?.bangla || '';
+
+  // Admin inline spelling editor state for active Practice word
+  const [isAdminEditingSpelling, setIsAdminEditingSpelling] = useState(false);
+  const [adminEditWordText, setAdminEditWordText] = useState('');
+  const [adminEditBanglaText, setAdminEditBanglaText] = useState('');
+  const [isAdminSavingSpelling, setIsAdminSavingSpelling] = useState(false);
+  const [adminSpellingNotice, setAdminSpellingNotice] = useState<string | null>(
+    null
+  );
+
+  useEffect(() => {
+    if (currentWord) {
+      setAdminEditWordText(currentWord.word);
+      setAdminEditBanglaText(
+        recordingsMap[currentWord.id]?.banglaMeaning || currentWord.bangla || ''
+      );
+      setAdminSpellingNotice(null);
+    }
+  }, [currentWord?.id, currentWord?.word, currentWord?.bangla, recordingsMap]);
+
+  const handleAdminSavePracticeWordSpelling = async () => {
+    if (!currentWord) return;
+    const cleanWord = adminEditWordText.trim();
+    if (!cleanWord) return;
+    setIsAdminSavingSpelling(true);
+    setAdminSpellingNotice(null);
+    try {
+      await saveGlobalWordSpellingOverride({
+        wordId: currentWord.id,
+        word: cleanWord,
+        bangla: adminEditBanglaText.trim() || currentWord.bangla,
+      });
+      setAdminSpellingNotice(
+        `Saved "${cleanWord}" for all users! Practice, exams & contests now use this spelling.`
+      );
+      setIsAdminEditingSpelling(false);
+    } catch (err) {
+      setAdminSpellingNotice(
+        err instanceof Error ? err.message : 'Failed to save spelling override.'
+      );
+    } finally {
+      setIsAdminSavingSpelling(false);
+    }
+  };
+
+  const handleAdminResetPracticeWordSpelling = async () => {
+    if (!currentWord) return;
+    setIsAdminSavingSpelling(true);
+    setAdminSpellingNotice(null);
+    try {
+      const orig = getOriginalCatalogWord(currentWord.id);
+      await resetGlobalWordSpellingOverride(currentWord.id);
+      if (orig) {
+        setAdminEditWordText(orig.word);
+        setAdminEditBanglaText(orig.bangla);
+      }
+      setAdminSpellingNotice('Reverted word spelling back to default for all users.');
+      setIsAdminEditingSpelling(false);
+    } catch (err) {
+      setAdminSpellingNotice(
+        err instanceof Error ? err.message : 'Failed to reset spelling override.'
+      );
+    } finally {
+      setIsAdminSavingSpelling(false);
+    }
+  };
 
   useEffect(() => {
     if (isFirstFilterMountRef.current) {
@@ -784,7 +879,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
   const isCorrect =
     Boolean(currentWord) &&
-    checkSpellingCorrect(userInput, currentWord.word);
+    checkSpellingCorrect(userInput, currentWord.word, currentWord.id);
 
   const handlePracticeAgainWord = useCallback(() => {
     setSubmitted(false);
@@ -942,7 +1037,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       );
 
       const cleanTyped = typedValue.trim();
-      const matched = checkSpellingCorrect(cleanTyped, currentExamWord.word);
+      const matched = checkSpellingCorrect(
+        cleanTyped,
+        currentExamWord.word,
+        currentExamWord.id
+      );
 
       const newEntry: ExamAnswerItem = {
         wordItem: currentExamWord,
@@ -2171,8 +2270,140 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             : 'Upload Custom Audio'}
                         </span>
                       </button>
+
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setIsAdminEditingSpelling((v) => !v);
+                          }}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                            isAdminEditingSpelling ||
+                            hasGlobalWordOverride(currentWord.id)
+                              ? 'bg-[#fbbf24]/20 border-[#fbbf24] text-[#fbbf24]'
+                              : 'bg-[#1a180b] hover:bg-[#29240e] border-[#fbbf24]/40 text-[#fbbf24]'
+                          }`}
+                        >
+                          <Edit3 className="w-3.5 h-3.5 shrink-0" />
+                          <span>
+                            {hasGlobalWordOverride(currentWord.id)
+                              ? 'Edit Spelling (Modified)'
+                              : 'Edit Spelling'}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   </div>
+
+                  {isAdmin && adminSpellingNotice && (
+                    <div className="rounded-xl bg-[#0e291e] border border-[#10b981]/50 px-3.5 py-2 text-xs text-[#a7f3d0] flex items-center justify-between gap-2">
+                      <span>{adminSpellingNotice}</span>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setAdminSpellingNotice(null);
+                        }}
+                        className="text-[11px] underline shrink-0"
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  )}
+
+                  {isAdmin && isAdminEditingSpelling && (
+                    <div
+                      onClick={(e) => e.stopPropagation()}
+                      className="rounded-xl bg-[#161409] border border-[#fbbf24]/50 p-3.5 space-y-3"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-extrabold text-[#fbbf24] flex items-center gap-1.5">
+                          <Edit3 className="w-3.5 h-3.5" />
+                          <span>
+                            Admin: Change Official Spelling (Applies to All Users)
+                          </span>
+                        </span>
+                        {hasGlobalWordOverride(currentWord.id) && (
+                          <span className="text-[11px] font-mono text-[#a8a29e]">
+                            Default:{' '}
+                            {getOriginalCatalogWord(currentWord.id)?.word}
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-[#fbbf24] mb-1">
+                            Official English Spelling
+                          </label>
+                          <input
+                            type="text"
+                            value={adminEditWordText}
+                            onChange={(e) =>
+                              setAdminEditWordText(e.target.value)
+                            }
+                            placeholder="Enter official spelling..."
+                            className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[#09140f] border border-[#fbbf24]/50 text-sm font-mono font-bold text-white focus:outline-none focus:border-[#fbbf24]"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold uppercase tracking-wider text-[#8ca89a] mb-1">
+                            Bangla Meaning (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={adminEditBanglaText}
+                            onChange={(e) =>
+                              setAdminEditBanglaText(e.target.value)
+                            }
+                            placeholder="বাংলা অর্থ..."
+                            className="w-full min-h-[38px] px-3 py-1.5 rounded-lg bg-[#09140f] border border-[#244938] text-sm text-white focus:outline-none focus:border-[#10b981]"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-end gap-2">
+                        {hasGlobalWordOverride(currentWord.id) && (
+                          <button
+                            type="button"
+                            disabled={isAdminSavingSpelling}
+                            onClick={() =>
+                              void handleAdminResetPracticeWordSpelling()
+                            }
+                            className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#2a1417] hover:bg-[#3b1a1f] border border-[#f87171]/40 text-xs font-bold text-[#fda4af] flex items-center gap-1.5 disabled:opacity-50"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Reset to Default</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setIsAdminEditingSpelling(false)}
+                          className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#13291f] text-xs font-semibold text-[#9ab5a7]"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          disabled={
+                            isAdminSavingSpelling || !adminEditWordText.trim()
+                          }
+                          onClick={() =>
+                            void handleAdminSavePracticeWordSpelling()
+                          }
+                          className="min-h-[36px] px-3.5 py-1.5 rounded-lg bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>
+                            {isAdminSavingSpelling
+                              ? 'Saving...'
+                              : 'Save for All Users'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
                   {/* Active Word Test History Accuracy & Visual Progress Bar */}
                   <div className="rounded-xl bg-[#091510] border border-[#193327] px-3.5 py-2.5 space-y-1.5">

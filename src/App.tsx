@@ -28,6 +28,9 @@ import {
   Send,
   Bookmark,
   Trophy,
+  Edit3,
+  Save,
+  RotateCcw,
 } from 'lucide-react';
 import {
   auth,
@@ -36,7 +39,13 @@ import {
   signOutUser,
   type User,
 } from './firebase';
-import { WORDS_CATALOG, type WordItem } from './data/words';
+import {
+  WORDS_CATALOG,
+  hasGlobalWordOverride,
+  getOriginalCatalogWord,
+  type WordItem,
+  type GlobalWordOverride,
+} from './data/words';
 import {
   type CloudRecording,
   type AudioContributionRecord,
@@ -44,6 +53,10 @@ import {
   type PersonalWordRecord,
   subscribeToPublishedRecordings,
   subscribeToAudioContributions,
+  subscribeToGlobalWordOverrides,
+  saveGlobalWordSpellingOverride,
+  resetGlobalWordSpellingOverride,
+  readLocalWordOverridesCache,
   saveWordRecording,
   submitAudioContribution,
   updateRecordingBanglaMeaning,
@@ -223,9 +236,17 @@ export default function App() {
   const [contributorNameInput, setContributorNameInput] = useState<string>('');
   const [isSubmittingContribution, setIsSubmittingContribution] = useState<boolean>(false);
 
-  // Selected word editable Bangla input
+  // Global Admin Word Spelling Overrides (real-time synced for all users)
+  const [wordOverridesMap, setWordOverridesMap] = useState<
+    Record<string, GlobalWordOverride>
+  >(() => readLocalWordOverridesCache());
+
+  // Selected word editable Bangla input + Admin Official Spelling input
   const [banglaInput, setBanglaInput] = useState<string>('কর্মদিবস');
   const [banglaSavedToast, setBanglaSavedToast] = useState(false);
+  const [adminSpellingInput, setAdminSpellingInput] =
+    useState<string>('weekdays');
+  const [isSavingAdminSpelling, setIsSavingAdminSpelling] = useState(false);
   const [copiedQuickLink, setCopiedQuickLink] = useState(false);
 
   // Audio upload / live microphone recording states
@@ -361,12 +382,19 @@ export default function App() {
       }
     });
 
+    const unsubWordOverrides = subscribeToGlobalWordOverrides((overrides) => {
+      if (isMounted) {
+        setWordOverridesMap({ ...overrides });
+      }
+    });
+
     return () => {
       isMounted = false;
       unsubRecordings();
       unsubContributions();
       unsubContests();
       unsubContestSubs();
+      unsubWordOverrides();
     };
   }, []);
 
@@ -414,8 +442,8 @@ export default function App() {
         customOnly.push(personalWordToWordItem(pw));
       }
     }
-    return [...customOnly, ...WORDS_CATALOG];
-  }, [personalWords]);
+    return [...customOnly, ...WORDS_CATALOG.map((w) => ({ ...w }))];
+  }, [personalWords, wordOverridesMap]);
 
   // Compute exact counts:
   // Total catalog = 921 (782 Bundled + Custom Personal/General Uploads + Missing)
@@ -515,11 +543,69 @@ export default function App() {
   const selectedGeneralRecording: CloudRecording | undefined =
     generalRecordingsMap[selectedWord.id];
 
-  // Update Bangla input field whenever selected word changes
+  // Update Bangla input and Admin Official Spelling input whenever selected word changes
   useEffect(() => {
     const customBangla = recordingsMap[selectedWord.id]?.banglaMeaning;
     setBanglaInput(customBangla !== undefined ? customBangla : selectedWord.bangla);
+    setAdminSpellingInput(selectedWord.word);
   }, [selectedWord, recordingsMap]);
+
+  const handleSaveAdminSpellingStudio = async () => {
+    const cleanWord = adminSpellingInput.trim();
+    if (!cleanWord) return;
+    setIsSavingAdminSpelling(true);
+    setStatusBanner(null);
+    try {
+      await saveGlobalWordSpellingOverride({
+        wordId: selectedWord.id,
+        word: cleanWord,
+        bangla: banglaInput.trim() || selectedWord.bangla,
+      });
+      await refreshLocalAndCloudState();
+      setStatusBanner({
+        type: 'success',
+        text: `Updated official spelling to "${cleanWord}" for all users across Practice, Exams, Contests, and Audio Studio!`,
+      });
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to save global spelling override.',
+      });
+    } finally {
+      setIsSavingAdminSpelling(false);
+    }
+  };
+
+  const handleResetAdminSpellingStudio = async () => {
+    setIsSavingAdminSpelling(true);
+    setStatusBanner(null);
+    try {
+      const orig = getOriginalCatalogWord(selectedWord.id);
+      await resetGlobalWordSpellingOverride(selectedWord.id);
+      if (orig) {
+        setAdminSpellingInput(orig.word);
+        setBanglaInput(orig.bangla);
+      }
+      await refreshLocalAndCloudState();
+      setStatusBanner({
+        type: 'success',
+        text: `Reset "${orig?.word || selectedWord.id}" back to original catalog spelling for all users.`,
+      });
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to reset word spelling.',
+      });
+    } finally {
+      setIsSavingAdminSpelling(false);
+    }
+  };
 
   const handleSelectTab = (tab: FilterTab) => {
     setActiveTab(tab);
@@ -1116,6 +1202,8 @@ export default function App() {
             setActiveScreen('contests');
           }}
           liveContestsCount={contests.length}
+          isAdmin={isAdmin}
+          wordOverridesMap={wordOverridesMap}
         />
       ) : activeScreen === 'contests' ? (
         <ContestPlatformView
@@ -1133,6 +1221,7 @@ export default function App() {
           contributions={contributions}
           generalRecordingsMap={generalRecordingsMap}
           personalRecordingsMap={recordingsMap}
+          wordOverridesMap={wordOverridesMap}
           contests={contests}
           onRemoveContest={(cid) => {
             setContests((prev) => prev.filter((c) => c.id !== cid));
@@ -1476,6 +1565,63 @@ export default function App() {
                   )}
               </div>
             </div>
+
+            {/* Admin Only: Official Word Spelling Override (Applies to All Users) */}
+            {isAdmin && (
+              <div className="rounded-2xl bg-[#161409] border border-[#fbbf24]/50 p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <label className="text-xs font-extrabold text-[#fbbf24] flex items-center gap-1.5">
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>
+                      Admin: Official English Spelling (Applies to All Users)
+                    </span>
+                  </label>
+                  {hasGlobalWordOverride(selectedWord.id) && (
+                    <span className="text-[11px] font-mono text-[#a8a29e]">
+                      Default:{' '}
+                      {getOriginalCatalogWord(selectedWord.id)?.word}
+                    </span>
+                  )}
+                </div>
+
+                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <input
+                    type="text"
+                    value={adminSpellingInput}
+                    onChange={(e) => setAdminSpellingInput(e.target.value)}
+                    placeholder="Official English spelling..."
+                    className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl bg-[#09140f] border border-[#fbbf24]/50 focus:border-[#fbbf24] focus:outline-none text-sm font-mono font-bold text-white"
+                  />
+                  <button
+                    type="button"
+                    disabled={
+                      isSavingAdminSpelling || !adminSpellingInput.trim()
+                    }
+                    onClick={() => void handleSaveAdminSpellingStudio()}
+                    className="min-h-[44px] px-4 py-2 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                  >
+                    <Save className="w-3.5 h-3.5" />
+                    <span>
+                      {isSavingAdminSpelling
+                        ? 'Saving...'
+                        : 'Save Spelling for All'}
+                    </span>
+                  </button>
+                  {hasGlobalWordOverride(selectedWord.id) && (
+                    <button
+                      type="button"
+                      disabled={isSavingAdminSpelling}
+                      onClick={() => void handleResetAdminSpellingStudio()}
+                      title="Revert back to default catalog spelling"
+                      className="min-h-[44px] px-3 py-2 rounded-xl bg-[#2a1417] hover:bg-[#3b1a1f] border border-[#f87171]/40 text-xs font-bold text-[#fda4af] flex items-center justify-center gap-1.5 whitespace-nowrap disabled:opacity-50"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Reset</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
 
             {/* Editable Bangla Meaning Box */}
             <div className="relative">

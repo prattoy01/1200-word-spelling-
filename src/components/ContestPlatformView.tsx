@@ -22,7 +22,7 @@ import {
   Flame,
   RefreshCw,
 } from 'lucide-react';
-import { CATEGORIES, type WordItem } from '../data/words';
+import { CATEGORIES, hasGlobalWordOverride, type WordItem } from '../data/words';
 import {
   type CloudRecording,
   type SessionWordResult,
@@ -89,11 +89,18 @@ function normalizeSpelling(s: string): string {
     .replace(/\s+/g, ' ');
 }
 
-function checkSpellingCorrect(answer: string, targetWord: string): boolean {
+function checkSpellingCorrect(
+  answer: string,
+  targetWord: string,
+  wordId?: string
+): boolean {
   const normAns = normalizeSpelling(answer);
   if (!normAns) return false;
   const normTarget = normalizeSpelling(targetWord);
   const slashAlternatives = normTarget.split(/\s*\/\s*/);
+  if (wordId && hasGlobalWordOverride(wordId)) {
+    return slashAlternatives.includes(normAns);
+  }
   const group = SPELLING_ALTERNATIVE_GROUPS.find((g) => g.includes(normTarget));
   const accepted = group || slashAlternatives;
   return accepted.includes(normAns);
@@ -434,7 +441,7 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         const slotDurMs =
           timeline.slots[i]?.durationMs || contest.baseSeconds * 1000;
         const cleanTyped = (lockedEntry?.userAnswer || '').trim();
-        const isCorrect = checkSpellingCorrect(cleanTyped, w.word);
+        const isCorrect = checkSpellingCorrect(cleanTyped, w.word, w.id);
         const wordTimeMs = lockedEntry
           ? Math.max(400, Math.min(slotDurMs, lockedEntry.lockedAfterMs))
           : slotDurMs;
