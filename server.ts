@@ -339,6 +339,9 @@ async function startServer() {
       store.contributions[id] = {
         ...existing,
         ...(req.body?.status ? { status: req.body.status } : {}),
+        ...(typeof req.body?.word === 'string' && req.body.word.trim()
+          ? { word: req.body.word.trim() }
+          : {}),
         ...(req.body?.banglaMeaning !== undefined
           ? { banglaMeaning: req.body.banglaMeaning }
           : {}),
@@ -460,6 +463,14 @@ async function startServer() {
       delete store.wordOverrides[wordId];
       if (!store.deletedWordOverrideIds.includes(wordId)) {
         store.deletedWordOverrideIds.push(wordId);
+      }
+      const originalWord =
+        typeof req.query.originalWord === 'string'
+          ? req.query.originalWord.trim()
+          : '';
+      if (originalWord && store.recordings[wordId]) {
+        store.recordings[wordId].word = originalWord;
+        store.recordings[wordId].updatedAtMs = Date.now();
       }
       scheduleSaveStore();
     }

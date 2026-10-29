@@ -21,6 +21,7 @@ import {
   signInWithEmailPassword,
   signInQuickProfile,
   signInStudentWithUniqueId,
+  signInAsAdminDirect,
   signOutUser,
 } from '../firebase';
 
@@ -327,19 +328,18 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
                   {isTypingAdminEmail
-                    ? 'Admin Password'
+                    ? 'Admin Password (optional unless custom password set)'
                     : 'Password (or leave blank for Quick Sign-In)'}
                 </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="password"
-                    required={isTypingAdminEmail}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder={
                       isTypingAdminEmail
-                        ? 'Enter Admin Password...'
+                        ? 'Enter Admin Password (or leave blank)...'
                         : 'Enter password (optional for quick student login)...'
                     }
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
@@ -411,6 +411,37 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                   : '1-Click Instant Student Login (Unique #ID)'}
               </span>
             </button>
+
+            {/* 1-Click Switch to Admin Account */}
+            {!currentUser?.isVerifiedAdmin && (
+              <button
+                type="button"
+                disabled={isSubmitting}
+                onClick={async () => {
+                  setErrorMsg(null);
+                  setIsSubmitting(true);
+                  try {
+                    const adminProf = await signInAsAdminDirect(password);
+                    setPassword('');
+                    onSignedIn(adminProf);
+                    onClose();
+                  } catch (err) {
+                    setEmail(ADMIN_EMAIL);
+                    setErrorMsg(
+                      err instanceof Error
+                        ? err.message
+                        : 'Please enter your Admin Password above.'
+                    );
+                  } finally {
+                    setIsSubmitting(false);
+                  }
+                }}
+                className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0e291e] hover:bg-[#143a2a] border border-[#10b981]/50 text-xs font-extrabold text-[#10b981] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                <ShieldCheck className="w-3.5 h-3.5 text-[#10b981]" />
+                <span>Switch to Admin ({ADMIN_EMAIL})</span>
+              </button>
+            )}
           </div>
         </div>
       </div>

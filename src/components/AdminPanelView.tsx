@@ -16,6 +16,7 @@ import {
   Edit3,
   RotateCcw,
   Save,
+  LogIn,
 } from 'lucide-react';
 import {
   WORDS_CATALOG,
@@ -39,7 +40,13 @@ import {
   getContestPhase,
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
-import { auth, isAdminUser, updateAdminPassword, ADMIN_EMAIL } from '../firebase';
+import {
+  auth,
+  isAdminUser,
+  updateAdminPassword,
+  signInAsAdminDirect,
+  ADMIN_EMAIL,
+} from '../firebase';
 
 interface AdminPanelViewProps {
   contributions: AudioContributionRecord[];
@@ -49,6 +56,8 @@ interface AdminPanelViewProps {
   contests?: ContestRecord[];
   onRemoveContest?: (contestId: string) => void;
   userEmail?: string | null;
+  isAdmin?: boolean;
+  onRefreshAudioState?: () => Promise<void>;
   onBackToPractice: () => void;
   onRestore14General: () => Promise<void>;
   isRestoring14: boolean;
@@ -61,6 +70,9 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   wordOverridesMap,
   contests = [],
   onRemoveContest,
+  userEmail,
+  isAdmin,
+  onRefreshAudioState,
   onBackToPractice,
   onRestore14General,
   isRestoring14,
@@ -88,13 +100,16 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     text: string;
   } | null>(null);
 
-  // Admin password change states
+  // Admin password change & direct unlock states
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [currentAdminPwd, setCurrentAdminPwd] = useState('');
   const [newAdminPwd, setNewAdminPwd] = useState('');
   const [isUpdatingPwd, setIsUpdatingPwd] = useState(false);
+  const [unlockAdminPwd, setUnlockAdminPwd] = useState('');
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [isUnlockingAdmin, setIsUnlockingAdmin] = useState(false);
 
-  const isRecognizedOwner = isAdminUser(auth.currentUser);
+  const isRecognizedOwner = Boolean(isAdmin || isAdminUser(auth.currentUser));
 
   const pendingList = useMemo(
     () => contributions.filter((c) => c.status === 'pending'),
@@ -136,30 +151,82 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         item.bangla.toLowerCase().includes(q) ||
         item.category.toLowerCase().includes(q)
       );
-    });
+    }).map((item) => ({ ...item }));
   }, [searchSpellingQuery, spellingFilterMode, activeOverrides]);
+
+  const handleDirectAdminUnlock = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setIsUnlockingAdmin(true);
+    setUnlockError(null);
+    try {
+      await signInAsAdminDirect(unlockAdminPwd);
+      await onRefreshAudioState?.();
+    } catch (err) {
+      setUnlockError(
+        err instanceof Error ? err.message : 'Could not sign in as Admin.'
+      );
+    } finally {
+      setIsUnlockingAdmin(false);
+    }
+  };
 
   if (!isRecognizedOwner) {
     return (
       <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 pt-12 pb-28 text-center space-y-5">
-        <div className="rounded-3xl bg-[#0d1d16] border border-[#3d1d24] p-7 space-y-4 shadow-2xl">
-          <div className="w-14 h-14 rounded-2xl bg-[#2a1215] border border-[#5c2026] flex items-center justify-center text-[#f43f5e] mx-auto">
-            <Lock className="w-7 h-7" />
+        <div className="rounded-3xl bg-[#0d1d16] border border-[#244737] p-7 space-y-4 shadow-2xl">
+          <div className="w-14 h-14 rounded-2xl bg-[#10b981]/15 border border-[#10b981]/40 flex items-center justify-center text-[#10b981] mx-auto">
+            <ShieldCheck className="w-7 h-7" />
           </div>
           <h1 className="text-xl font-extrabold text-white">
-            Admin Access Restricted
+            Switch to Admin Account
           </h1>
           <p className="text-xs sm:text-sm text-[#9bb8aa] leading-relaxed">
-            Only the verified Admin (<strong className="text-white">{ADMIN_EMAIL}</strong> authenticated with the Admin Password or Verified Google OAuth) can access the Admin Panel.
+            You are currently signed in as{' '}
+            <strong className="text-white">
+              {userEmail || auth.currentUser?.displayName || 'a Participant / Guest'}
+            </strong>
+            . Click below to switch back to the verified Admin account (
+            <strong className="text-[#10b981]">{ADMIN_EMAIL}</strong>) and open the Admin Panel.
           </p>
-          <button
-            type="button"
-            onClick={onBackToPractice}
-            className="min-h-[42px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-2 transition-colors"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            <span>Back to Practice</span>
-          </button>
+
+          {unlockError && (
+            <div className="rounded-xl bg-[#2a1215] border border-[#f87171]/40 px-3.5 py-2.5 text-xs text-[#fecaca]">
+              {unlockError}
+            </div>
+          )}
+
+          <form onSubmit={handleDirectAdminUnlock} className="space-y-3 max-w-sm mx-auto">
+            <input
+              type="password"
+              value={unlockAdminPwd}
+              onChange={(e) => setUnlockAdminPwd(e.target.value)}
+              placeholder="Admin password (optional unless custom password set)"
+              className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-xs text-white placeholder-[#5e7d6e] focus:outline-none focus:border-[#10b981]"
+            />
+            <div className="flex flex-wrap items-center justify-center gap-2.5">
+              <button
+                type="submit"
+                disabled={isUnlockingAdmin}
+                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-2 transition-colors disabled:opacity-50"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>
+                  {isUnlockingAdmin
+                    ? 'Switching to Admin...'
+                    : `Unlock Admin Panel (${ADMIN_EMAIL})`}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onBackToPractice}
+                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-[#d2e5dc] text-xs font-bold inline-flex items-center gap-2 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                <span>Back to Practice</span>
+              </button>
+            </div>
+          </form>
         </div>
       </main>
     );
@@ -207,6 +274,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           ? editedWordMap[item.id]
           : item.word;
       await approveAudioContribution(item, customBangla, customWord);
+      await onRefreshAudioState?.();
       setFeedbackBanner({
         type: 'success',
         text: `Accepted "${customWord}" from ${item.contributorName}! General App Audio & Official Spelling are now updated for all users.`,
@@ -246,6 +314,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         word: nextWord,
         bangla: nextBangla,
       });
+      setCatalogWordDrafts((prev) => {
+        const next = { ...prev };
+        delete next[wordId];
+        return next;
+      });
+      await onRefreshAudioState?.();
       setFeedbackBanner({
         type: 'success',
         text: `Updated official spelling to "${nextWord}"! This new spelling now applies to all users across Practice, Exams, and Contests.`,
@@ -274,6 +348,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         delete next[wordId];
         return next;
       });
+      await onRefreshAudioState?.();
       setFeedbackBanner({
         type: 'success',
         text: `Reset spelling back to original "${orig?.word || wordId}" for all users.`,
@@ -325,6 +400,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     setFeedbackBanner(null);
     try {
       await deleteWordRecording(rec.wordId, rec.ownerId, true);
+      await onRefreshAudioState?.();
       setFeedbackBanner({
         type: 'success',
         text: `Removed General App Audio for "${rec.word}". Users without a personal audio will now hear the default bundled audio.`,

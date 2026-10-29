@@ -270,13 +270,6 @@ export default function App() {
 
   const isAdmin = isAdminUser(user);
 
-  // Redirect away from Admin Panel if user is not prattoy.photos01@gmail.com
-  useEffect(() => {
-    if (authReady && !isAdmin && activeScreen === 'admin') {
-      setActiveScreen('practice');
-    }
-  }, [authReady, isAdmin, activeScreen]);
-
   // 1. Track Auth state across Chrome profiles
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
@@ -980,25 +973,23 @@ export default function App() {
           >
             Recordings ({counts.uploads})
           </button>
-          {isAdmin && (
-            <button
-              type="button"
-              onClick={() => setActiveScreen('admin')}
-              className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
-                activeScreen === 'admin'
-                  ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'
-                  : ''
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4 text-[#10b981]" />
-              <span>Admin Panel</span>
-              {pendingContributionsCount > 0 && (
-                <span className="px-1.5 py-0.5 rounded-full bg-[#fbbf24] text-[#08120e] text-[10px] font-extrabold font-mono">
-                  {pendingContributionsCount}
-                </span>
-              )}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setActiveScreen('admin')}
+            className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+              activeScreen === 'admin'
+                ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'
+                : ''
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-[#10b981]" />
+            <span>Admin Panel</span>
+            {pendingContributionsCount > 0 && (
+              <span className="px-1.5 py-0.5 rounded-full bg-[#fbbf24] text-[#08120e] text-[10px] font-extrabold font-mono">
+                {pendingContributionsCount}
+              </span>
+            )}
+          </button>
           <button
             type="button"
             onClick={() => {
@@ -1230,6 +1221,8 @@ export default function App() {
             );
           }}
           userEmail={user?.email}
+          isAdmin={isAdmin}
+          onRefreshAudioState={refreshLocalAndCloudState}
           onBackToPractice={() => setActiveScreen('practice')}
           onRestore14General={handleRestore14Uploads}
           isRestoring14={isRestoring14}
@@ -1248,21 +1241,19 @@ export default function App() {
             </button>
 
             <div className="flex flex-wrap items-center gap-2">
-              {isAdmin && (
-                <button
-                  type="button"
-                  onClick={() => setActiveScreen('admin')}
-                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-                >
-                  <ShieldCheck className="w-3.5 h-3.5" />
-                  <span>
-                    Admin Panel
-                    {pendingContributionsCount > 0
-                      ? ` (${pendingContributionsCount} Pending)`
-                      : ''}
-                  </span>
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setActiveScreen('admin')}
+                className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981]/15 hover:bg-[#10b981]/25 border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
+              >
+                <ShieldCheck className="w-3.5 h-3.5" />
+                <span>
+                  Admin Panel
+                  {pendingContributionsCount > 0
+                    ? ` (${pendingContributionsCount} Pending)`
+                    : ''}
+                </span>
+              </button>
 
               <PWAInstallButton
                 onOpenMobileLinkModal={() => setIsSyncModalOpen(true)}
@@ -1821,9 +1812,7 @@ export default function App() {
       {/* Fixed Native Mobile App Bottom Navigation Dock (Visible on Phone Viewports) */}
       <nav
         aria-label="Mobile navigation"
-        className={`md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#050e0a]/98 backdrop-blur-xl border-t border-[#183528] grid ${
-          isAdmin ? 'grid-cols-6' : 'grid-cols-5'
-        } items-center h-[64px] px-1.5 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]`}
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#050e0a]/98 backdrop-blur-xl border-t border-[#183528] grid grid-cols-6 items-center h-[64px] px-1.5 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
       >
         <button
           type="button"
@@ -1945,30 +1934,28 @@ export default function App() {
           <span className="text-[10px] mt-0.5 whitespace-nowrap">Audio</span>
         </button>
 
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={() => setActiveScreen('admin')}
-            className={`relative flex flex-col items-center justify-center h-full transition-all ${
+        <button
+          type="button"
+          onClick={() => setActiveScreen('admin')}
+          className={`relative flex flex-col items-center justify-center h-full transition-all ${
+            activeScreen === 'admin'
+              ? 'text-[#10b981] font-extrabold'
+              : 'text-[#7fa190]'
+          }`}
+        >
+          <span
+            className={`px-3 py-1 rounded-full transition-colors ${
               activeScreen === 'admin'
-                ? 'text-[#10b981] font-extrabold'
-                : 'text-[#7fa190]'
+                ? 'bg-[#10b981]/20 text-[#10b981]'
+                : ''
             }`}
           >
-            <span
-              className={`px-3 py-1 rounded-full transition-colors ${
-                activeScreen === 'admin'
-                  ? 'bg-[#10b981]/20 text-[#10b981]'
-                  : ''
-              }`}
-            >
-              <ShieldCheck className="w-4 h-4" />
-            </span>
-            <span className="text-[10px] mt-0.5 whitespace-nowrap">
-              Admin{pendingContributionsCount > 0 ? ` (${pendingContributionsCount})` : ''}
-            </span>
-          </button>
-        )}
+            <ShieldCheck className="w-4 h-4" />
+          </span>
+          <span className="text-[10px] mt-0.5 whitespace-nowrap">
+            Admin{pendingContributionsCount > 0 ? ` (${pendingContributionsCount})` : ''}
+          </span>
+        </button>
       </nav>
 
       {/* Web <-> Mobile Link & Cloud Sync Modal */}

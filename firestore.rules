@@ -259,7 +259,7 @@ service cloud.firestore {
             (incoming().status == 'approved' || incoming().status == 'rejected')
             && incoming().contributorId == existing().contributorId
             && incoming().createdAt == existing().createdAt
-            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'banglaMeaning'])
+            && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt', 'banglaMeaning', 'word'])
           )
         );
 

@@ -186,6 +186,64 @@ function sanitizeRecordingInput(params: {
 const LOCAL_CONTRIBUTIONS_CACHE_KEY = 'lw_audio_contributions_cache_v1';
 const LOCAL_DELETED_CONTRIB_IDS_KEY = 'lw_deleted_contrib_ids_v1';
 const CONTRIBUTIONS_BROADCAST_CHANNEL = 'lw_audio_contributions_sync_v1';
+const LOCAL_DELETED_RECORDING_IDS_KEY = 'lw_deleted_recording_ids_v1';
+const RECORDINGS_BROADCAST_CHANNEL = 'lw_recordings_sync_v1';
+
+function readDeletedRecordingIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(LOCAL_DELETED_RECORDING_IDS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function markRecordingDeletedLocally(wordId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const set = readDeletedRecordingIds();
+    set.add(wordId);
+    window.localStorage.setItem(
+      LOCAL_DELETED_RECORDING_IDS_KEY,
+      JSON.stringify(Array.from(set).slice(-300))
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function unmarkRecordingDeletedLocally(wordId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const set = readDeletedRecordingIds();
+    if (set.has(wordId)) {
+      set.delete(wordId);
+      window.localStorage.setItem(
+        LOCAL_DELETED_RECORDING_IDS_KEY,
+        JSON.stringify(Array.from(set))
+      );
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function notifyRecordingsListeners(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    if ('BroadcastChannel' in window) {
+      const bc = new BroadcastChannel(RECORDINGS_BROADCAST_CHANNEL);
+      bc.postMessage({ type: 'RECORDINGS_UPDATED', ts: Date.now() });
+      bc.close();
+    }
+    window.dispatchEvent(new CustomEvent('lw-recordings-local-update'));
+  } catch {
+    // ignore
+  }
+}
 
 function readDeletedContributionIds(): Set<string> {
   if (typeof window === 'undefined') return new Set();
@@ -380,6 +438,7 @@ export function subscribeToPublishedRecordings(
 
   const buildAndEmitMerged = async () => {
     try {
+      const deletedRecSet = readDeletedRecordingIds();
       const localMap = await getAllLocalCachedRecordings();
       const merged: Record<string, CloudRecording> = {};
       const generalOnly: Record<string, CloudRecording> = {};
@@ -390,7 +449,7 @@ export function subscribeToPublishedRecordings(
         if (isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
           continue;
         }
-        if (!item.isPersonalOverride) {
+        if (!item.isPersonalOverride && !deletedRecSet.has(wordId)) {
           const rec: CloudRecording = {
             wordId: item.wordId,
             word: item.word,
@@ -414,6 +473,7 @@ export function subscribeToPublishedRecordings(
       }
 
       for (const [wordId, sRec] of Object.entries(latestServerGeneral)) {
+        if (deletedRecSet.has(wordId)) continue;
         if (
           sRec &&
           sRec.audioDataUrl &&
@@ -449,8 +509,12 @@ export function subscribeToPublishedRecordings(
       }
 
       for (const [wordId, fRec] of Object.entries(latestFirestoreGeneral)) {
-        generalOnly[wordId] = fRec;
-        merged[wordId] = fRec;
+        if (deletedRecSet.has(wordId)) continue;
+        const existingServer = generalOnly[wordId];
+        if (!existingServer || (fRec.updatedAtMs || 0) >= (existingServer.updatedAtMs || 0)) {
+          generalOnly[wordId] = fRec;
+          merged[wordId] = fRec;
+        }
       }
 
       // 2. Overlay User's Personal Audio Overrides so personal audio NEVER changes when General Audio updates!
@@ -465,7 +529,7 @@ export function subscribeToPublishedRecordings(
           item.ownerId === 'personal_user' ||
           item.ownerId === activeUserId;
 
-        if ((item.isPersonalOverride && belongsToCurrentUser) || !item.syncedToCloud) {
+        if ((item.isPersonalOverride && belongsToCurrentUser) || (!item.syncedToCloud && !deletedRecSet.has(wordId))) {
           merged[wordId] = {
             wordId: item.wordId,
             word: item.word,
@@ -487,7 +551,9 @@ export function subscribeToPublishedRecordings(
       }
 
       const generalSig = JSON.stringify(
-        Object.values(generalOnly).map((r) => `${r.wordId}:${r.updatedAtMs}:${r.banglaMeaning}`)
+        Object.values(generalOnly)
+          .sort((a, b) => a.wordId.localeCompare(b.wordId))
+          .map((r) => `${r.wordId}:${r.word}:${r.updatedAtMs}:${r.banglaMeaning}`)
       );
       if (generalSig !== lastEmittedGeneralSig) {
         lastEmittedGeneralSig = generalSig;
@@ -495,9 +561,12 @@ export function subscribeToPublishedRecordings(
       }
 
       const mergedSig = JSON.stringify(
-        Object.values(merged).map(
-          (r) => `${r.wordId}:${r.updatedAtMs}:${r.banglaMeaning}:${r.source}:${r.contributedToAdmin}`
-        )
+        Object.values(merged)
+          .sort((a, b) => a.wordId.localeCompare(b.wordId))
+          .map(
+            (r) =>
+              `${r.wordId}:${r.word}:${r.updatedAtMs}:${r.banglaMeaning}:${r.source}:${r.contributedToAdmin}`
+          )
       );
       if (mergedSig !== lastEmittedMergedSig) {
         lastEmittedMergedSig = mergedSig;
@@ -511,6 +580,16 @@ export function subscribeToPublishedRecordings(
   const pullServerRecordings = async () => {
     const state = await fetchSharedServerAudioState(true);
     if (state) {
+      const serverDelSet = new Set(state.deletedRecordingIds || []);
+      for (const delWordId of serverDelSet) {
+        markRecordingDeletedLocally(delWordId);
+        delete latestFirestoreGeneral[delWordId];
+      }
+      for (const wordId of Object.keys(state.recordings || {})) {
+        if (!serverDelSet.has(wordId)) {
+          unmarkRecordingDeletedLocally(wordId);
+        }
+      }
       latestServerGeneral = state.recordings || {};
       await buildAndEmitMerged();
     }
@@ -523,18 +602,36 @@ export function subscribeToPublishedRecordings(
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void pullServerRecordings();
-        }, 6000)
+        }, 5000)
       : null;
+
+  let bc: BroadcastChannel | null = null;
+  const onLocalRecordingsEvent = () => {
+    void buildAndEmitMerged();
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('lw-recordings-local-update', onLocalRecordingsEvent);
+    try {
+      if ('BroadcastChannel' in window) {
+        bc = new BroadcastChannel(RECORDINGS_BROADCAST_CHANNEL);
+        bc.onmessage = () => void buildAndEmitMerged();
+      }
+    } catch {
+      // ignore
+    }
+  }
 
   const unsubSnapshot = onSnapshot(
     q,
     async (snapshot) => {
+      const deletedRecSet = readDeletedRecordingIds();
       const localMap = await getAllLocalCachedRecordings();
       const nextFirestoreGeneral: Record<string, CloudRecording> = {};
 
       snapshot.forEach((docSnap) => {
         const data = docSnap.data();
         const wordId = data.wordId || docSnap.id;
+        if (deletedRecSet.has(wordId)) return;
         const word = data.word || wordId;
 
         if (isSyntheticRestoredPlaceholder(word, data.audioDataUrl)) {
@@ -598,6 +695,16 @@ export function subscribeToPublishedRecordings(
     if (pollId !== null && typeof window !== 'undefined') {
       window.clearInterval(pollId);
     }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('lw-recordings-local-update', onLocalRecordingsEvent);
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore
+      }
+    }
   };
 }
 
@@ -654,6 +761,8 @@ export async function publishGeneralCloudRecording(params: {
     isPersonalOverride: false,
   };
 
+  unmarkRecordingDeletedLocally(clean.wordId);
+
   // 1. Push to shared backend server so all users receive the General Audio immediately
   await pushGeneralRecordingToSharedServer(generalRec);
 
@@ -676,6 +785,8 @@ export async function publishGeneralCloudRecording(params: {
       isPersonalOverride: false,
     });
   }
+
+  notifyRecordingsListeners();
 
   // 3. Also write to Cloud Firestore
   try {
@@ -711,6 +822,7 @@ export async function publishGeneralCloudRecording(params: {
         updatedAt: serverTimestamp(),
       });
     }
+    notifyRecordingsListeners();
   } catch (err) {
     console.warn('General recording published via shared server (Firestore fallback):', err);
   }
@@ -1008,12 +1120,17 @@ export function subscribeToAudioContributions(
     const serverWordIds = new Set<string>();
     const deletedSet = readDeletedContributionIds();
     if (state) {
-      for (const delId of state.deletedContributionIds) {
+      const serverDelContribSet = new Set(state.deletedContributionIds || []);
+      for (const delId of serverDelContribSet) {
         markContributionDeletedLocally(delId);
         deletedSet.add(delId);
       }
       serverList = state.contributions || [];
       for (const c of serverList) {
+        if (c?.id && !serverDelContribSet.has(c.id)) {
+          unmarkContributionDeletedLocally(c.id);
+          deletedSet.delete(c.id);
+        }
         if (c?.wordId) serverWordIds.add(c.wordId);
       }
     }
@@ -1235,6 +1352,7 @@ export async function approveAudioContribution(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           status: 'approved',
+          word: finalWord,
           banglaMeaning: finalBangla,
         }),
       }
@@ -1248,12 +1366,14 @@ export async function approveAudioContribution(
     const contribRef = doc(db, CONTRIBUTIONS_PATH, contribution.id);
     await updateDoc(contribRef, {
       status: 'approved',
+      word: finalWord,
       banglaMeaning: finalBangla,
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
     console.warn('Contribution approval synced via shared server (Firestore fallback):', err);
   }
+  notifyRecordingsListeners();
 }
 
 /**
@@ -1414,7 +1534,12 @@ export async function deleteWordRecording(
       `Access denied: Only the Admin (${ADMIN_EMAIL}) can delete General App Audio.`
     );
   }
+  if (alsoDeleteFromGeneralCloud) {
+    markRecordingDeletedLocally(wordId);
+  }
   await removeRecordingFromLocalCache(wordId);
+  notifyRecordingsListeners();
+
   if (alsoDeleteFromGeneralCloud) {
     try {
       await fetch(`/api/sync/recordings/${encodeURIComponent(wordId)}`, {
@@ -1434,6 +1559,7 @@ export async function deleteWordRecording(
         `${RECORDINGS_PATH}/${wordId}`
       );
     }
+    notifyRecordingsListeners();
   }
 }
 
@@ -2507,6 +2633,7 @@ export async function resetGlobalWordSpellingOverride(
   }
 
   const safeWordId = wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  const orig = getOriginalCatalogWord(safeWordId);
   markWordOverrideDeletedLocally(safeWordId);
 
   const currentLocal = readLocalWordOverridesCache();
@@ -2514,9 +2641,15 @@ export async function resetGlobalWordSpellingOverride(
   writeLocalWordOverridesCache(currentLocal, true);
 
   try {
-    await fetch(`/api/sync/word-overrides/${encodeURIComponent(safeWordId)}`, {
-      method: 'DELETE',
-    });
+    const querySuffix = orig?.word
+      ? `?originalWord=${encodeURIComponent(orig.word)}`
+      : '';
+    await fetch(
+      `/api/sync/word-overrides/${encodeURIComponent(safeWordId)}${querySuffix}`,
+      {
+        method: 'DELETE',
+      }
+    );
   } catch {
     // ignore
   }
@@ -2528,7 +2661,6 @@ export async function resetGlobalWordSpellingOverride(
   }
 
   // Also restore original word on /recordings/{wordId} if present
-  const orig = getOriginalCatalogWord(safeWordId);
   if (orig) {
     try {
       const recRef = doc(db, RECORDINGS_PATH, safeWordId);
@@ -2601,8 +2733,14 @@ export function subscribeToGlobalWordOverrides(
   const pullFromServer = async () => {
     const state = await fetchSharedServerAudioState(false);
     if (state) {
-      for (const delId of state.deletedWordOverrideIds) {
+      const deletedServerSet = new Set(state.deletedWordOverrideIds || []);
+      for (const delId of deletedServerSet) {
         markWordOverrideDeletedLocally(delId);
+      }
+      for (const wid of Object.keys(state.wordOverrides || {})) {
+        if (!deletedServerSet.has(wid)) {
+          unmarkWordOverrideDeletedLocally(wid);
+        }
       }
       latestServerOverrides = state.wordOverrides || {};
       emitMerged();
