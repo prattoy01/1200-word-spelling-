@@ -1005,9 +1005,14 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
         durationMinutes,
       });
       // Automatically register the setter into the lobby as a fair participant
-      await registerForContest(created);
+      const regSub = await registerForContest(created);
+      onSyncContests?.(
+        [created, ...contests.filter((c) => c.id !== created.id)],
+        [regSub, ...submissions.filter((s) => s.id !== regSub.id)]
+      );
       setSelectedContestId(created.id);
       setActiveTab('contests');
+      void handleManualSync();
       setStatusMessage({
         type: 'success',
         text: `Contest "${created.title}" scheduled! All participants will start Word #1 and finish the final word at the exact same synchronized second.`,

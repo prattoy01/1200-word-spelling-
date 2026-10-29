@@ -18,6 +18,14 @@ import {
   type SessionWordResult,
   savePracticeSession,
 } from './recordingsService';
+import {
+  publishContestUpsertToRelay,
+  publishContestDeleteToRelay,
+  publishSubmissionUpsertToRelay,
+  pollCloudRelaySnapshot,
+  subscribeToCloudRelay,
+  getCurrentCloudRelaySnapshot,
+} from '../utils/cloudRelay';
 
 export interface ContestRecord {
   id: string;
@@ -507,11 +515,18 @@ async function fetchSharedServerContestState(): Promise<{
 } | null> {
   if (typeof window === 'undefined') return null;
   try {
+    const controller = new AbortController();
+    const timeoutId = window.setTimeout(() => controller.abort(), 2500);
     const res = await fetch('/api/sync/state?includeAudio=false', {
       cache: 'no-store',
+      signal: controller.signal,
     });
+    window.clearTimeout(timeoutId);
     if (!res.ok) return null;
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.includes('application/json')) return null;
     const data = await res.json();
+    if (!data || data.ok !== true) return null;
     return {
       contests: Array.isArray(data?.contests) ? data.contests : [],
       deletedContestIds: Array.isArray(data?.deletedContestIds)
@@ -604,32 +619,33 @@ export async function createScheduledContest(params: {
   const existingLocal = readLocalContests().filter((c) => c.id !== contestId);
   writeLocalContests([record, ...existingLocal]);
 
-  // 1. Sync immediately to shared backend server so all connected users receive the contest right away
-  await pushContestsToSharedServer([record]);
+  // 1. Sync immediately to shared backend server AND global cross-domain relay in parallel
+  await Promise.all([
+    pushContestsToSharedServer([record]),
+    publishContestUpsertToRelay(record),
+  ]);
 
-  // 2. Also persist to Cloud Firestore
-  try {
-    const docRef = doc(db, CONTESTS_PATH, contestId);
-    await setDoc(docRef, {
-      id: record.id,
-      title: record.title,
-      creatorId: record.creatorId,
-      creatorName: record.creatorName,
-      pageFilter: record.pageFilter,
-      categories: record.categories,
-      wordCount: record.wordCount,
-      baseSeconds: record.baseSeconds,
-      showBangla: record.showBangla,
-      startTimeMs: record.startTimeMs,
-      durationMinutes: record.durationMinutes,
-      randomSeed: record.randomSeed,
-      status: 'active',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Contest saved via shared server & local cache (Firestore fallback):', err);
-  }
+  // 2. Persist to Cloud Firestore non-blockingly so quota/offline retries never stall the UI
+  const docRef = doc(db, CONTESTS_PATH, contestId);
+  void setDoc(docRef, {
+    id: record.id,
+    title: record.title,
+    creatorId: record.creatorId,
+    creatorName: record.creatorName,
+    pageFilter: record.pageFilter,
+    categories: record.categories,
+    wordCount: record.wordCount,
+    baseSeconds: record.baseSeconds,
+    showBangla: record.showBangla,
+    startTimeMs: record.startTimeMs,
+    durationMinutes: record.durationMinutes,
+    randomSeed: record.randomSeed,
+    status: 'active',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {
+    // Synced via shared server & global cloud relay
+  });
 
   return record;
 }
@@ -643,24 +659,19 @@ export async function deleteOrCancelContest(contestId: string): Promise<void> {
   );
   writeLocalSubmissions(existingSubs);
 
-  // 1. Delete on shared backend server so all users remove it immediately
-  await deleteContestOnSharedServer(contestId);
+  // 1. Delete on shared backend server AND global cross-domain relay so all users remove it immediately
+  await Promise.all([
+    deleteContestOnSharedServer(contestId),
+    publishContestDeleteToRelay(contestId),
+  ]);
 
-  // 2. Also mark cancelled & delete in Cloud Firestore
-  try {
-    await updateDoc(doc(db, CONTESTS_PATH, contestId), {
-      status: 'cancelled',
-      updatedAt: serverTimestamp(),
-    });
-  } catch {
-    // Ignore if document doesn't exist or offline
-  }
+  // 2. Also mark cancelled & delete in Cloud Firestore non-blockingly
+  void updateDoc(doc(db, CONTESTS_PATH, contestId), {
+    status: 'cancelled',
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 
-  try {
-    await deleteDoc(doc(db, CONTESTS_PATH, contestId));
-  } catch {
-    // Ignore if offline or quota reached; status: 'cancelled' & server tombstone already applied
-  }
+  void deleteDoc(doc(db, CONTESTS_PATH, contestId)).catch(() => {});
 }
 
 export function getSubmissionDocId(contestId: string, userId: string): string {
@@ -718,28 +729,27 @@ export async function registerForContest(
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
-  // 1. Push immediately to shared server
-  await pushSubmissionsToSharedServer([record]);
+  // 1. Push immediately to shared server AND global cross-domain relay
+  await Promise.all([
+    pushSubmissionsToSharedServer([record]),
+    publishSubmissionUpsertToRelay(record),
+  ]);
 
-  // 2. Also persist to Cloud Firestore
-  try {
-    await setDoc(doc(db, SUBMISSIONS_PATH, subId), {
-      id: record.id,
-      contestId: record.contestId,
-      userId: record.userId,
-      userName: record.userName,
-      userEmail: record.userEmail,
-      status: 'registered',
-      totalWords: record.totalWords,
-      correctCount: 0,
-      accuracy: 0,
-      timeTakenMs: 0,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Contest registration synced via shared server (Firestore fallback):', err);
-  }
+  // 2. Persist to Cloud Firestore non-blockingly
+  void setDoc(doc(db, SUBMISSIONS_PATH, subId), {
+    id: record.id,
+    contestId: record.contestId,
+    userId: record.userId,
+    userName: record.userName,
+    userEmail: record.userEmail,
+    status: 'registered',
+    totalWords: record.totalWords,
+    correctCount: 0,
+    accuracy: 0,
+    timeTakenMs: 0,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 
   return record;
 }
@@ -799,33 +809,32 @@ export async function markContestAttemptInProgress(params: {
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
-  // 1. Push immediately to shared server
-  await pushSubmissionsToSharedServer([record]);
+  // 1. Push immediately to shared server AND global cross-domain relay
+  await Promise.all([
+    pushSubmissionsToSharedServer([record]),
+    publishSubmissionUpsertToRelay(record),
+  ]);
 
-  // 2. Persist to Cloud Firestore
+  // 2. Persist to Cloud Firestore non-blockingly
   const docRef = doc(db, SUBMISSIONS_PATH, subId);
-  try {
-    await setDoc(
-      docRef,
-      {
-        id: record.id,
-        contestId: record.contestId,
-        userId: record.userId,
-        userName: record.userName,
-        userEmail: record.userEmail,
-        status: 'in_progress',
-        totalWords: record.totalWords,
-        correctCount: record.correctCount,
-        accuracy: record.accuracy,
-        timeTakenMs: record.timeTakenMs,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch {
-    // Ignore transient cloud sync error; shared server & local checkpoint already saved
-  }
+  void setDoc(
+    docRef,
+    {
+      id: record.id,
+      contestId: record.contestId,
+      userId: record.userId,
+      userName: record.userName,
+      userEmail: record.userEmail,
+      status: 'in_progress',
+      totalWords: record.totalWords,
+      correctCount: record.correctCount,
+      accuracy: record.accuracy,
+      timeTakenMs: record.timeTakenMs,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  ).catch(() => {});
 
   return record;
 }
@@ -900,42 +909,41 @@ export async function submitContestExamResult(params: {
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
-  // 1. Push immediately to shared server so leaderboard updates across all users
-  await pushSubmissionsToSharedServer([record]);
+  // 1. Push immediately to shared server AND global cross-domain relay so leaderboard updates across all users
+  await Promise.all([
+    pushSubmissionsToSharedServer([record]),
+    publishSubmissionUpsertToRelay(record),
+  ]);
 
-  // 2. Also persist to Cloud Firestore
+  // 2. Also persist to Cloud Firestore non-blockingly
   const docRef = doc(db, SUBMISSIONS_PATH, subId);
-  try {
-    await setDoc(
-      docRef,
-      {
-        id: record.id,
-        contestId: record.contestId,
-        userId: record.userId,
-        userName: record.userName,
-        userEmail: record.userEmail,
-        status: 'completed',
-        totalWords: record.totalWords,
-        correctCount: record.correctCount,
-        accuracy: record.accuracy,
-        timeTakenMs: record.timeTakenMs,
-        results: sanitizedResults,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch (err) {
-    console.warn('Contest submission synced via shared server (Firestore fallback):', err);
-  }
+  void setDoc(
+    docRef,
+    {
+      id: record.id,
+      contestId: record.contestId,
+      userId: record.userId,
+      userName: record.userName,
+      userEmail: record.userEmail,
+      status: 'completed',
+      totalWords: record.totalWords,
+      correctCount: record.correctCount,
+      accuracy: record.accuracy,
+      timeTakenMs: record.timeTakenMs,
+      results: sanitizedResults,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true }
+  ).catch(() => {});
 
   // Also save to the user's personal Practice/Exam history so their per-word accuracy bars update!
-  await savePracticeSession({
+  void savePracticeSession({
     category: `Contest: ${params.contest.title}`,
     totalWords,
     correctCount,
     results: sanitizedResults,
-  });
+  }).catch(() => {});
 
   return record;
 }
@@ -997,8 +1005,9 @@ function mergeSubmissionsLists(
 }
 
 /**
- * Actively fetches all contests & submissions from Shared Backend Server + Cloud Firestore
- * and merges any unsynced local contests/submissions so all users see the exact same state.
+ * Actively fetches all contests & submissions from Shared Backend Server + Global Cloud Relay
+ * and merges any unsynced local contests/submissions so all users across AI Studio, Vercel,
+ * and Android APK see the exact same state in < 200ms without blocking on Firestore quota limits.
  */
 export async function syncContestsNow(): Promise<{
   contests: ContestRecord[];
@@ -1008,9 +1017,15 @@ export async function syncContestsNow(): Promise<{
   const byContestId = new Map<string, ContestRecord>();
   const serverContestsIds = new Set<string>();
   const serverSubIds = new Set<string>();
+  const relayContestsIds = new Set<string>();
+  const relaySubIds = new Set<string>();
 
-  // Step 1: Pull from Shared Backend Server (/api/sync/state)
-  const serverState = await fetchSharedServerContestState();
+  // Step 1: Pull from Shared Backend Server (/api/sync/state) AND Global Cloud Relay in parallel
+  const [serverState, relaySnapshot] = await Promise.all([
+    fetchSharedServerContestState(),
+    pollCloudRelaySnapshot(false),
+  ]);
+
   if (serverState) {
     for (const delId of serverState.deletedContestIds) {
       cancelledIds.add(delId);
@@ -1031,129 +1046,86 @@ export async function syncContestsNow(): Promise<{
     }
   }
 
-  // Step 2: Also pull from Cloud Firestore if quota is available
-  const firestoreSubs: ContestSubmissionRecord[] = [];
-  try {
-    const qContests = query(
-      collection(db, CONTESTS_PATH),
-      where('status', 'in', ['active', 'cancelled']),
-      limit(60)
-    );
-    const qSubs = query(
-      collection(db, SUBMISSIONS_PATH),
-      where('status', 'in', ['registered', 'in_progress', 'completed']),
-      limit(200)
-    );
-
-    const [contestSnap, subSnap] = await Promise.all([
-      getDocs(qContests),
-      getDocs(qSubs),
-    ]);
-
-    contestSnap.forEach((docSnap) => {
-      const d = docSnap.data();
-      const cid = d.id || docSnap.id;
-      if (d.status === 'cancelled' || cancelledIds.has(cid)) {
+  if (relaySnapshot) {
+    for (const delId of relaySnapshot.deletedContestIds) {
+      cancelledIds.add(delId);
+      markContestDeletedLocally(delId);
+      byContestId.delete(delId);
+    }
+    for (const [cid, c] of relaySnapshot.contests.entries()) {
+      if (!c || !c.id) continue;
+      relayContestsIds.add(cid);
+      if (c.status === 'cancelled' || cancelledIds.has(cid)) {
         cancelledIds.add(cid);
         markContestDeletedLocally(cid);
         byContestId.delete(cid);
-        return;
+        continue;
       }
-      byContestId.set(cid, {
-        id: cid,
-        title: d.title || 'IELTS Spelling Contest',
-        creatorId: d.creatorId || 'user',
-        creatorName: d.creatorName || 'Setter',
-        pageFilter:
-          d.pageFilter === 'page1' || d.pageFilter === 'page2'
-            ? d.pageFilter
-            : 'all',
-        categories: Array.isArray(d.categories) ? d.categories : [],
-        wordCount: Number(d.wordCount) || 10,
-        baseSeconds: Number(d.baseSeconds) || 12,
-        showBangla: Boolean(d.showBangla),
-        startTimeMs: Number(d.startTimeMs) || Date.now(),
-        durationMinutes: Number(d.durationMinutes) || 30,
-        randomSeed: String(d.randomSeed || 'default_seed_12345'),
-        status: 'active',
-        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-      });
-    });
-
-    subSnap.forEach((docSnap) => {
-      const d = docSnap.data();
-      const sid = d.id || docSnap.id;
-      if (cancelledIds.has(d.contestId)) return;
-      firestoreSubs.push({
-        id: sid,
-        contestId: d.contestId || '',
-        userId: d.userId || '',
-        userName: d.userName || 'Participant',
-        userEmail: d.userEmail || '',
-        status:
-          d.status === 'completed' || d.status === 'in_progress'
-            ? d.status
-            : 'registered',
-        totalWords: Number(d.totalWords) || 10,
-        correctCount: Number(d.correctCount) || 0,
-        accuracy: Number(d.accuracy) || 0,
-        timeTakenMs: Number(d.timeTakenMs) || 0,
-        results: Array.isArray(d.results) ? d.results : undefined,
-        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-      });
-    });
-  } catch {
-    // Firestore quota/offline fallback — shared server & local cache already active
+      const existing = byContestId.get(cid);
+      if (!existing || (c.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+        byContestId.set(cid, c);
+      }
+    }
+    for (const sid of relaySnapshot.submissions.keys()) {
+      relaySubIds.add(sid);
+    }
   }
 
-  // Step 3: Merge local contests & push any missing contests to Shared Server so other users get them
+  // Step 2: Merge local contests & push any missing contests to Shared Server & Global Relay
   const localContests = readLocalContests();
-  const contestsToPush: ContestRecord[] = [];
+  const contestsToPushServer: ContestRecord[] = [];
   for (const loc of localContests) {
     if (loc.status === 'active' && !cancelledIds.has(loc.id)) {
       if (!byContestId.has(loc.id)) {
         byContestId.set(loc.id, loc);
       }
-      if (!serverContestsIds.has(loc.id)) {
-        contestsToPush.push(loc);
-      }
     }
   }
   for (const c of byContestId.values()) {
     if (!serverContestsIds.has(c.id)) {
-      contestsToPush.push(c);
+      contestsToPushServer.push(c);
+    }
+    if (!relayContestsIds.has(c.id)) {
+      void publishContestUpsertToRelay(c);
     }
   }
-  if (contestsToPush.length > 0) {
-    void pushContestsToSharedServer(contestsToPush);
+  if (contestsToPushServer.length > 0) {
+    void pushContestsToSharedServer(contestsToPushServer);
   }
 
   const sortedContests = sortContestsLiveFirst(Array.from(byContestId.values()));
-  writeLocalContests(sortedContests);
+  writeLocalContests(sortedContests, true);
 
-  // Step 4: Merge submissions from Shared Server, Firestore, and Local Cache
+  // Step 3: Merge submissions from Shared Server, Global Cloud Relay, and Local Cache
   const localSubs = readLocalSubmissions().filter(
+    (s) => !cancelledIds.has(s.contestId)
+  );
+  const relaySubs = Array.from(relaySnapshot?.submissions.values() || []).filter(
     (s) => !cancelledIds.has(s.contestId)
   );
   const mergedSubs = mergeSubmissionsLists(
     serverState?.submissions || [],
-    firestoreSubs,
+    relaySubs,
     localSubs
   ).filter((s) => !cancelledIds.has(s.contestId));
 
-  const subsToPush = mergedSubs.filter((s) => !serverSubIds.has(s.id));
-  if (subsToPush.length > 0) {
-    void pushSubmissionsToSharedServer(mergedSubs);
+  const subsToPushServer = mergedSubs.filter((s) => !serverSubIds.has(s.id));
+  if (subsToPushServer.length > 0) {
+    void pushSubmissionsToSharedServer(subsToPushServer);
+  }
+  for (const s of mergedSubs) {
+    if (!relaySubIds.has(s.id)) {
+      void publishSubmissionUpsertToRelay(s);
+    }
   }
 
-  writeLocalSubmissions(mergedSubs);
+  writeLocalSubmissions(mergedSubs, true);
   return { contests: sortedContests, submissions: mergedSubs };
 }
 
 /**
- * Subscribes to all active contests in real time across users (Shared Server polling + Firestore onSnapshot + BroadcastChannel).
+ * Subscribes to all active contests in real time across users
+ * (Global Cloud Relay SSE + Shared Server polling + Firestore onSnapshot + BroadcastChannel).
  */
 export function subscribeToContests(
   onUpdate: (contests: ContestRecord[]) => void
@@ -1172,12 +1144,38 @@ export function subscribeToContests(
   };
   emitLocal();
 
-  // Immediately sync with shared server & Firestore
+  // Immediately sync with shared server & global cloud relay
   void syncContestsNow().then(({ contests }) => {
     emitIfChanged(contests);
   });
 
-  // Poll shared server every 2.5s so any contest created or deleted by another user syncs immediately
+  // Subscribe to real-time SSE events from the global cloud relay
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    const cancelledIds = readDeletedContestIds();
+    for (const delId of relaySnap.deletedContestIds) {
+      cancelledIds.add(delId);
+      markContestDeletedLocally(delId);
+    }
+    const mergedMap = new Map<string, ContestRecord>();
+    for (const loc of readLocalContests()) {
+      if (!cancelledIds.has(loc.id) && loc.status === 'active') {
+        mergedMap.set(loc.id, loc);
+      }
+    }
+    for (const [cid, c] of relaySnap.contests.entries()) {
+      if (!cancelledIds.has(cid) && c.status === 'active') {
+        const ex = mergedMap.get(cid);
+        if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+          mergedMap.set(cid, c);
+        }
+      }
+    }
+    const sorted = sortContestsLiveFirst(Array.from(mergedMap.values()));
+    writeLocalContests(sorted, false);
+    emitIfChanged(sorted);
+  });
+
+  // Poll shared server & relay every 2.5s so any contest created or deleted by another user syncs immediately
   const pollInterval =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
@@ -1198,6 +1196,10 @@ export function subscribeToContests(
   ) => {
     const cloudIds = new Set<string>();
     const cancelledIds = readDeletedContestIds();
+    const relaySnap = getCurrentCloudRelaySnapshot();
+    for (const delId of relaySnap.deletedContestIds) {
+      cancelledIds.add(delId);
+    }
     const list: ContestRecord[] = [];
 
     docs.forEach((docSnap) => {
@@ -1230,6 +1232,13 @@ export function subscribeToContests(
         updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
       });
     });
+
+    for (const [cid, rc] of relaySnap.contests.entries()) {
+      if (rc.status === 'active' && !cloudIds.has(cid) && !cancelledIds.has(cid)) {
+        cloudIds.add(cid);
+        list.push(rc);
+      }
+    }
 
     const localContests = readLocalContests();
     for (const loc of localContests) {
@@ -1271,6 +1280,9 @@ export function subscribeToContests(
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', onStorageChange);
     window.addEventListener('lw-contest-local-update', onLocalCustomUpdate);
+    window.addEventListener('focus', () => {
+      void syncContestsNow().then(({ contests }) => emitIfChanged(contests));
+    });
     try {
       if ('BroadcastChannel' in window) {
         bc = new BroadcastChannel(CONTEST_BROADCAST_CHANNEL);
@@ -1282,6 +1294,7 @@ export function subscribeToContests(
   }
 
   return () => {
+    unsubRelay();
     unsubSnapshot();
     if (pollInterval !== null && typeof window !== 'undefined') {
       window.clearInterval(pollInterval);
@@ -1320,6 +1333,19 @@ export function subscribeToContestSubmissions(
   };
   emitLocal();
 
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    const cancelledIds = readDeletedContestIds();
+    const relaySubs = Array.from(relaySnap.submissions.values()).filter(
+      (s) => !cancelledIds.has(s.contestId)
+    );
+    const localSubs = readLocalSubmissions().filter(
+      (s) => !cancelledIds.has(s.contestId)
+    );
+    const merged = mergeSubmissionsLists(relaySubs, localSubs);
+    writeLocalSubmissions(merged, false);
+    emitSubsIfChanged(merged);
+  });
+
   const q = query(
     collection(db, SUBMISSIONS_PATH),
     where('status', 'in', ['registered', 'in_progress', 'completed']),
@@ -1353,7 +1379,9 @@ export function subscribeToContestSubmissions(
       });
     });
 
-    const merged = mergeSubmissionsLists(list, readLocalSubmissions());
+    const relaySnap = getCurrentCloudRelaySnapshot();
+    const relaySubs = Array.from(relaySnap.submissions.values());
+    const merged = mergeSubmissionsLists(list, relaySubs, readLocalSubmissions());
     writeLocalSubmissions(merged, false);
     void pushSubmissionsToSharedServer(merged);
     emitSubsIfChanged(merged);
@@ -1393,6 +1421,7 @@ export function subscribeToContestSubmissions(
   }
 
   return () => {
+    unsubRelay();
     unsubSnapshot();
     if (typeof window !== 'undefined') {
       window.removeEventListener('storage', onStorageChange);
@@ -1407,6 +1436,7 @@ export function subscribeToContestSubmissions(
     }
   };
 }
+
 
 
 

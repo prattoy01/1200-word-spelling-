@@ -51,7 +51,11 @@
   ],
   "rewrites": [
     {
-      "source": "/((?!ListenWrite-IELTS\\.apk|.*\\.apk|audio-|dict-fallback/|assets/|pwa-|apple-touch-icon|icon\\.svg|manifest\\.webmanifest|sw\\.js|workbox-).*)",
+      "source": "/api/sync/(.*)",
+      "destination": "/api/sync?route=$1"
+    },
+    {
+      "source": "/((?!api/|ListenWrite-IELTS\\.apk|.*\\.apk|audio-|dict-fallback/|assets/|pwa-|apple-touch-icon|icon\\.svg|manifest\\.webmanifest|sw\\.js|workbox-).*)",
       "destination": "/index.html"
     }
   ]

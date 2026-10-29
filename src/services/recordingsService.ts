@@ -39,6 +39,12 @@ import {
   getOriginalCatalogWord,
 } from '../data/words';
 import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
+import {
+  publishWordOverrideUpsertToRelay,
+  publishWordOverrideDeleteToRelay,
+  pollCloudRelaySnapshot,
+  subscribeToCloudRelay,
+} from '../utils/cloudRelay';
 
 export const PERSONAL_STRUGGLING_CATEGORY = 'My Struggling Words';
 
@@ -351,12 +357,18 @@ async function fetchSharedServerAudioState(includeAudio = true): Promise<{
 } | null> {
   if (typeof window === 'undefined') return null;
   try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3500);
     const res = await fetch(
-      `/api/sync/state?includeAudio=${includeAudio ? 'true' : 'false'}`,
-      { cache: 'no-store' }
+      `/api/sync/state?includeAudio=${includeAudio ? 'true' : 'false'}&_t=${Date.now()}`,
+      { cache: 'no-store', signal: controller.signal }
     );
+    window.clearTimeout(timer);
     if (!res.ok) return null;
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('application/json')) return null;
     const data = await res.json();
+    if (!data || data.ok !== true) return null;
     return {
       contributions: Array.isArray(data?.contributions) ? data.contributions : [],
       deletedContributionIds: Array.isArray(data?.deletedContributionIds)
@@ -788,11 +800,10 @@ export async function publishGeneralCloudRecording(params: {
 
   notifyRecordingsListeners();
 
-  // 3. Also write to Cloud Firestore
-  try {
-    const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
-    const existingSnap = await getDoc(docRef);
-    if (!existingSnap.exists()) {
+  // 3. Also write to Cloud Firestore in background (non-blocking if quota is exhausted)
+  void (async () => {
+    try {
+      const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
       await setDoc(docRef, {
         wordId: clean.wordId,
         word: clean.word,
@@ -808,24 +819,11 @@ export async function publishGeneralCloudRecording(params: {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else {
-      await updateDoc(docRef, {
-        word: clean.word,
-        banglaMeaning: clean.banglaMeaning,
-        audioDataUrl: clean.audioDataUrl,
-        mimeType: clean.mimeType,
-        fileName: clean.fileName,
-        fileSize: clean.fileSize,
-        durationMs: clean.durationMs,
-        ownerId: clean.ownerId,
-        ownerName: clean.ownerName,
-        updatedAt: serverTimestamp(),
-      });
+      notifyRecordingsListeners();
+    } catch {
+      // Shared server + local cache already updated
     }
-    notifyRecordingsListeners();
-  } catch (err) {
-    console.warn('General recording published via shared server (Firestore fallback):', err);
-  }
+  })();
 }
 
 /**
@@ -903,29 +901,22 @@ export async function submitAudioContribution(params: {
     forcePending: true,
   });
 
-  // 4. Also write to Cloud Firestore if quota is available
-  try {
-    await setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
-      wordId: clean.wordId,
-      word: clean.word,
-      banglaMeaning: clean.banglaMeaning,
-      audioDataUrl: clean.audioDataUrl,
-      mimeType: clean.mimeType,
-      fileName: clean.fileName,
-      fileSize: clean.fileSize,
-      durationMs: clean.durationMs,
-      contributorId: clean.ownerId,
-      contributorName: clean.ownerName,
-      status: 'pending',
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn(
-      'Audio contribution delivered via shared server & local queue (Firestore quota/offline fallback):',
-      err
-    );
-  }
+  // 4. Also write to Cloud Firestore in background if quota is available
+  void setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
+    wordId: clean.wordId,
+    word: clean.word,
+    banglaMeaning: clean.banglaMeaning,
+    audioDataUrl: clean.audioDataUrl,
+    mimeType: clean.mimeType,
+    fileName: clean.fileName,
+    fileSize: clean.fileSize,
+    durationMs: clean.durationMs,
+    contributorId: clean.ownerId,
+    contributorName: clean.ownerName,
+    status: 'pending',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 }
 
 /**
@@ -1361,18 +1352,13 @@ export async function approveAudioContribution(
     // ignore
   }
 
-  // 4. Mark contribution as 'approved' in Cloud Firestore
-  try {
-    const contribRef = doc(db, CONTRIBUTIONS_PATH, contribution.id);
-    await updateDoc(contribRef, {
-      status: 'approved',
-      word: finalWord,
-      banglaMeaning: finalBangla,
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Contribution approval synced via shared server (Firestore fallback):', err);
-  }
+  // 4. Mark contribution as 'approved' in Cloud Firestore in background
+  void updateDoc(doc(db, CONTRIBUTIONS_PATH, contribution.id), {
+    status: 'approved',
+    word: finalWord,
+    banglaMeaning: finalBangla,
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
   notifyRecordingsListeners();
 }
 
@@ -1409,15 +1395,10 @@ export async function rejectAudioContribution(
     // ignore
   }
 
-  try {
-    const contribRef = doc(db, CONTRIBUTIONS_PATH, contributionId);
-    await updateDoc(contribRef, {
-      status: 'rejected',
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Contribution rejection synced via shared server (Firestore fallback):', err);
-  }
+  void updateDoc(doc(db, CONTRIBUTIONS_PATH, contributionId), {
+    status: 'rejected',
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 }
 
 /**
@@ -1447,11 +1428,7 @@ export async function deleteAudioContribution(
     // ignore
   }
 
-  try {
-    await deleteDoc(doc(db, CONTRIBUTIONS_PATH, contributionId));
-  } catch {
-    // ignore
-  }
+  void deleteDoc(doc(db, CONTRIBUTIONS_PATH, contributionId)).catch(() => {});
 }
 
 /**
@@ -1540,28 +1517,20 @@ export async function deleteWordRecording(
   await removeRecordingFromLocalCache(wordId);
   notifyRecordingsListeners();
 
-  if (alsoDeleteFromGeneralCloud) {
-    try {
-      await fetch(`/api/sync/recordings/${encodeURIComponent(wordId)}`, {
-        method: 'DELETE',
-      });
-    } catch {
-      // ignore
-    }
+    if (alsoDeleteFromGeneralCloud) {
+      try {
+        await fetch(`/api/sync/recordings/${encodeURIComponent(wordId)}`, {
+          method: 'DELETE',
+        });
+      } catch {
+        // ignore
+      }
 
-    const docRef = doc(db, RECORDINGS_PATH, wordId);
-    try {
-      await deleteDoc(docRef);
-    } catch (error) {
-      handleFirestoreError(
-        error,
-        OperationType.DELETE,
-        `${RECORDINGS_PATH}/${wordId}`
-      );
+      const docRef = doc(db, RECORDINGS_PATH, wordId);
+      void deleteDoc(docRef).catch(() => {});
+      notifyRecordingsListeners();
     }
-    notifyRecordingsListeners();
   }
-}
 
 /**
  * Pushes any local unsynced recordings to Shared Server & Firestore Cloud without overwriting
@@ -2080,21 +2049,17 @@ export async function addOrUpdatePersonalWord(params: {
     // ignore offline
   }
 
-  // 4. Persist directly to Cloud Firestore scoped to this user's `ownerId`
+  // 4. Persist directly to Cloud Firestore scoped to this user's `ownerId` in background
   const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
-  try {
-    await setDoc(docRef, {
-      wordId: safeWordId,
-      word: cleanWord,
-      bangla: safeBangla,
-      example: safeExample,
-      ownerId,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
-  } catch (err) {
-    console.warn('Saved personal word via shared server & local cache (Firestore fallback):', err);
-  }
+  void setDoc(docRef, {
+    wordId: safeWordId,
+    word: cleanWord,
+    bangla: safeBangla,
+    example: safeExample,
+    ownerId,
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 
   return record;
 }
@@ -2126,11 +2091,7 @@ export async function removePersonalWord(wordId: string): Promise<void> {
     // ignore
   }
 
-  try {
-    await deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId));
-  } catch (err) {
-    console.warn('Removed personal word from local cache:', err);
-  }
+  void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId)).catch(() => {});
 }
 
 /**
@@ -2153,11 +2114,15 @@ export async function syncPersonalWordsNow(
 
   // Step 1: Pull from Shared Backend Server
   try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), 3000);
     const res = await fetch(
-      `/api/sync/personal-words/${encodeURIComponent(ownerId)}`,
-      { cache: 'no-store' }
+      `/api/sync/personal-words/${encodeURIComponent(ownerId)}?_t=${Date.now()}`,
+      { cache: 'no-store', signal: controller.signal }
     );
-    if (res.ok) {
+    window.clearTimeout(timer);
+    const ct = res.headers.get('content-type') || '';
+    if (res.ok && ct.includes('application/json')) {
       const data = await res.json();
       const serverWords: PersonalWordRecord[] = Array.isArray(data?.words)
         ? data.words
@@ -2173,40 +2138,9 @@ export async function syncPersonalWordsNow(
     // ignore offline
   }
 
-  // Step 2: Pull from Cloud Firestore if quota is available
   const cloudWordIds = new Set<string>();
-  try {
-    const q = query(
-      collection(db, PERSONAL_WORDS_PATH),
-      where('ownerId', '==', ownerId)
-    );
-    const snap = await getDocs(q);
 
-    snap.forEach((docSnap) => {
-      const d = docSnap.data();
-      if (!d.wordId || !d.word) return;
-      if (deletedSet.has(d.wordId)) {
-        void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docSnap.id)).catch(() => {});
-        return;
-      }
-      cloudWordIds.add(d.wordId);
-      const item: PersonalWordRecord = {
-        id: docSnap.id,
-        wordId: d.wordId,
-        word: d.word,
-        bangla: d.bangla || '',
-        example: d.example || '',
-        ownerId: d.ownerId || ownerId,
-        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-      };
-      mergedByWordId.set(item.wordId, item);
-    });
-  } catch {
-    // Firestore quota/offline fallback
-  }
-
-  // Step 3: Merge local words and push any missing words to Shared Server & Firestore
+  // Step 2: Merge local words and push any missing words to Shared Server & Firestore
   const toPushToServer: PersonalWordRecord[] = [];
   for (const loc of localList) {
     if (!deletedSet.has(loc.wordId)) {
@@ -2556,65 +2490,26 @@ export async function saveGlobalWordSpellingOverride(params: {
   currentLocal[safeWordId] = overrideRecord;
   writeLocalWordOverridesCache(currentLocal, true);
 
-  // 2. Push to Shared Backend Server so all connected users receive the new spelling immediately
-  try {
-    await fetch('/api/sync/word-overrides', {
+  // 2. Push to Shared Backend Server + Global Cloud Relay so all connected users receive the new spelling immediately
+  await Promise.all([
+    fetch('/api/sync/word-overrides', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ override: overrideRecord }),
-    });
-  } catch {
-    // ignore
-  }
+    }).catch(() => {}),
+    publishWordOverrideUpsertToRelay(overrideRecord).catch(() => {}),
+  ]);
 
-  // 3. Also write to Cloud Firestore (/wordOverrides/{wordId})
-  try {
-    const docRef = doc(db, WORD_OVERRIDES_PATH, safeWordId);
-    const snap = await getDoc(docRef);
-    if (!snap.exists()) {
-      await setDoc(docRef, {
-        wordId: safeWordId,
-        word: safeWord,
-        bangla: safeBangla,
-        updatedBy: safeUpdatedBy,
-        status: 'published',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await updateDoc(docRef, {
-        word: safeWord,
-        bangla: safeBangla,
-        updatedBy: safeUpdatedBy,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch (err) {
-    console.warn('Global word override synced via shared server (Firestore fallback):', err);
-  }
-
-  // 4. If a General Recording (/recordings/{wordId}) exists in Firestore, also sync its `word` and `banglaMeaning`
-  try {
-    const recRef = doc(db, RECORDINGS_PATH, safeWordId);
-    const recSnap = await getDoc(recRef);
-    if (recSnap.exists()) {
-      const rData = recSnap.data();
-      await updateDoc(recRef, {
-        word: safeWord,
-        banglaMeaning: safeBangla || rData.banglaMeaning || '',
-        audioDataUrl: rData.audioDataUrl,
-        mimeType: rData.mimeType,
-        fileName: rData.fileName,
-        fileSize: rData.fileSize,
-        durationMs: rData.durationMs,
-        ownerId: rData.ownerId,
-        ownerName: rData.ownerName,
-        updatedAt: serverTimestamp(),
-      });
-    }
-  } catch {
-    // ignore
-  }
+  // 3. Also write to Cloud Firestore (/wordOverrides/{wordId}) in background
+  void setDoc(doc(db, WORD_OVERRIDES_PATH, safeWordId), {
+    wordId: safeWordId,
+    word: safeWord,
+    bangla: safeBangla,
+    updatedBy: safeUpdatedBy,
+    status: 'published',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
 
   return overrideRecord;
 }
@@ -2640,50 +2535,20 @@ export async function resetGlobalWordSpellingOverride(
   delete currentLocal[safeWordId];
   writeLocalWordOverridesCache(currentLocal, true);
 
-  try {
-    const querySuffix = orig?.word
-      ? `?originalWord=${encodeURIComponent(orig.word)}`
-      : '';
-    await fetch(
+  const querySuffix = orig?.word
+    ? `?originalWord=${encodeURIComponent(orig.word)}`
+    : '';
+  await Promise.all([
+    fetch(
       `/api/sync/word-overrides/${encodeURIComponent(safeWordId)}${querySuffix}`,
       {
         method: 'DELETE',
       }
-    );
-  } catch {
-    // ignore
-  }
+    ).catch(() => {}),
+    publishWordOverrideDeleteToRelay(safeWordId).catch(() => {}),
+  ]);
 
-  try {
-    await deleteDoc(doc(db, WORD_OVERRIDES_PATH, safeWordId));
-  } catch {
-    // ignore
-  }
-
-  // Also restore original word on /recordings/{wordId} if present
-  if (orig) {
-    try {
-      const recRef = doc(db, RECORDINGS_PATH, safeWordId);
-      const recSnap = await getDoc(recRef);
-      if (recSnap.exists()) {
-        const rData = recSnap.data();
-        await updateDoc(recRef, {
-          word: orig.word,
-          banglaMeaning: rData.banglaMeaning || orig.bangla,
-          audioDataUrl: rData.audioDataUrl,
-          mimeType: rData.mimeType,
-          fileName: rData.fileName,
-          fileSize: rData.fileSize,
-          durationMs: rData.durationMs,
-          ownerId: rData.ownerId,
-          ownerName: rData.ownerName,
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch {
-      // ignore
-    }
-  }
+  void deleteDoc(doc(db, WORD_OVERRIDES_PATH, safeWordId)).catch(() => {});
 }
 
 /**
@@ -2695,6 +2560,7 @@ export function subscribeToGlobalWordOverrides(
 ): Unsubscribe {
   let latestFirestoreOverrides: Record<string, GlobalWordOverride> = {};
   let latestServerOverrides: Record<string, GlobalWordOverride> = {};
+  let latestRelayOverrides: Record<string, GlobalWordOverride> = {};
   let lastEmittedSig = '';
 
   const emitMerged = () => {
@@ -2706,6 +2572,14 @@ export function subscribeToGlobalWordOverrides(
       if (!deletedSet.has(wid)) merged[wid] = ov;
     }
     for (const [wid, ov] of Object.entries(latestServerOverrides)) {
+      if (ov && ov.wordId && ov.word && !deletedSet.has(wid)) {
+        const existing = merged[wid];
+        if (!existing || (ov.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          merged[wid] = ov;
+        }
+      }
+    }
+    for (const [wid, ov] of Object.entries(latestRelayOverrides)) {
       if (ov && ov.wordId && ov.word && !deletedSet.has(wid)) {
         const existing = merged[wid];
         if (!existing || (ov.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
@@ -2730,8 +2604,12 @@ export function subscribeToGlobalWordOverrides(
     }
   };
 
-  const pullFromServer = async () => {
-    const state = await fetchSharedServerAudioState(false);
+  const pullFromServerAndRelay = async () => {
+    const [state, relaySnap] = await Promise.all([
+      fetchSharedServerAudioState(false),
+      pollCloudRelaySnapshot(false),
+    ]);
+    let changed = false;
     if (state) {
       const deletedServerSet = new Set(state.deletedWordOverrideIds || []);
       for (const delId of deletedServerSet) {
@@ -2743,17 +2621,50 @@ export function subscribeToGlobalWordOverrides(
         }
       }
       latestServerOverrides = state.wordOverrides || {};
+      changed = true;
+    }
+    if (relaySnap) {
+      for (const delId of relaySnap.deletedWordOverrideIds) {
+        markWordOverrideDeletedLocally(delId);
+      }
+      const nextRelayMap: Record<string, GlobalWordOverride> = {};
+      for (const [wid, ov] of relaySnap.wordOverrides.entries()) {
+        if (!relaySnap.deletedWordOverrideIds.has(wid)) {
+          unmarkWordOverrideDeletedLocally(wid);
+          nextRelayMap[wid] = ov;
+        }
+      }
+      latestRelayOverrides = nextRelayMap;
+      changed = true;
+    }
+    if (changed) {
       emitMerged();
     }
   };
 
   emitMerged();
-  void pullFromServer();
+  void pullFromServerAndRelay();
+
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    for (const delId of relaySnap.deletedWordOverrideIds) {
+      markWordOverrideDeletedLocally(delId);
+      delete latestServerOverrides[delId];
+    }
+    const nextRelayMap: Record<string, GlobalWordOverride> = {};
+    for (const [wid, ov] of relaySnap.wordOverrides.entries()) {
+      if (!relaySnap.deletedWordOverrideIds.has(wid)) {
+        unmarkWordOverrideDeletedLocally(wid);
+        nextRelayMap[wid] = ov;
+      }
+    }
+    latestRelayOverrides = nextRelayMap;
+    emitMerged();
+  });
 
   const pollId =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
-          void pullFromServer();
+          void pullFromServerAndRelay();
         }, 5000)
       : null;
 
@@ -2797,11 +2708,12 @@ export function subscribeToGlobalWordOverrides(
       emitMerged();
     }
   };
+  const onFocus = () => void pullFromServerAndRelay();
 
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', onStorage);
     window.addEventListener('lw-word-overrides-local-update', onLocalEvent);
-    window.addEventListener('focus', () => void pullFromServer());
+    window.addEventListener('focus', onFocus);
     try {
       if ('BroadcastChannel' in window) {
         bc = new BroadcastChannel(WORD_OVERRIDES_BROADCAST_CHANNEL);
@@ -2814,12 +2726,14 @@ export function subscribeToGlobalWordOverrides(
 
   return () => {
     unsubSnapshot();
+    unsubRelay();
     if (pollId !== null && typeof window !== 'undefined') {
       window.clearInterval(pollId);
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('storage', onStorage);
       window.removeEventListener('lw-word-overrides-local-update', onLocalEvent);
+      window.removeEventListener('focus', onFocus);
     }
     if (bc) {
       try {
