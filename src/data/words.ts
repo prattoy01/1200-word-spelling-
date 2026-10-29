@@ -10060,3 +10060,88 @@ export const WORDS_CATALOG: WordItem[] = [
     "page": 2
   }
 ];
+
+export interface GlobalWordOverride {
+  wordId: string;
+  word: string;
+  bangla: string;
+  updatedBy: string;
+  updatedAtMs: number;
+}
+
+const ORIGINAL_CATALOG_BY_ID: Record<
+  string,
+  { word: string; bangla: string }
+> = {};
+for (const item of WORDS_CATALOG) {
+  ORIGINAL_CATALOG_BY_ID[item.id] = {
+    word: item.word,
+    bangla: item.bangla,
+  };
+}
+
+let activeGlobalOverridesById: Record<string, GlobalWordOverride> = {};
+
+export function getOriginalCatalogWord(
+  wordId: string
+): { word: string; bangla: string } | undefined {
+  return ORIGINAL_CATALOG_BY_ID[wordId];
+}
+
+export function getActiveGlobalWordOverrides(): Record<
+  string,
+  GlobalWordOverride
+> {
+  return activeGlobalOverridesById;
+}
+
+export function hasGlobalWordOverride(wordId: string): boolean {
+  return Boolean(activeGlobalOverridesById[wordId]);
+}
+
+/**
+ * Applies Admin-defined global word spelling & Bangla overrides in-place across WORDS_CATALOG
+ * so every screen (Practice, Categories, Strict Test, Live Contests, Audio Studio, Admin Panel)
+ * immediately uses the Admin's official spelling for all users.
+ */
+export function applyGlobalWordOverridesToCatalog(
+  overrides: Record<string, GlobalWordOverride>
+): string {
+  activeGlobalOverridesById = { ...overrides };
+  const sigParts: string[] = [];
+
+  for (const item of WORDS_CATALOG) {
+    const orig = ORIGINAL_CATALOG_BY_ID[item.id];
+    if (!orig) continue;
+    const ov = overrides[item.id];
+    if (ov && ov.word && ov.word.trim()) {
+      item.word = ov.word.trim();
+      item.bangla =
+        ov.bangla !== undefined && ov.bangla.trim() !== ''
+          ? ov.bangla.trim()
+          : orig.bangla;
+      sigParts.push(`${item.id}:${item.word}:${item.bangla}:${ov.updatedAtMs}`);
+    } else {
+      item.word = orig.word;
+      item.bangla = orig.bangla;
+    }
+  }
+
+  return sigParts.sort().join('|');
+}
+
+// Immediately hydrate any cached global overrides on boot so initial render is already up to date
+try {
+  if (typeof window !== 'undefined' && window.localStorage) {
+    const raw = window.localStorage.getItem('lw_global_word_overrides_v1');
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed === 'object') {
+        applyGlobalWordOverridesToCatalog(parsed);
+      }
+    }
+  }
+} catch {
+  // Ignore localStorage access errors
+}
+

@@ -331,9 +331,11 @@ export function getCandidateOriginalAudioUrls(
   bundledAudioFile?: string | null
 ): string[] {
   const urls: string[] = [];
+  const norm = word.toLowerCase().trim();
   const catalogEntry =
-    wordLookupMap.get(word.toLowerCase().trim()) ||
-    wordLookupMap.get(toWordId(word));
+    wordLookupMap.get(norm) ||
+    wordLookupMap.get(toWordId(word)) ||
+    WORDS_CATALOG.find((w) => w.word.toLowerCase().trim() === norm);
   const primaryBundled = bundledAudioFile || catalogEntry?.bundledAudioFile;
 
   if (primaryBundled) {
@@ -738,9 +740,17 @@ export async function playWordAudio(options: {
   }
 
   // 2. Check Embedded 14 Real MP3 Recordings (100% offline)
+  const normWord = word.toLowerCase().trim();
+  const catalogMatch =
+    wordLookupMap.get(normWord) ||
+    wordLookupMap.get(wordId) ||
+    WORDS_CATALOG.find((w) => w.word.toLowerCase().trim() === normWord);
+  const canonicalId = catalogMatch?.id || wordId;
+
   const embeddedDataUrl =
+    embeddedOriginalAudioMap.get(canonicalId) ||
     embeddedOriginalAudioMap.get(wordId) ||
-    embeddedOriginalAudioMap.get(word.toLowerCase().trim());
+    embeddedOriginalAudioMap.get(normWord);
   if (embeddedDataUrl) {
     const playedEmbedded = await playBlobOrDataUrlWithSharedAudio(
       embeddedDataUrl,
@@ -750,7 +760,9 @@ export async function playWordAudio(options: {
   }
 
   // 3. Check Local System IndexedDB `original_audio_v1` Store (100% offline)
-  const localOriginal = await getLocalOriginalAudioItem(wordId);
+  const localOriginal =
+    (await getLocalOriginalAudioItem(canonicalId)) ||
+    (canonicalId !== wordId ? await getLocalOriginalAudioItem(wordId) : null);
   if (localOriginal?.audioDataUrl) {
     const playedLocalIdb = await playBlobOrDataUrlWithSharedAudio(
       localOriginal.audioDataUrl,

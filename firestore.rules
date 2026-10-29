@@ -517,5 +517,61 @@ service cloud.firestore {
 
       allow delete: if false;
     }
+
+    // Validation Blueprint for WordOverride
+    function isValidWordOverride(data) {
+      return data.keys().hasAll([
+          'wordId',
+          'word',
+          'bangla',
+          'updatedBy',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'wordId',
+          'word',
+          'bangla',
+          'updatedBy',
+          'status',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.wordId is string && data.wordId.size() >= 1 && data.wordId.size() <= 128 && data.wordId.matches('^[a-zA-Z0-9_\\-]+$')
+        && data.word is string && data.word.size() >= 1 && data.word.size() <= 120
+        && data.bangla is string && data.bangla.size() >= 0 && data.bangla.size() <= 200
+        && data.updatedBy is string && data.updatedBy.size() >= 1 && data.updatedBy.size() <= 120
+        && data.status is string && data.status.size() <= 20 && data.status == 'published'
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    // Collection: /wordOverrides/{wordId}
+    match /wordOverrides/{wordId} {
+      allow get: if isValidId(wordId) && (
+        resource == null ||
+        existing().status == 'published'
+      );
+
+      allow list: if existing().status == 'published';
+
+      allow create: if isValidId(wordId)
+        && isValidWordOverride(incoming())
+        && incoming().wordId == wordId
+        && incoming().status == 'published'
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidId(wordId)
+        && isValidWordOverride(incoming())
+        && incoming().wordId == existing().wordId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['word', 'bangla', 'updatedBy', 'updatedAt']);
+
+      allow delete: if isValidId(wordId)
+        && existing().status == 'published';
+    }
   }
 }

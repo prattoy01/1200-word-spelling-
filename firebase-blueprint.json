@@ -541,6 +541,62 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "WordOverride": {
+      "title": "WordOverride",
+      "description": "An admin-defined global spelling and Bangla translation override for a catalog word that applies to all users.",
+      "type": "object",
+      "properties": {
+        "wordId": {
+          "type": "string",
+          "description": "Deterministic slug identifier for the catalog word.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "word": {
+          "type": "string",
+          "description": "Updated official English spelling for all users.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "bangla": {
+          "type": "string",
+          "description": "Updated Bangla meaning for all users.",
+          "minLength": 0,
+          "maxLength": 200
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Admin identifier or display name who updated the spelling.",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "status": {
+          "type": "string",
+          "description": "Publication status of the global word override.",
+          "enum": ["published"]
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the override was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the override was last updated."
+        }
+      },
+      "required": [
+        "wordId",
+        "word",
+        "bangla",
+        "updatedBy",
+        "status",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -585,6 +641,12 @@
         "$ref": "#/entities/ContestSubmission"
       },
       "description": "Stores participant registrations and strict exam results for contests."
+    },
+    "/wordOverrides/{wordId}": {
+      "schema": {
+        "$ref": "#/entities/WordOverride"
+      },
+      "description": "Stores admin-defined global spelling overrides that apply to all users."
     }
   }
 }

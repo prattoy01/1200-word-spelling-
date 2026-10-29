@@ -18,6 +18,8 @@ interface SharedCloudStore {
   deletedContributionIds: string[];
   recordings: Record<string, any>;
   deletedRecordingIds: string[];
+  wordOverrides: Record<string, any>;
+  deletedWordOverrideIds: string[];
   personalWords: Record<string, Record<string, any>>;
   updatedAtMs: number;
 }
@@ -31,6 +33,8 @@ function createEmptyStore(): SharedCloudStore {
     deletedContributionIds: [],
     recordings: {},
     deletedRecordingIds: [],
+    wordOverrides: {},
+    deletedWordOverrideIds: [],
     personalWords: {},
     updatedAtMs: Date.now(),
   };
@@ -64,6 +68,13 @@ function loadStore(): SharedCloudStore {
         parsed?.recordings && typeof parsed.recordings === 'object' ? parsed.recordings : {},
       deletedRecordingIds: Array.isArray(parsed?.deletedRecordingIds)
         ? parsed.deletedRecordingIds
+        : [],
+      wordOverrides:
+        parsed?.wordOverrides && typeof parsed.wordOverrides === 'object'
+          ? parsed.wordOverrides
+          : {},
+      deletedWordOverrideIds: Array.isArray(parsed?.deletedWordOverrideIds)
+        ? parsed.deletedWordOverrideIds
         : [],
       personalWords:
         parsed?.personalWords && typeof parsed.personalWords === 'object'
@@ -127,6 +138,14 @@ async function startServer() {
       }
     }
 
+    const deletedWordOverrideSet = new Set(store.deletedWordOverrideIds);
+    const wordOverridesMap: Record<string, any> = {};
+    for (const [wordId, ov] of Object.entries(store.wordOverrides)) {
+      if (ov && !deletedWordOverrideSet.has(wordId)) {
+        wordOverridesMap[wordId] = ov;
+      }
+    }
+
     res.json({
       ok: true,
       updatedAtMs: store.updatedAtMs,
@@ -137,6 +156,8 @@ async function startServer() {
       deletedContributionIds: store.deletedContributionIds,
       recordings: recordingsMap,
       deletedRecordingIds: store.deletedRecordingIds,
+      wordOverrides: wordOverridesMap,
+      deletedWordOverrideIds: store.deletedWordOverrideIds,
     });
   });
 
@@ -386,6 +407,59 @@ async function startServer() {
       delete store.recordings[wordId];
       if (!store.deletedRecordingIds.includes(wordId)) {
         store.deletedRecordingIds.push(wordId);
+      }
+      scheduleSaveStore();
+    }
+    res.json({ ok: true, deletedWordId: wordId });
+  });
+
+  // Upsert Admin Global Word Spelling Override(s) across all users
+  app.post('/api/sync/word-overrides', (req, res) => {
+    const items = Array.isArray(req.body?.overrides)
+      ? req.body.overrides
+      : req.body?.override
+      ? [req.body.override]
+      : req.body?.wordId
+      ? [req.body]
+      : [];
+
+    let count = 0;
+    for (const raw of items) {
+      if (!raw || typeof raw.wordId !== 'string' || typeof raw.word !== 'string') continue;
+      const cleanWord = raw.word.trim().slice(0, 120);
+      if (!cleanWord) continue;
+      store.deletedWordOverrideIds = store.deletedWordOverrideIds.filter(
+        (x) => x !== raw.wordId
+      );
+      const nowMs = Number(raw.updatedAtMs) || Date.now();
+      store.wordOverrides[raw.wordId] = {
+        wordId: raw.wordId,
+        word: cleanWord,
+        bangla: (raw.bangla ?? '').trim().slice(0, 200),
+        updatedBy: (raw.updatedBy || 'Admin').trim().slice(0, 120),
+        updatedAtMs: nowMs,
+      };
+      if (store.recordings[raw.wordId]) {
+        store.recordings[raw.wordId].word = cleanWord;
+        if (raw.bangla !== undefined && raw.bangla.trim() !== '') {
+          store.recordings[raw.wordId].banglaMeaning = raw.bangla.trim().slice(0, 200);
+        }
+        store.recordings[raw.wordId].updatedAtMs = nowMs;
+      }
+      count++;
+    }
+
+    if (count > 0) scheduleSaveStore();
+    res.json({ ok: true, count });
+  });
+
+  // Delete (reset) an Admin Global Word Spelling Override back to original catalog spelling
+  app.delete('/api/sync/word-overrides/:wordId', (req, res) => {
+    const wordId = req.params.wordId;
+    if (wordId) {
+      delete store.wordOverrides[wordId];
+      if (!store.deletedWordOverrideIds.includes(wordId)) {
+        store.deletedWordOverrideIds.push(wordId);
       }
       scheduleSaveStore();
     }

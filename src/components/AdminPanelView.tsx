@@ -13,8 +13,16 @@ import {
   Lock,
   Search,
   Trophy,
+  Edit3,
+  RotateCcw,
+  Save,
 } from 'lucide-react';
-import { WORDS_CATALOG } from '../data/words';
+import {
+  WORDS_CATALOG,
+  type GlobalWordOverride,
+  getOriginalCatalogWord,
+  getActiveGlobalWordOverrides,
+} from '../data/words';
 import {
   type AudioContributionRecord,
   type CloudRecording,
@@ -22,6 +30,8 @@ import {
   rejectAudioContribution,
   deleteAudioContribution,
   deleteWordRecording,
+  saveGlobalWordSpellingOverride,
+  resetGlobalWordSpellingOverride,
 } from '../services/recordingsService';
 import {
   type ContestRecord,
@@ -35,6 +45,7 @@ interface AdminPanelViewProps {
   contributions: AudioContributionRecord[];
   generalRecordingsMap: Record<string, CloudRecording>;
   personalRecordingsMap: Record<string, CloudRecording>;
+  wordOverridesMap?: Record<string, GlobalWordOverride>;
   contests?: ContestRecord[];
   onRemoveContest?: (contestId: string) => void;
   userEmail?: string | null;
@@ -47,6 +58,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   contributions,
   generalRecordingsMap,
   personalRecordingsMap,
+  wordOverridesMap,
   contests = [],
   onRemoveContest,
   onBackToPractice,
@@ -54,12 +66,22 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   isRestoring14,
 }) => {
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'pending' | 'reviewed' | 'general' | 'contests'
+    'pending' | 'spelling' | 'reviewed' | 'general' | 'contests'
   >('pending');
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [editedBanglaMap, setEditedBanglaMap] = useState<Record<string, string>>(
     {}
   );
+  const [editedWordMap, setEditedWordMap] = useState<Record<string, string>>(
+    {}
+  );
+  const [searchSpellingQuery, setSearchSpellingQuery] = useState<string>('');
+  const [spellingFilterMode, setSpellingFilterMode] = useState<
+    'all' | 'modified'
+  >('all');
+  const [catalogWordDrafts, setCatalogWordDrafts] = useState<
+    Record<string, { word: string; bangla: string }>
+  >({});
   const [searchGeneral, setSearchGeneral] = useState<string>('');
   const [feedbackBanner, setFeedbackBanner] = useState<{
     type: 'success' | 'error';
@@ -97,6 +119,25 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         r.ownerName.toLowerCase().includes(q)
     );
   }, [generalRecordingsMap, searchGeneral]);
+
+  const activeOverrides = wordOverridesMap || getActiveGlobalWordOverrides();
+  const modifiedSpellingsCount = Object.keys(activeOverrides).length;
+
+  const filteredCatalogForSpelling = useMemo(() => {
+    const q = searchSpellingQuery.trim().toLowerCase();
+    return WORDS_CATALOG.filter((item) => {
+      const isModified = Boolean(activeOverrides[item.id]);
+      if (spellingFilterMode === 'modified' && !isModified) return false;
+      if (!q) return true;
+      const orig = getOriginalCatalogWord(item.id);
+      return (
+        item.word.toLowerCase().includes(q) ||
+        (orig?.word || '').toLowerCase().includes(q) ||
+        item.bangla.toLowerCase().includes(q) ||
+        item.category.toLowerCase().includes(q)
+      );
+    });
+  }, [searchSpellingQuery, spellingFilterMode, activeOverrides]);
 
   if (!isRecognizedOwner) {
     return (
@@ -161,10 +202,14 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         editedBanglaMap[item.id] !== undefined
           ? editedBanglaMap[item.id]
           : item.banglaMeaning;
-      await approveAudioContribution(item, customBangla);
+      const customWord =
+        editedWordMap[item.id] !== undefined
+          ? editedWordMap[item.id]
+          : item.word;
+      await approveAudioContribution(item, customBangla, customWord);
       setFeedbackBanner({
         type: 'success',
-        text: `Accepted "${item.word}" from ${item.contributorName}! General App Audio is now updated for all users who haven't set their own personal audio for "${item.word}".`,
+        text: `Accepted "${customWord}" from ${item.contributorName}! General App Audio & Official Spelling are now updated for all users.`,
       });
     } catch (err) {
       setFeedbackBanner({
@@ -173,6 +218,73 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           err instanceof Error
             ? err.message
             : 'Could not approve contribution.',
+      });
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleSaveCatalogWordSpelling = async (wordId: string) => {
+    const item = WORDS_CATALOG.find((w) => w.id === wordId);
+    if (!item) return;
+    const draft = catalogWordDrafts[wordId];
+    const nextWord = (draft?.word ?? item.word).trim();
+    const nextBangla = (draft?.bangla ?? item.bangla).trim();
+    if (!nextWord) {
+      setFeedbackBanner({
+        type: 'error',
+        text: 'Official word spelling cannot be empty.',
+      });
+      return;
+    }
+
+    setProcessingId(`spell_${wordId}`);
+    setFeedbackBanner(null);
+    try {
+      await saveGlobalWordSpellingOverride({
+        wordId,
+        word: nextWord,
+        bangla: nextBangla,
+      });
+      setFeedbackBanner({
+        type: 'success',
+        text: `Updated official spelling to "${nextWord}"! This new spelling now applies to all users across Practice, Exams, and Contests.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Could not update word spelling.',
+      });
+    } finally {
+      setProcessingId(null);
+    }
+  };
+
+  const handleResetCatalogWordSpelling = async (wordId: string) => {
+    const orig = getOriginalCatalogWord(wordId);
+    setProcessingId(`spell_${wordId}`);
+    setFeedbackBanner(null);
+    try {
+      await resetGlobalWordSpellingOverride(wordId);
+      setCatalogWordDrafts((prev) => {
+        const next = { ...prev };
+        delete next[wordId];
+        return next;
+      });
+      setFeedbackBanner({
+        type: 'success',
+        text: `Reset spelling back to original "${orig?.word || wordId}" for all users.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Could not reset word spelling.',
       });
     } finally {
       setProcessingId(null);
@@ -432,7 +544,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       )}
 
       {/* Admin Sub-Navigation Tabs */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 p-1.5 rounded-2xl bg-[#0b1812] border border-[#1d382b]">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-1.5 p-1.5 rounded-2xl bg-[#0b1812] border border-[#1d382b]">
         <button
           type="button"
           onClick={() => setActiveAdminTab('pending')}
@@ -444,6 +556,22 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         >
           <Clock className="w-4 h-4 shrink-0" />
           <span>Pending ({pendingList.length})</span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveAdminTab('spelling')}
+          className={`min-h-[44px] px-3 py-2 rounded-xl text-xs sm:text-sm font-bold transition-colors flex items-center justify-center gap-1.5 ${
+            activeAdminTab === 'spelling'
+              ? 'bg-[#10b981] text-[#04120c]'
+              : 'text-[#8ba89a] hover:text-white'
+          }`}
+        >
+          <Edit3 className="w-4 h-4 shrink-0" />
+          <span>
+            Change Spelling
+            {modifiedSpellingsCount > 0 ? ` (${modifiedSpellingsCount})` : ''}
+          </span>
         </button>
 
         <button
@@ -486,6 +614,199 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
         </button>
       </div>
 
+      {/* TAB: GLOBAL SPELLING EDITOR (APPLIES TO ALL USERS) */}
+      {activeAdminTab === 'spelling' && (
+        <section className="rounded-3xl bg-[#0d1d16] border border-[#1f3b2e] p-4 sm:p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-[#10b981]" />
+                <span>
+                  Official Word Spelling Manager (Applies to All Users)
+                </span>
+              </h2>
+              <p className="text-xs text-[#8ba89a] mt-0.5">
+                Change any word&apos;s English spelling or Bangla meaning below. Changes sync immediately to all users across Practice, Strict Test, and Live Contests (tip: use <code className="text-[#10b981] font-mono">word1 / word2</code> to accept both spellings).
+              </p>
+            </div>
+
+            <div className="inline-flex rounded-xl bg-[#08130e] border border-[#1a3327] p-1 gap-1 shrink-0">
+              <button
+                type="button"
+                onClick={() => setSpellingFilterMode('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                  spellingFilterMode === 'all'
+                    ? 'bg-[#10b981] text-[#04120c]'
+                    : 'text-[#8ba89a] hover:text-white'
+                }`}
+              >
+                All Words ({WORDS_CATALOG.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSpellingFilterMode('modified')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+                  spellingFilterMode === 'modified'
+                    ? 'bg-[#fbbf24] text-[#08120e]'
+                    : 'text-[#8ba89a] hover:text-white'
+                }`}
+              >
+                Modified ({modifiedSpellingsCount})
+              </button>
+            </div>
+          </div>
+
+          <div className="relative">
+            <Search className="w-4 h-4 text-[#668576] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchSpellingQuery}
+              onChange={(e) => setSearchSpellingQuery(e.target.value)}
+              placeholder="Search any word by English spelling, Bangla meaning, or category..."
+              className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-2xl bg-[#08130e] border border-[#1d362a] focus:border-[#10b981] focus:outline-none text-sm text-white placeholder-[#668576]"
+            />
+          </div>
+
+          {filteredCatalogForSpelling.length === 0 ? (
+            <div className="rounded-2xl bg-[#08130e] border border-[#193327] py-10 px-4 text-center text-xs text-[#8ba89a]">
+              {spellingFilterMode === 'modified'
+                ? 'No modified word spellings yet. Search any word in "All Words" to change its official spelling.'
+                : 'No words match your search query.'}
+            </div>
+          ) : (
+            <div className="space-y-2.5 max-h-[520px] overflow-y-auto pr-1">
+              {filteredCatalogForSpelling.slice(0, 80).map((item) => {
+                const orig = getOriginalCatalogWord(item.id);
+                const override = activeOverrides[item.id];
+                const draft = catalogWordDrafts[item.id];
+                const currentWordVal = draft ? draft.word : item.word;
+                const currentBanglaVal = draft ? draft.bangla : item.bangla;
+                const isSaving = processingId === `spell_${item.id}`;
+                const genRec = generalRecordingsMap[item.id];
+
+                return (
+                  <div
+                    key={item.id}
+                    className={`rounded-2xl p-3.5 sm:p-4 border space-y-3 ${
+                      override
+                        ? 'bg-[#0b1f17] border-[#10b981]/60'
+                        : 'bg-[#08130e] border-[#1a3327]'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-mono font-bold text-sm text-white">
+                          {item.word}
+                        </span>
+                        <span className="text-xs text-[#7ea090]">
+                          Page {item.page} · {item.category}
+                        </span>
+                        {override && orig && (
+                          <span className="px-2 py-0.5 rounded bg-[#fbbf24]/20 text-[#fbbf24] text-[10px] font-bold">
+                            Modified (Default: &ldquo;{orig.word}&rdquo;)
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            void playWordAudio({
+                              word: item.word,
+                              audioDataUrl: genRec?.audioDataUrl,
+                              bundledAudioFile: item.bundledAudioFile,
+                            })
+                          }
+                          className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1"
+                        >
+                          <Volume2 className="w-3.5 h-3.5" />
+                          <span>Listen</span>
+                        </button>
+
+                        {override && (
+                          <button
+                            type="button"
+                            disabled={isSaving}
+                            onClick={() =>
+                              void handleResetCatalogWordSpelling(item.id)
+                            }
+                            className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#2a1215] hover:bg-[#3b181c] border border-[#f87171]/40 text-xs font-semibold text-[#fca5a5] flex items-center gap-1 disabled:opacity-50"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            <span>Reset to Default</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-center">
+                      <div className="sm:col-span-5">
+                        <label className="block text-[10px] font-semibold text-[#8ba89a] mb-1">
+                          Official English Spelling (All Users):
+                        </label>
+                        <input
+                          type="text"
+                          value={currentWordVal}
+                          onChange={(e) =>
+                            setCatalogWordDrafts((prev) => ({
+                              ...prev,
+                              [item.id]: {
+                                word: e.target.value,
+                                bangla: currentBanglaVal,
+                              },
+                            }))
+                          }
+                          placeholder="Enter official spelling..."
+                          className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#0d1d16] border border-[#234837] focus:border-[#10b981] focus:outline-none text-xs sm:text-sm font-mono font-bold text-white"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-4">
+                        <label className="block text-[10px] font-semibold text-[#8ba89a] mb-1">
+                          Bangla Meaning (All Users):
+                        </label>
+                        <input
+                          type="text"
+                          value={currentBanglaVal}
+                          onChange={(e) =>
+                            setCatalogWordDrafts((prev) => ({
+                              ...prev,
+                              [item.id]: {
+                                word: currentWordVal,
+                                bangla: e.target.value,
+                              },
+                            }))
+                          }
+                          placeholder="বাংলা অর্থ..."
+                          className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#0d1d16] border border-[#234837] focus:border-[#10b981] focus:outline-none text-xs sm:text-sm text-white"
+                        />
+                      </div>
+
+                      <div className="sm:col-span-3 sm:pt-4">
+                        <button
+                          type="button"
+                          disabled={isSaving}
+                          onClick={() =>
+                            void handleSaveCatalogWordSpelling(item.id)
+                          }
+                          className="w-full min-h-[38px] px-3 py-1.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>
+                            {isSaving ? 'Saving...' : 'Save for All'}
+                          </span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </section>
+      )}
+
       {/* TAB 1: PENDING CONTRIBUTIONS QUEUE */}
       {activeAdminTab === 'pending' && (
         <section className="rounded-3xl bg-[#0d1d16] border border-[#1f3b2e] p-4 sm:p-6 space-y-4">
@@ -518,6 +839,10 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   editedBanglaMap[item.id] !== undefined
                     ? editedBanglaMap[item.id]
                     : item.banglaMeaning || catalogWord?.bangla || '';
+                const wordVal =
+                  editedWordMap[item.id] !== undefined
+                    ? editedWordMap[item.id]
+                    : catalogWord?.word || item.word;
 
                 return (
                   <div
@@ -528,7 +853,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       <div>
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-lg font-extrabold text-white">
-                            {item.word}
+                            {wordVal}
                           </span>
                           <span className="px-2.5 py-0.5 rounded-lg bg-[#fbbf24]/15 text-[#fbbf24] text-[11px] font-bold">
                             Pending Review
@@ -556,23 +881,43 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                       )}
                     </div>
 
-                    {/* Editable Bangla Meaning before Approving */}
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2">
-                      <label className="text-xs font-semibold text-[#8ba89a] shrink-0">
-                        Bangla Meaning:
-                      </label>
-                      <input
-                        type="text"
-                        value={banglaVal}
-                        onChange={(e) =>
-                          setEditedBanglaMap((prev) => ({
-                            ...prev,
-                            [item.id]: e.target.value,
-                          }))
-                        }
-                        placeholder="বাংলা অর্থ..."
-                        className="flex-1 min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#0d1d16] border border-[#1f3d2f] focus:border-[#10b981] focus:outline-none text-sm text-white"
-                      />
+                    {/* Editable Official Spelling & Bangla Meaning before Approving */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-[#8ba89a]">
+                          Official English Spelling (All Users):
+                        </label>
+                        <input
+                          type="text"
+                          value={wordVal}
+                          onChange={(e) =>
+                            setEditedWordMap((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="English spelling..."
+                          className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#0d1d16] border border-[#1f3d2f] focus:border-[#10b981] focus:outline-none text-sm font-mono font-bold text-white"
+                        />
+                      </div>
+
+                      <div className="flex flex-col gap-1">
+                        <label className="text-xs font-semibold text-[#8ba89a]">
+                          Bangla Meaning (All Users):
+                        </label>
+                        <input
+                          type="text"
+                          value={banglaVal}
+                          onChange={(e) =>
+                            setEditedBanglaMap((prev) => ({
+                              ...prev,
+                              [item.id]: e.target.value,
+                            }))
+                          }
+                          placeholder="বাংলা অর্থ..."
+                          className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#0d1d16] border border-[#1f3d2f] focus:border-[#10b981] focus:outline-none text-sm text-white"
+                        />
+                      </div>
                     </div>
 
                     {/* Audio Comparison & Approve / Reject Buttons */}

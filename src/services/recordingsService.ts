@@ -30,7 +30,14 @@ import {
   getAllLocalCachedRecordings,
   isSyntheticRestoredPlaceholder,
 } from '../utils/audioUtils';
-import { toWordId, WORDS_CATALOG, type WordItem } from '../data/words';
+import {
+  toWordId,
+  WORDS_CATALOG,
+  type WordItem,
+  type GlobalWordOverride,
+  applyGlobalWordOverridesToCatalog,
+  getOriginalCatalogWord,
+} from '../data/words';
 import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
 
 export const PERSONAL_STRUGGLING_CATEGORY = 'My Struggling Words';
@@ -281,6 +288,8 @@ async function fetchSharedServerAudioState(includeAudio = true): Promise<{
   deletedContributionIds: string[];
   recordings: Record<string, CloudRecording>;
   deletedRecordingIds: string[];
+  wordOverrides: Record<string, GlobalWordOverride>;
+  deletedWordOverrideIds: string[];
 } | null> {
   if (typeof window === 'undefined') return null;
   try {
@@ -301,6 +310,13 @@ async function fetchSharedServerAudioState(includeAudio = true): Promise<{
           : {},
       deletedRecordingIds: Array.isArray(data?.deletedRecordingIds)
         ? data.deletedRecordingIds
+        : [],
+      wordOverrides:
+        data?.wordOverrides && typeof data.wordOverrides === 'object'
+          ? data.wordOverrides
+          : {},
+      deletedWordOverrideIds: Array.isArray(data?.deletedWordOverrideIds)
+        ? data.deletedWordOverrideIds
         : [],
     };
   } catch {
@@ -1149,7 +1165,8 @@ export function subscribeToAudioContributions(
  */
 export async function approveAudioContribution(
   contribution: AudioContributionRecord,
-  customBanglaMeaning?: string
+  customBanglaMeaning?: string,
+  customWordSpelling?: string
 ): Promise<void> {
   if (!isAdminUser(auth.currentUser)) {
     throw new Error(
@@ -1160,11 +1177,15 @@ export async function approveAudioContribution(
     customBanglaMeaning !== undefined
       ? customBanglaMeaning.trim().slice(0, 200)
       : contribution.banglaMeaning;
+  const finalWord =
+    customWordSpelling !== undefined && customWordSpelling.trim()
+      ? customWordSpelling.trim().slice(0, 120)
+      : contribution.word;
 
   // 1. Update General Cloud Audio in /recordings/{wordId} + Shared Server
   await publishGeneralCloudRecording({
     wordId: contribution.wordId,
-    word: contribution.word,
+    word: finalWord,
     banglaMeaning: finalBangla,
     audio: {
       audioDataUrl: contribution.audioDataUrl,
@@ -1177,11 +1198,30 @@ export async function approveAudioContribution(
     ownerName: `${contribution.contributorName} (Approved)`,
   });
 
+  // If the Admin also changed the word spelling or Bangla meaning from the original catalog, save it as a global word override for all users
+  const orig = getOriginalCatalogWord(contribution.wordId);
+  if (
+    orig &&
+    (finalWord !== orig.word || (finalBangla && finalBangla !== orig.bangla))
+  ) {
+    await saveGlobalWordSpellingOverride({
+      wordId: contribution.wordId,
+      word: finalWord,
+      bangla: finalBangla || orig.bangla,
+    });
+  }
+
   // 2. Update local contributions cache
   const nowMs = Date.now();
   const updatedList = readLocalContributionsCache().map((c) =>
     c.id === contribution.id
-      ? { ...c, status: 'approved' as const, banglaMeaning: finalBangla, updatedAtMs: nowMs }
+      ? {
+          ...c,
+          word: finalWord,
+          status: 'approved' as const,
+          banglaMeaning: finalBangla,
+          updatedAtMs: nowMs,
+        }
       : c
   );
   writeLocalContributionsCache(updatedList, true);
@@ -1193,7 +1233,10 @@ export async function approveAudioContribution(
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: 'approved', banglaMeaning: finalBangla }),
+        body: JSON.stringify({
+          status: 'approved',
+          banglaMeaning: finalBangla,
+        }),
       }
     );
   } catch {
@@ -2236,5 +2279,419 @@ export function subscribeToPersonalWords(
     }
   };
 }
+
+// ============================================================================
+// ADMIN GLOBAL WORD SPELLING OVERRIDES (APPLIES TO ALL USERS IN REAL TIME)
+// ============================================================================
+
+const WORD_OVERRIDES_PATH = 'wordOverrides';
+const LOCAL_WORD_OVERRIDES_KEY = 'lw_global_word_overrides_v1';
+const LOCAL_DELETED_WORD_OVERRIDES_KEY = 'lw_deleted_word_override_ids_v1';
+const WORD_OVERRIDES_BROADCAST_CHANNEL = 'lw_global_word_overrides_sync_v1';
+
+function readDeletedWordOverrideIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.localStorage.getItem(LOCAL_DELETED_WORD_OVERRIDES_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function markWordOverrideDeletedLocally(wordId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const set = readDeletedWordOverrideIds();
+    set.add(wordId);
+    window.localStorage.setItem(
+      LOCAL_DELETED_WORD_OVERRIDES_KEY,
+      JSON.stringify(Array.from(set).slice(-300))
+    );
+  } catch {
+    // ignore
+  }
+}
+
+function unmarkWordOverrideDeletedLocally(wordId: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const set = readDeletedWordOverrideIds();
+    if (set.has(wordId)) {
+      set.delete(wordId);
+      window.localStorage.setItem(
+        LOCAL_DELETED_WORD_OVERRIDES_KEY,
+        JSON.stringify(Array.from(set))
+      );
+    }
+  } catch {
+    // ignore
+  }
+}
+
+export function readLocalWordOverridesCache(): Record<string, GlobalWordOverride> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LOCAL_WORD_OVERRIDES_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return {};
+    const deletedSet = readDeletedWordOverrideIds();
+    const clean: Record<string, GlobalWordOverride> = {};
+    for (const [wid, val] of Object.entries(parsed)) {
+      const ov = val as GlobalWordOverride;
+      if (ov && ov.wordId && ov.word && !deletedSet.has(wid)) {
+        clean[wid] = ov;
+      }
+    }
+    return clean;
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalWordOverridesCache(
+  map: Record<string, GlobalWordOverride>,
+  notify = true
+): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LOCAL_WORD_OVERRIDES_KEY, JSON.stringify(map));
+  } catch {
+    // ignore
+  }
+  applyGlobalWordOverridesToCatalog(map);
+  if (notify) {
+    try {
+      if ('BroadcastChannel' in window) {
+        const bc = new BroadcastChannel(WORD_OVERRIDES_BROADCAST_CHANNEL);
+        bc.postMessage({ type: 'WORD_OVERRIDES_UPDATED', ts: Date.now() });
+        bc.close();
+      }
+      window.dispatchEvent(new CustomEvent('lw-word-overrides-local-update'));
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Admin Action: Changes the official English spelling (and optionally Bangla meaning)
+ * for a catalog word and applies it to all users across Practice, Categories, Strict Test,
+ * Live Contests, and Audio Studio.
+ */
+export async function saveGlobalWordSpellingOverride(params: {
+  wordId: string;
+  word: string;
+  bangla?: string;
+}): Promise<GlobalWordOverride> {
+  const user = auth.currentUser;
+  if (!isAdminUser(user)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can change word spellings for all users.`
+    );
+  }
+
+  const safeWordId = params.wordId
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 128);
+  const safeWord = params.word.trim().slice(0, 120);
+  if (!safeWord) {
+    throw new Error('Spelling cannot be empty.');
+  }
+  const orig = getOriginalCatalogWord(safeWordId);
+  const safeBangla =
+    params.bangla !== undefined
+      ? params.bangla.trim().slice(0, 200)
+      : orig?.bangla || '';
+  const safeUpdatedBy = (
+    user?.displayName ||
+    user?.email ||
+    ADMIN_EMAIL
+  )
+    .trim()
+    .slice(0, 120);
+  const nowMs = Date.now();
+
+  unmarkWordOverrideDeletedLocally(safeWordId);
+
+  const overrideRecord: GlobalWordOverride = {
+    wordId: safeWordId,
+    word: safeWord,
+    bangla: safeBangla,
+    updatedBy: safeUpdatedBy,
+    updatedAtMs: nowMs,
+  };
+
+  // 1. Update local cache & mutate WORDS_CATALOG in-place immediately
+  const currentLocal = readLocalWordOverridesCache();
+  currentLocal[safeWordId] = overrideRecord;
+  writeLocalWordOverridesCache(currentLocal, true);
+
+  // 2. Push to Shared Backend Server so all connected users receive the new spelling immediately
+  try {
+    await fetch('/api/sync/word-overrides', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ override: overrideRecord }),
+    });
+  } catch {
+    // ignore
+  }
+
+  // 3. Also write to Cloud Firestore (/wordOverrides/{wordId})
+  try {
+    const docRef = doc(db, WORD_OVERRIDES_PATH, safeWordId);
+    const snap = await getDoc(docRef);
+    if (!snap.exists()) {
+      await setDoc(docRef, {
+        wordId: safeWordId,
+        word: safeWord,
+        bangla: safeBangla,
+        updatedBy: safeUpdatedBy,
+        status: 'published',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      await updateDoc(docRef, {
+        word: safeWord,
+        bangla: safeBangla,
+        updatedBy: safeUpdatedBy,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch (err) {
+    console.warn('Global word override synced via shared server (Firestore fallback):', err);
+  }
+
+  // 4. If a General Recording (/recordings/{wordId}) exists in Firestore, also sync its `word` and `banglaMeaning`
+  try {
+    const recRef = doc(db, RECORDINGS_PATH, safeWordId);
+    const recSnap = await getDoc(recRef);
+    if (recSnap.exists()) {
+      const rData = recSnap.data();
+      await updateDoc(recRef, {
+        word: safeWord,
+        banglaMeaning: safeBangla || rData.banglaMeaning || '',
+        audioDataUrl: rData.audioDataUrl,
+        mimeType: rData.mimeType,
+        fileName: rData.fileName,
+        fileSize: rData.fileSize,
+        durationMs: rData.durationMs,
+        ownerId: rData.ownerId,
+        ownerName: rData.ownerName,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  } catch {
+    // ignore
+  }
+
+  return overrideRecord;
+}
+
+/**
+ * Admin Action: Resets a word's spelling back to its original default catalog spelling for all users.
+ */
+export async function resetGlobalWordSpellingOverride(
+  wordId: string
+): Promise<void> {
+  const user = auth.currentUser;
+  if (!isAdminUser(user)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can reset word spellings.`
+    );
+  }
+
+  const safeWordId = wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 128);
+  markWordOverrideDeletedLocally(safeWordId);
+
+  const currentLocal = readLocalWordOverridesCache();
+  delete currentLocal[safeWordId];
+  writeLocalWordOverridesCache(currentLocal, true);
+
+  try {
+    await fetch(`/api/sync/word-overrides/${encodeURIComponent(safeWordId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // ignore
+  }
+
+  try {
+    await deleteDoc(doc(db, WORD_OVERRIDES_PATH, safeWordId));
+  } catch {
+    // ignore
+  }
+
+  // Also restore original word on /recordings/{wordId} if present
+  const orig = getOriginalCatalogWord(safeWordId);
+  if (orig) {
+    try {
+      const recRef = doc(db, RECORDINGS_PATH, safeWordId);
+      const recSnap = await getDoc(recRef);
+      if (recSnap.exists()) {
+        const rData = recSnap.data();
+        await updateDoc(recRef, {
+          word: orig.word,
+          banglaMeaning: rData.banglaMeaning || orig.bangla,
+          audioDataUrl: rData.audioDataUrl,
+          mimeType: rData.mimeType,
+          fileName: rData.fileName,
+          fileSize: rData.fileSize,
+          durationMs: rData.durationMs,
+          ownerId: rData.ownerId,
+          ownerName: rData.ownerName,
+          updatedAt: serverTimestamp(),
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+}
+
+/**
+ * Subscribes to Admin-defined Global Word Spelling Overrides in real time across all users,
+ * browsers, and devices, automatically mutating WORDS_CATALOG in-place and notifying React state.
+ */
+export function subscribeToGlobalWordOverrides(
+  onUpdate: (overridesMap: Record<string, GlobalWordOverride>) => void
+): Unsubscribe {
+  let latestFirestoreOverrides: Record<string, GlobalWordOverride> = {};
+  let latestServerOverrides: Record<string, GlobalWordOverride> = {};
+  let lastEmittedSig = '';
+
+  const emitMerged = () => {
+    const deletedSet = readDeletedWordOverrideIds();
+    const localMap = readLocalWordOverridesCache();
+    const merged: Record<string, GlobalWordOverride> = {};
+
+    for (const [wid, ov] of Object.entries(localMap)) {
+      if (!deletedSet.has(wid)) merged[wid] = ov;
+    }
+    for (const [wid, ov] of Object.entries(latestServerOverrides)) {
+      if (ov && ov.wordId && ov.word && !deletedSet.has(wid)) {
+        const existing = merged[wid];
+        if (!existing || (ov.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          merged[wid] = ov;
+        }
+      }
+    }
+    for (const [wid, ov] of Object.entries(latestFirestoreOverrides)) {
+      if (ov && ov.wordId && ov.word && !deletedSet.has(wid)) {
+        const existing = merged[wid];
+        if (!existing || (ov.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          merged[wid] = ov;
+        }
+      }
+    }
+
+    writeLocalWordOverridesCache(merged, false);
+    const sig = applyGlobalWordOverridesToCatalog(merged);
+    if (sig !== lastEmittedSig) {
+      lastEmittedSig = sig;
+      onUpdate({ ...merged });
+    }
+  };
+
+  const pullFromServer = async () => {
+    const state = await fetchSharedServerAudioState(false);
+    if (state) {
+      for (const delId of state.deletedWordOverrideIds) {
+        markWordOverrideDeletedLocally(delId);
+      }
+      latestServerOverrides = state.wordOverrides || {};
+      emitMerged();
+    }
+  };
+
+  emitMerged();
+  void pullFromServer();
+
+  const pollId =
+    typeof window !== 'undefined'
+      ? window.setInterval(() => {
+          void pullFromServer();
+        }, 5000)
+      : null;
+
+  const q = query(
+    collection(db, WORD_OVERRIDES_PATH),
+    where('status', '==', 'published')
+  );
+
+  const unsubSnapshot = onSnapshot(
+    q,
+    (snapshot) => {
+      const deletedSet = readDeletedWordOverrideIds();
+      const nextFirestore: Record<string, GlobalWordOverride> = {};
+      snapshot.forEach((docSnap) => {
+        const d = docSnap.data();
+        const wid = d.wordId || docSnap.id;
+        if (!wid || !d.word || deletedSet.has(wid)) return;
+        nextFirestore[wid] = {
+          wordId: wid,
+          word: d.word,
+          bangla: d.bangla || '',
+          updatedBy: d.updatedBy || 'Admin',
+          updatedAtMs:
+            d.updatedAt?.toMillis?.() ||
+            d.createdAt?.toMillis?.() ||
+            Date.now(),
+        };
+      });
+      latestFirestoreOverrides = nextFirestore;
+      emitMerged();
+    },
+    () => {
+      emitMerged();
+    }
+  );
+
+  let bc: BroadcastChannel | null = null;
+  const onLocalEvent = () => emitMerged();
+  const onStorage = (e: StorageEvent) => {
+    if (!e.key || e.key === LOCAL_WORD_OVERRIDES_KEY) {
+      emitMerged();
+    }
+  };
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('lw-word-overrides-local-update', onLocalEvent);
+    window.addEventListener('focus', () => void pullFromServer());
+    try {
+      if ('BroadcastChannel' in window) {
+        bc = new BroadcastChannel(WORD_OVERRIDES_BROADCAST_CHANNEL);
+        bc.onmessage = () => emitMerged();
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return () => {
+    unsubSnapshot();
+    if (pollId !== null && typeof window !== 'undefined') {
+      window.clearInterval(pollId);
+    }
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('lw-word-overrides-local-update', onLocalEvent);
+    }
+    if (bc) {
+      try {
+        bc.close();
+      } catch {
+        // ignore
+      }
+    }
+  };
+}
+
 
 
