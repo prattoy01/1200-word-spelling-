@@ -262,7 +262,9 @@ function readDeletedContributionIds(): Set<string> {
     const raw = window.localStorage.getItem(LOCAL_DELETED_CONTRIB_IDS_KEY);
     if (!raw) return new Set();
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? new Set(parsed.map(String)) : new Set();
+    return Array.isArray(parsed)
+      ? new Set(parsed.map(String).filter((id) => !id.startsWith('pending_')))
+      : new Set();
   } catch {
     return new Set();
   }
@@ -1354,7 +1356,24 @@ export function subscribeToAudioContributions(
 
     // Push any local cached pending contributions that haven't reached the shared server or global cloud relay yet
     const localContribs = readLocalContributionsCache();
-    for (const loc of localContribs) {
+    let upgradedLegacy = false;
+    const upgradedLocalList = localContribs.map((loc) => {
+      if (loc.status === 'pending' && loc.id.startsWith('pending_')) {
+        upgradedLegacy = true;
+        return {
+          ...loc,
+          id: `contrib_${loc.wordId}_${loc.updatedAtMs || loc.createdAtMs || Date.now()}`
+            .replace(/[^a-zA-Z0-9_-]/g, '_')
+            .slice(0, 120),
+        };
+      }
+      return loc;
+    });
+    if (upgradedLegacy) {
+      writeLocalContributionsCache(upgradedLocalList, false);
+    }
+
+    for (const loc of upgradedLocalList) {
       if (loc.status === 'pending' && !deletedSet.has(loc.id)) {
         if (!serverWordIds.has(loc.wordId)) {
           void pushContributionToSharedServer(loc);

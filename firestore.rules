@@ -252,6 +252,20 @@ service cloud.firestore {
           // Action 1: User submits or updates a pending contribution for this word
           (
             incoming().status == 'pending'
+            && incoming().diff(existing()).affectedKeys().hasOnly([
+              'word',
+              'banglaMeaning',
+              'audioDataUrl',
+              'mimeType',
+              'fileName',
+              'fileSize',
+              'durationMs',
+              'contributorId',
+              'contributorName',
+              'status',
+              'createdAt',
+              'updatedAt'
+            ])
           )
           ||
           // Action 2: Admin approves or rejects a contribution
@@ -566,9 +580,14 @@ service cloud.firestore {
       allow update: if isValidId(wordId)
         && isValidWordOverride(incoming())
         && incoming().wordId == existing().wordId
-        && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
-        && incoming().diff(existing()).affectedKeys().hasOnly(['word', 'bangla', 'updatedBy', 'updatedAt']);
+        && incoming().diff(existing()).affectedKeys().hasOnly([
+          'word',
+          'bangla',
+          'updatedBy',
+          'createdAt',
+          'updatedAt'
+        ]);
 
       allow delete: if isValidId(wordId)
         && existing().status == 'published';
