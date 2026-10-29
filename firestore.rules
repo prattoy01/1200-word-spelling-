@@ -197,7 +197,6 @@ service cloud.firestore {
         && isValidRecording(incoming())
         && existing().status != 'archived'
         && incoming().wordId == existing().wordId
-        && incoming().createdAt == existing().createdAt
         && incoming().updatedAt == request.time
         && (
           // Action 1: Replace audio or update Bangla translation across Web or Mobile App
@@ -213,6 +212,7 @@ service cloud.firestore {
               'durationMs',
               'ownerId',
               'ownerName',
+              'createdAt',
               'updatedAt'
             ])
           )

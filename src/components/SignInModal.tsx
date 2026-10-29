@@ -58,8 +58,8 @@ export const SignInModal: React.FC<SignInModalProps> = ({
   const handleGooglePopup = async () => {
     setErrorMsg(null);
 
-    // If user already typed their email, sign them in immediately without popup friction
-    if (email.trim().includes('@')) {
+    // For non-admin emails (or if admin password was explicitly entered), allow direct profile sign-in
+    if (email.trim().includes('@') && (!isTypingAdminEmail || password.trim().length > 0)) {
       setIsLoadingGoogle(true);
       try {
         const profile = await signInQuickProfile({
@@ -90,7 +90,11 @@ export const SignInModal: React.FC<SignInModalProps> = ({
       // Browser/iframe blocked popup or third-party cookies ->
       // Switch smoothly to Instant In-Page Google Email Sign-In (no popup required)
       setQuickGoogleMode(true);
-      setErrorMsg(null);
+      setErrorMsg(
+        isTypingAdminEmail
+          ? 'Google OAuth popup was blocked. Please enter your Admin Password above to sign in as Admin.'
+          : null
+      );
       setTimeout(() => {
         emailInputRef.current?.focus();
       }, 50);
@@ -328,18 +332,19 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
                   {isTypingAdminEmail
-                    ? 'Admin Password (optional unless custom password set)'
+                    ? 'Admin Password (Required)'
                     : 'Password (or leave blank for Quick Sign-In)'}
                 </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
                     type="password"
+                    required={isTypingAdminEmail}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder={
                       isTypingAdminEmail
-                        ? 'Enter Admin Password (or leave blank)...'
+                        ? 'Enter Admin Password (Required)...'
                         : 'Enter password (optional for quick student login)...'
                     }
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
@@ -350,7 +355,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
             <button
               type="submit"
-              disabled={isSubmitting}
+              disabled={isSubmitting || (isTypingAdminEmail && !password.trim())}
               className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
             >
               <LogIn className="w-4 h-4" />
@@ -358,7 +363,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                 {isSubmitting
                   ? 'Signing In...'
                   : isTypingAdminEmail
-                  ? 'Verify & Sign In as Admin'
+                  ? 'Verify Password & Sign In as Admin'
                   : !email.trim() && displayName.trim()
                   ? `Sign In as "${displayName.trim()}" (Unique Student ID)`
                   : quickGoogleMode
@@ -391,7 +396,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               <span>
                 {isLoadingGoogle
                   ? 'Connecting Google Account...'
-                  : email.trim().includes('@')
+                  : email.trim().includes('@') && !isTypingAdminEmail
                   ? `Continue Instantly as ${email.trim()}`
                   : 'Continue with Google Account'}
               </span>
@@ -412,34 +417,23 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               </span>
             </button>
 
-            {/* 1-Click Switch to Admin Account */}
-            {!currentUser?.isVerifiedAdmin && (
+            {/* Admin Login Helper (Requires Password) */}
+            {!currentUser?.isVerifiedAdmin && !isTypingAdminEmail && (
               <button
                 type="button"
                 disabled={isSubmitting}
-                onClick={async () => {
-                  setErrorMsg(null);
-                  setIsSubmitting(true);
-                  try {
-                    const adminProf = await signInAsAdminDirect(password);
-                    setPassword('');
-                    onSignedIn(adminProf);
-                    onClose();
-                  } catch (err) {
-                    setEmail(ADMIN_EMAIL);
-                    setErrorMsg(
-                      err instanceof Error
-                        ? err.message
-                        : 'Please enter your Admin Password above.'
-                    );
-                  } finally {
-                    setIsSubmitting(false);
-                  }
+                onClick={() => {
+                  setAuthMode('signin');
+                  setQuickGoogleMode(false);
+                  setEmail(ADMIN_EMAIL);
+                  setErrorMsg(
+                    'Enter the Admin Password above to sign in as Admin.'
+                  );
                 }}
                 className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0e291e] hover:bg-[#143a2a] border border-[#10b981]/50 text-xs font-extrabold text-[#10b981] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
               >
                 <ShieldCheck className="w-3.5 h-3.5 text-[#10b981]" />
-                <span>Switch to Admin ({ADMIN_EMAIL})</span>
+                <span>Admin Login (Password Required)</span>
               </button>
             )}
           </div>

@@ -187,7 +187,7 @@ async function computeSessionToken(
   passwordHashOrGoogleSub: string
 ): Promise<string> {
   return sha256Hex(
-    `${uid}::${email.trim().toLowerCase()}::${passwordHashOrGoogleSub}::lw_session_sig_2026`
+    `${uid}::${email.trim().toLowerCase()}::${passwordHashOrGoogleSub}::lw_session_sig_2026_strict_v2`
   );
 }
 
@@ -209,9 +209,17 @@ export function isAdminUser(
   );
 }
 
+const SESSION_VERSION_KEY = 'lw_session_strict_v2';
+
 export function getStoredUserSession(): CloudUserProfile | null {
   if (typeof window === 'undefined') return null;
   try {
+    // Invalidate any legacy session created before strict admin password enforcement
+    if (window.localStorage.getItem(SESSION_VERSION_KEY) !== '1') {
+      window.localStorage.removeItem(SESSION_STORAGE_KEY);
+      window.localStorage.setItem(SESSION_VERSION_KEY, '1');
+      return null;
+    }
     const raw = window.localStorage.getItem(SESSION_STORAGE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CloudUserProfile;
@@ -241,6 +249,7 @@ export function getStoredUserSession(): CloudUserProfile | null {
 function persistUserSession(profile: CloudUserProfile | null): void {
   if (typeof window === 'undefined') return;
   try {
+    window.localStorage.setItem(SESSION_VERSION_KEY, '1');
     if (profile) {
       window.localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(profile));
     } else {
@@ -303,6 +312,14 @@ async function ensureAdminAccountProtectedAndVerifySession(): Promise<void> {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+    } else {
+      const data = snap.data();
+      if (data?.passwordHash && typeof window !== 'undefined') {
+        window.localStorage.setItem(
+          ADMIN_CUSTOM_PWD_STORAGE_KEY,
+          data.passwordHash
+        );
+      }
     }
   } catch (err) {
     console.warn('Account verification check skipped while offline/quota:', err);
@@ -313,19 +330,21 @@ void ensureAdminAccountProtectedAndVerifySession();
 
 /**
  * Direct Admin sign-in for `prattoy.photos01@gmail.com`.
- * Works reliably even when browser popups are blocked or Firestore hits daily quota limits.
+ * Strictly requires a non-empty, valid Admin password matching the Admin account hash.
  */
 export async function signInAsAdminDirect(
   passwordInput?: string
 ): Promise<CloudUserProfile> {
   const cleanEmail = ADMIN_EMAIL.toLowerCase();
   const uid = emailToDeterministicUid(cleanEmail);
-  const secretToUse =
-    passwordInput && passwordInput.trim().length > 0
-      ? passwordInput.trim()
-      : DEFAULT_ADMIN_INITIAL_SECRET;
+  const trimmedPassword = (passwordInput || '').trim();
 
-  // If the Admin explicitly configured a custom password on this device, verify it when a password is typed
+  if (!trimmedPassword) {
+    throw new Error(
+      'Admin Password is required. Nobody can sign in as Admin without the password.'
+    );
+  }
+
   let customLocalHash: string | null = null;
   try {
     customLocalHash =
@@ -336,38 +355,63 @@ export async function signInAsAdminDirect(
     // ignore
   }
 
-  const inputHash = await hashAccountPassword(cleanEmail, secretToUse);
+  const inputHash = await hashAccountPassword(cleanEmail, trimmedPassword);
   const defaultAdminHash = await hashAccountPassword(
     cleanEmail,
     DEFAULT_ADMIN_INITIAL_SECRET
   );
 
-  if (
-    customLocalHash &&
-    passwordInput &&
-    passwordInput.trim().length > 0 &&
-    inputHash !== customLocalHash &&
-    inputHash !== defaultAdminHash
-  ) {
-    throw new Error('Incorrect custom Admin Password. Please try again.');
+  let firestorePasswordHash: string | null = null;
+  try {
+    const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
+    const snap = await Promise.race([
+      getDoc(accountRef),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
+    ]);
+    if (snap && snap.exists()) {
+      const data = snap.data();
+      if (typeof data?.passwordHash === 'string' && data.passwordHash.length > 0) {
+        firestorePasswordHash = data.passwordHash;
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            ADMIN_CUSTOM_PWD_STORAGE_KEY,
+            firestorePasswordHash
+          );
+        }
+      }
+    }
+  } catch {
+    // Firestore quota or offline fallback — verify against local/default hash below
   }
 
-  const finalHash = customLocalHash || inputHash;
+  const authoritativeHash =
+    firestorePasswordHash || customLocalHash || defaultAdminHash;
+
+  // Accept either the authoritative stored hash OR the default initial admin secret if no custom password was set
+  const isAuthorized =
+    inputHash === authoritativeHash ||
+    (!firestorePasswordHash && !customLocalHash && inputHash === defaultAdminHash);
+
+  if (!isAuthorized) {
+    throw new Error('Incorrect Admin Password. Access denied.');
+  }
+
+  const finalHash = authoritativeHash;
 
   try {
     const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
-    const snap = await getDoc(accountRef);
-    if (!snap.exists()) {
-      await setDoc(accountRef, {
+    await setDoc(
+      accountRef,
+      {
         uid,
         email: cleanEmail,
         displayName: 'Prattoy Mondal',
         passwordHash: finalHash,
         role: 'admin',
-        createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
-    }
+      },
+      { merge: true }
+    );
   } catch {
     // Firestore quota or offline fallback — proceed with verified local session
   }
@@ -383,7 +427,7 @@ export async function signInAsAdminDirect(
     role: 'admin',
     isVerifiedAdmin: true,
     sessionToken,
-    providerData: [{ providerId: 'google_oauth_verified', email: cleanEmail }],
+    providerData: [{ providerId: 'password', email: cleanEmail }],
   };
 
   notifyAuthListeners(adminProfile);

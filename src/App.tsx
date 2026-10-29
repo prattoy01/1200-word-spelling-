@@ -70,6 +70,7 @@ import {
   removePersonalWord,
   personalWordToWordItem,
   syncPersonalWordsNow,
+  syncAudioContributionsNow,
 } from './services/recordingsService';
 import {
   processAudioBlob,
@@ -337,6 +338,12 @@ export default function App() {
       }
     }
     setRecordingsMap(merged);
+    try {
+      const freshContributions = await syncAudioContributionsNow();
+      setContributions(freshContributions);
+    } catch {
+      // ignore offline fallback
+    }
   };
 
   useEffect(() => {
@@ -975,7 +982,10 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => setActiveScreen('admin')}
+            onClick={() => {
+              setActiveScreen('admin');
+              void syncAudioContributionsNow().then(setContributions);
+            }}
             className={`hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               activeScreen === 'admin'
                 ? 'text-[#10b981] underline underline-offset-8 decoration-2 font-bold'

@@ -42,8 +42,13 @@ import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
 import {
   publishWordOverrideUpsertToRelay,
   publishWordOverrideDeleteToRelay,
+  publishContributionUpsertToRelay,
+  publishContributionStatusToRelay,
+  publishRecordingUpsertToRelay,
+  publishRecordingDeleteToRelay,
   pollCloudRelaySnapshot,
   subscribeToCloudRelay,
+  getCurrentCloudRelaySnapshot,
 } from '../utils/cloudRelay';
 
 export const PERSONAL_STRUGGLING_CATEGORY = 'My Struggling Words';
@@ -445,6 +450,7 @@ export function subscribeToPublishedRecordings(
 
   let latestFirestoreGeneral: Record<string, CloudRecording> = {};
   let latestServerGeneral: Record<string, CloudRecording> = {};
+  let latestRelayGeneral: Record<string, CloudRecording> = {};
   let lastEmittedGeneralSig = '';
   let lastEmittedMergedSig = '';
 
@@ -456,7 +462,7 @@ export function subscribeToPublishedRecordings(
       const generalOnly: Record<string, CloudRecording> = {};
       const activeUserId = auth.currentUser?.uid;
 
-      // 1. Merge Local General cache + Shared Server General + Firestore General
+      // 1. Merge Local General cache + Shared Server General + Global Cloud Relay + Firestore General
       for (const [wordId, item] of Object.entries(localMap)) {
         if (isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
           continue;
@@ -484,50 +490,58 @@ export function subscribeToPublishedRecordings(
         }
       }
 
-      for (const [wordId, sRec] of Object.entries(latestServerGeneral)) {
-        if (deletedRecSet.has(wordId)) continue;
-        if (
-          sRec &&
-          sRec.audioDataUrl &&
-          !isSyntheticRestoredPlaceholder(sRec.word || wordId, sRec.audioDataUrl)
-        ) {
-          const rec: CloudRecording = {
-            ...sRec,
-            status: 'published',
-            source: 'cloud',
-            isPersonalOverride: false,
-          };
-          generalOnly[wordId] = rec;
-          merged[wordId] = rec;
+      const applyRemoteGeneralMap = (
+        remoteMap: Record<string, CloudRecording>
+      ) => {
+        for (const [wordId, sRec] of Object.entries(remoteMap)) {
+          if (deletedRecSet.has(wordId)) continue;
+          if (
+            sRec &&
+            sRec.audioDataUrl &&
+            !isSyntheticRestoredPlaceholder(
+              sRec.word || wordId,
+              sRec.audioDataUrl
+            )
+          ) {
+            const existing = generalOnly[wordId];
+            if (
+              !existing ||
+              (sRec.updatedAtMs || 0) >= (existing.updatedAtMs || 0)
+            ) {
+              const rec: CloudRecording = {
+                ...sRec,
+                status: 'published',
+                source: 'cloud',
+                isPersonalOverride: false,
+              };
+              generalOnly[wordId] = rec;
+              merged[wordId] = rec;
 
-          if (!localMap[wordId]?.isPersonalOverride) {
-            void saveRecordingToLocalCache({
-              wordId: rec.wordId,
-              word: rec.word,
-              banglaMeaning: rec.banglaMeaning,
-              audioDataUrl: rec.audioDataUrl,
-              mimeType: rec.mimeType,
-              fileName: rec.fileName,
-              fileSize: rec.fileSize,
-              durationMs: rec.durationMs,
-              ownerId: rec.ownerId,
-              ownerName: rec.ownerName,
-              updatedAtMs: rec.updatedAtMs,
-              syncedToCloud: true,
-              isPersonalOverride: false,
-            });
+              if (!localMap[wordId]?.isPersonalOverride) {
+                void saveRecordingToLocalCache({
+                  wordId: rec.wordId,
+                  word: rec.word,
+                  banglaMeaning: rec.banglaMeaning,
+                  audioDataUrl: rec.audioDataUrl,
+                  mimeType: rec.mimeType,
+                  fileName: rec.fileName,
+                  fileSize: rec.fileSize,
+                  durationMs: rec.durationMs,
+                  ownerId: rec.ownerId,
+                  ownerName: rec.ownerName,
+                  updatedAtMs: rec.updatedAtMs,
+                  syncedToCloud: true,
+                  isPersonalOverride: false,
+                });
+              }
+            }
           }
         }
-      }
+      };
 
-      for (const [wordId, fRec] of Object.entries(latestFirestoreGeneral)) {
-        if (deletedRecSet.has(wordId)) continue;
-        const existingServer = generalOnly[wordId];
-        if (!existingServer || (fRec.updatedAtMs || 0) >= (existingServer.updatedAtMs || 0)) {
-          generalOnly[wordId] = fRec;
-          merged[wordId] = fRec;
-        }
-      }
+      applyRemoteGeneralMap(latestServerGeneral);
+      applyRemoteGeneralMap(latestRelayGeneral);
+      applyRemoteGeneralMap(latestFirestoreGeneral);
 
       // 2. Overlay User's Personal Audio Overrides so personal audio NEVER changes when General Audio updates!
       for (const [wordId, item] of Object.entries(localMap)) {
@@ -541,7 +555,10 @@ export function subscribeToPublishedRecordings(
           item.ownerId === 'personal_user' ||
           item.ownerId === activeUserId;
 
-        if ((item.isPersonalOverride && belongsToCurrentUser) || (!item.syncedToCloud && !deletedRecSet.has(wordId))) {
+        if (
+          (item.isPersonalOverride && belongsToCurrentUser) ||
+          (!item.syncedToCloud && !deletedRecSet.has(wordId))
+        ) {
           merged[wordId] = {
             wordId: item.wordId,
             word: item.word,
@@ -589,8 +606,12 @@ export function subscribeToPublishedRecordings(
     }
   };
 
-  const pullServerRecordings = async () => {
-    const state = await fetchSharedServerAudioState(true);
+  const pullServerAndRelayRecordings = async () => {
+    const [state, relaySnap] = await Promise.all([
+      fetchSharedServerAudioState(true),
+      pollCloudRelaySnapshot(false),
+    ]);
+    let changed = false;
     if (state) {
       const serverDelSet = new Set(state.deletedRecordingIds || []);
       for (const delWordId of serverDelSet) {
@@ -603,18 +624,52 @@ export function subscribeToPublishedRecordings(
         }
       }
       latestServerGeneral = state.recordings || {};
+      changed = true;
+    }
+    if (relaySnap) {
+      for (const delWordId of relaySnap.deletedRecordingIds) {
+        markRecordingDeletedLocally(delWordId);
+        delete latestFirestoreGeneral[delWordId];
+      }
+      const nextRelay: Record<string, CloudRecording> = {};
+      for (const [wid, rec] of relaySnap.recordings.entries()) {
+        if (!relaySnap.deletedRecordingIds.has(wid)) {
+          unmarkRecordingDeletedLocally(wid);
+          nextRelay[wid] = rec;
+        }
+      }
+      latestRelayGeneral = nextRelay;
+      changed = true;
+    }
+    if (changed) {
       await buildAndEmitMerged();
     }
   };
 
   void buildAndEmitMerged();
-  void pullServerRecordings();
+  void pullServerAndRelayRecordings();
+
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    for (const delWordId of relaySnap.deletedRecordingIds) {
+      markRecordingDeletedLocally(delWordId);
+      delete latestFirestoreGeneral[delWordId];
+    }
+    const nextRelay: Record<string, CloudRecording> = {};
+    for (const [wid, rec] of relaySnap.recordings.entries()) {
+      if (!relaySnap.deletedRecordingIds.has(wid)) {
+        unmarkRecordingDeletedLocally(wid);
+        nextRelay[wid] = rec;
+      }
+    }
+    latestRelayGeneral = nextRelay;
+    void buildAndEmitMerged();
+  });
 
   const pollId =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
-          void pullServerRecordings();
-        }, 5000)
+          void pullServerAndRelayRecordings();
+        }, 4000)
       : null;
 
   let bc: BroadcastChannel | null = null;
@@ -704,6 +759,7 @@ export function subscribeToPublishedRecordings(
 
   return () => {
     unsubSnapshot();
+    unsubRelay();
     if (pollId !== null && typeof window !== 'undefined') {
       window.clearInterval(pollId);
     }
@@ -721,7 +777,7 @@ export function subscribeToPublishedRecordings(
 }
 
 /**
- * Publishes a recording directly to the General App Audio collection (`/recordings/{wordId}` & Shared Server).
+ * Publishes a recording directly to the General App Audio collection (`/recordings/{wordId}`, Global Cloud Relay & Shared Server).
  * Used by Admin when accepting a user contribution or uploading a General Audio directly.
  */
 export async function publishGeneralCloudRecording(params: {
@@ -731,6 +787,7 @@ export async function publishGeneralCloudRecording(params: {
   audio: ProcessedAudio;
   ownerId?: string;
   ownerName?: string;
+  existingAudioKey?: string;
 }): Promise<void> {
   const user = auth.currentUser;
   if (!isAdminUser(user)) {
@@ -775,8 +832,13 @@ export async function publishGeneralCloudRecording(params: {
 
   unmarkRecordingDeletedLocally(clean.wordId);
 
-  // 1. Push to shared backend server so all users receive the General Audio immediately
-  await pushGeneralRecordingToSharedServer(generalRec);
+  // 1. Push to shared backend server AND global cloud relay so all users receive the General Audio immediately
+  await Promise.all([
+    pushGeneralRecordingToSharedServer(generalRec),
+    publishRecordingUpsertToRelay(generalRec, params.existingAudioKey).catch(
+      () => {}
+    ),
+  ]);
 
   // 2. Also cache locally if Admin doesn't have a personal override
   const localMap = await getAllLocalCachedRecordings();
@@ -800,11 +862,11 @@ export async function publishGeneralCloudRecording(params: {
 
   notifyRecordingsListeners();
 
-  // 3. Also write to Cloud Firestore in background (non-blocking if quota is exhausted)
-  void (async () => {
-    try {
-      const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
-      await setDoc(docRef, {
+  // 3. Also write to Cloud Firestore (with timeout race so quota limits never block)
+  try {
+    const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
+    await Promise.race([
+      setDoc(docRef, {
         wordId: clean.wordId,
         word: clean.word,
         banglaMeaning: clean.banglaMeaning,
@@ -818,16 +880,17 @@ export async function publishGeneralCloudRecording(params: {
         status: 'published',
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
-      notifyRecordingsListeners();
-    } catch {
-      // Shared server + local cache already updated
-    }
-  })();
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+    ]);
+    notifyRecordingsListeners();
+  } catch {
+    // Shared server + Cloud Relay + local cache already updated
+  }
 }
 
 /**
- * Submits a user's recording to the Admin Panel (`/audioContributions` + Shared Server) for review.
+ * Submits a user's recording to the Admin Panel (`/audioContributions`, Global Cloud Relay & Shared Server) for review.
  */
 export async function submitAudioContribution(params: {
   wordId: string;
@@ -854,14 +917,19 @@ export async function submitAudioContribution(params: {
     ownerName: contributorName,
   });
 
-  // Use a deterministic document ID per wordId for pending contributions so concurrent calls never duplicate
-  const contributionDocId = `pending_${clean.wordId}`
+  const nowMs = Date.now();
+  // Use a unique timestamped document ID for each submission so it is NEVER blocked
+  // by an older deleted/reviewed ID in local cache and is always a clean `create` in Firestore!
+  const contributionDocId = `contrib_${clean.wordId}_${nowMs}`
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 120);
+  const legacyPendingId = `pending_${clean.wordId}`
     .replace(/[^a-zA-Z0-9_-]/g, '_')
     .slice(0, 120);
 
   unmarkContributionDeletedLocally(contributionDocId);
+  unmarkContributionDeletedLocally(legacyPendingId);
 
-  const nowMs = Date.now();
   const contributionRecord: AudioContributionRecord = {
     id: contributionDocId,
     wordId: clean.wordId,
@@ -881,7 +949,10 @@ export async function submitAudioContribution(params: {
 
   // 1. Save immediately in local contributions cache so UI & same-device Admin Panel update instantaneously
   const existingLocalList = readLocalContributionsCache().filter(
-    (c) => c.id !== contributionDocId && !(c.wordId === clean.wordId && c.status === 'pending')
+    (c) =>
+      c.id !== contributionDocId &&
+      c.id !== legacyPendingId &&
+      !(c.wordId === clean.wordId && c.status === 'pending')
   );
   writeLocalContributionsCache([contributionRecord, ...existingLocalList], true);
 
@@ -895,28 +966,32 @@ export async function submitAudioContribution(params: {
     });
   }
 
-  // 3. Push immediately to Shared Backend Server so Admin on any browser/device receives it in real time!
-  await pushContributionToSharedServer({
-    ...contributionRecord,
-    forcePending: true,
-  });
-
-  // 4. Also write to Cloud Firestore in background if quota is available
-  void setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
-    wordId: clean.wordId,
-    word: clean.word,
-    banglaMeaning: clean.banglaMeaning,
-    audioDataUrl: clean.audioDataUrl,
-    mimeType: clean.mimeType,
-    fileName: clean.fileName,
-    fileSize: clean.fileSize,
-    durationMs: clean.durationMs,
-    contributorId: clean.ownerId,
-    contributorName: clean.ownerName,
-    status: 'pending',
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }).catch(() => {});
+  // 3. Push in parallel to Shared Backend Server, Global Cloud Relay (cross-origin/Vercel/APK), and Cloud Firestore!
+  await Promise.all([
+    pushContributionToSharedServer({
+      ...contributionRecord,
+      forcePending: true,
+    }).catch(() => false),
+    publishContributionUpsertToRelay(contributionRecord).catch(() => {}),
+    Promise.race([
+      setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
+        wordId: clean.wordId,
+        word: clean.word,
+        banglaMeaning: clean.banglaMeaning,
+        audioDataUrl: clean.audioDataUrl,
+        mimeType: clean.mimeType,
+        fileName: clean.fileName,
+        fileSize: clean.fileSize,
+        durationMs: clean.durationMs,
+        contributorId: clean.ownerId,
+        contributorName: clean.ownerName,
+        status: 'pending',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }),
+      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
+    ]).catch(() => {}),
+  ]);
 }
 
 /**
@@ -1030,15 +1105,30 @@ function deduplicateContributions(
       !isSyntheticRestoredPlaceholder(item.word || item.wordId, item.audioDataUrl)
   );
   filtered.sort(
-    (a, b) => (b.updatedAtMs || b.createdAtMs || 0) - (a.updatedAtMs || a.createdAtMs || 0)
+    (a, b) =>
+      (b.updatedAtMs || b.createdAtMs || 0) -
+      (a.updatedAtMs || a.createdAtMs || 0)
   );
 
+  // Track the newest status per wordId so if an older record was pending and a newer record
+  // (or status update) approved/rejected it, or if a newer pending record was submitted after
+  // an older reviewed record, the most recent submission for each wordId wins!
+  const latestStatusByWordId = new Map<string, 'pending' | 'approved' | 'rejected'>();
   const seenPendingWords = new Set<string>();
   const seenReviewedWords = new Set<string>();
   const dedupedList: AudioContributionRecord[] = [];
 
   for (const item of filtered) {
+    const newestStatusForWord = latestStatusByWordId.get(item.wordId);
+    if (!newestStatusForWord) {
+      latestStatusByWordId.set(item.wordId, item.status);
+    }
+
     if (item.status === 'pending') {
+      // If a newer record for this same word was already approved or rejected, skip stale older pending records
+      if (newestStatusForWord && newestStatusForWord !== 'pending') {
+        continue;
+      }
       if (seenPendingWords.has(item.wordId)) {
         continue;
       }
@@ -1057,14 +1147,117 @@ function deduplicateContributions(
 }
 
 /**
+ * Actively fetches all audio contributions from Shared Server, Global Cloud Relay, and Cloud Firestore,
+ * and pushes any local pending contributions that haven't synced yet.
+ */
+export async function syncAudioContributionsNow(): Promise<
+  AudioContributionRecord[]
+> {
+  const [state, relaySnap, firestoreSnap] = await Promise.all([
+    fetchSharedServerAudioState(true),
+    pollCloudRelaySnapshot(true),
+    Promise.race([
+      getDocs(
+        query(
+          collection(db, CONTRIBUTIONS_PATH),
+          where('status', 'in', ['pending', 'approved', 'rejected'])
+        )
+      ),
+      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+    ]).catch(() => null),
+  ]);
+
+  const deletedSet = readDeletedContributionIds();
+  const byId = new Map<string, AudioContributionRecord>();
+
+  for (const loc of readLocalContributionsCache()) {
+    if (loc && loc.id && !deletedSet.has(loc.id)) {
+      byId.set(loc.id, loc);
+    }
+  }
+
+  if (state) {
+    for (const delId of state.deletedContributionIds || []) {
+      markContributionDeletedLocally(delId);
+      deletedSet.add(delId);
+      byId.delete(delId);
+    }
+    for (const c of state.contributions || []) {
+      if (c && c.id && !deletedSet.has(c.id)) {
+        const existing = byId.get(c.id);
+        if (!existing || (c.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          byId.set(c.id, c);
+        }
+      }
+    }
+  }
+
+  if (relaySnap) {
+    for (const delId of relaySnap.deletedContributionIds) {
+      markContributionDeletedLocally(delId);
+      deletedSet.add(delId);
+      byId.delete(delId);
+    }
+    for (const [cid, c] of relaySnap.contributions.entries()) {
+      if (c && c.id && !deletedSet.has(cid)) {
+        const existing = byId.get(cid);
+        if (!existing || (c.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          byId.set(cid, c);
+        }
+      }
+    }
+  }
+
+  if (firestoreSnap) {
+    firestoreSnap.forEach((docSnap) => {
+      const d = docSnap.data();
+      if (
+        !d ||
+        !d.wordId ||
+        !d.audioDataUrl ||
+        deletedSet.has(docSnap.id) ||
+        isSyntheticRestoredPlaceholder(d.word || docSnap.id, d.audioDataUrl)
+      ) {
+        return;
+      }
+      const item: AudioContributionRecord = {
+        id: docSnap.id,
+        wordId: d.wordId,
+        word: d.word || d.wordId,
+        banglaMeaning: d.banglaMeaning || '',
+        audioDataUrl: d.audioDataUrl,
+        mimeType: d.mimeType || 'audio/mpeg',
+        fileName: d.fileName || `${d.wordId}.mp3`,
+        fileSize: d.fileSize || 0,
+        durationMs: d.durationMs || 1200,
+        contributorId: d.contributorId || 'community_user',
+        contributorName: d.contributorName || 'Community Member',
+        status: d.status || 'pending',
+        createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+        updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+      };
+      const existing = byId.get(item.id);
+      if (!existing || (item.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+        byId.set(item.id, item);
+      }
+    });
+  }
+
+  const deduped = deduplicateContributions(Array.from(byId.values()), deletedSet);
+  writeLocalContributionsCache(deduped, true);
+  return deduped;
+}
+
+/**
  * Subscribes to all user-submitted audio contributions for the Admin Panel
- * across Shared Server + Cloud Firestore + Local Cache.
+ * across Global Cloud Relay + Shared Server + Cloud Firestore + Local Cache.
  */
 export function subscribeToAudioContributions(
   onUpdate: (contributions: AudioContributionRecord[]) => void
 ): Unsubscribe {
   let firestoreList: AudioContributionRecord[] = [];
   let serverList: AudioContributionRecord[] = [];
+  let relayList: AudioContributionRecord[] = [];
   let lastEmittedContribSig = '';
 
   const emitMerged = () => {
@@ -1093,12 +1286,25 @@ export function subscribeToAudioContributions(
         }
       }
     }
+    for (const item of relayList) {
+      if (item && item.id && !deletedSet.has(item.id)) {
+        const existing = byId.get(item.id);
+        if (!existing || (item.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          byId.set(item.id, item);
+        }
+      }
+    }
 
-    const deduped = deduplicateContributions(Array.from(byId.values()), deletedSet);
+    const deduped = deduplicateContributions(
+      Array.from(byId.values()),
+      deletedSet
+    );
     writeLocalContributionsCache(deduped, false);
 
     const sig = JSON.stringify(
-      deduped.map((c) => `${c.id}:${c.status}:${c.updatedAtMs}:${c.banglaMeaning}`)
+      deduped.map(
+        (c) => `${c.id}:${c.status}:${c.updatedAtMs}:${c.banglaMeaning}:${c.word}`
+      )
     );
     if (sig !== lastEmittedContribSig) {
       lastEmittedContribSig = sig;
@@ -1106,10 +1312,15 @@ export function subscribeToAudioContributions(
     }
   };
 
-  const syncWithSharedServerAndRecoverLocal = async () => {
-    const state = await fetchSharedServerAudioState(true);
+  const syncWithSharedServerAndRelay = async () => {
+    const [state, relaySnap] = await Promise.all([
+      fetchSharedServerAudioState(true),
+      pollCloudRelaySnapshot(false),
+    ]);
     const serverWordIds = new Set<string>();
+    const relayWordIds = new Set<string>();
     const deletedSet = readDeletedContributionIds();
+
     if (state) {
       const serverDelContribSet = new Set(state.deletedContributionIds || []);
       for (const delId of serverDelContribSet) {
@@ -1126,28 +1337,47 @@ export function subscribeToAudioContributions(
       }
     }
 
-    // Push any local cached contributions that haven't reached the shared server yet (unless deleted by Admin)
+    if (relaySnap) {
+      for (const delId of relaySnap.deletedContributionIds) {
+        markContributionDeletedLocally(delId);
+        deletedSet.add(delId);
+      }
+      const nextRelay: AudioContributionRecord[] = [];
+      for (const [cid, c] of relaySnap.contributions.entries()) {
+        if (!relaySnap.deletedContributionIds.has(cid)) {
+          nextRelay.push(c);
+          if (c?.wordId) relayWordIds.add(c.wordId);
+        }
+      }
+      relayList = nextRelay;
+    }
+
+    // Push any local cached pending contributions that haven't reached the shared server or global cloud relay yet
     const localContribs = readLocalContributionsCache();
     for (const loc of localContribs) {
-      if (!serverWordIds.has(loc.wordId) && !deletedSet.has(loc.id)) {
-        await pushContributionToSharedServer(loc);
-        serverWordIds.add(loc.wordId);
+      if (loc.status === 'pending' && !deletedSet.has(loc.id)) {
+        if (!serverWordIds.has(loc.wordId)) {
+          void pushContributionToSharedServer(loc);
+          serverWordIds.add(loc.wordId);
+        }
+        if (!relayWordIds.has(loc.wordId)) {
+          void publishContributionUpsertToRelay(loc);
+          relayWordIds.add(loc.wordId);
+        }
       }
     }
 
     if (!hasAutoSyncedPendingContributions) {
       hasAutoSyncedPendingContributions = true;
       try {
+        // Only auto-sync personal recordings from non-admin users (or explicitly contributed recordings)
         const localMap = await getAllLocalCachedRecordings();
         for (const item of Object.values(localMap)) {
-          const pendingId = `pending_${item.wordId}`
-            .replace(/[^a-zA-Z0-9_-]/g, '_')
-            .slice(0, 120);
           if (
             item.isPersonalOverride &&
-            item.contributedToAdmin !== false &&
+            item.contributedToAdmin === true &&
             !serverWordIds.has(item.wordId) &&
-            !deletedSet.has(pendingId) &&
+            !relayWordIds.has(item.wordId) &&
             !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
           ) {
             await submitAudioContribution({
@@ -1173,16 +1403,30 @@ export function subscribeToAudioContributions(
     emitMerged();
   };
 
-  // Emit immediately from local cache, then pull from shared server
+  // Emit immediately from local cache, then pull from shared server & global relay
   emitMerged();
-  void syncWithSharedServerAndRecoverLocal();
+  void syncWithSharedServerAndRelay();
 
-  // Poll shared server every 3s so Admin Panel receives new user contributions in real time
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    for (const delId of relaySnap.deletedContributionIds) {
+      markContributionDeletedLocally(delId);
+    }
+    const nextRelay: AudioContributionRecord[] = [];
+    for (const [cid, c] of relaySnap.contributions.entries()) {
+      if (!relaySnap.deletedContributionIds.has(cid)) {
+        nextRelay.push(c);
+      }
+    }
+    relayList = nextRelay;
+    emitMerged();
+  });
+
+  // Poll shared server & global relay every 2.5s so Admin Panel receives new user contributions in real time
   const pollId =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
-          void syncWithSharedServerAndRecoverLocal();
-        }, 3000)
+          void syncWithSharedServerAndRelay();
+        }, 2500)
       : null;
 
   const q = query(
@@ -1233,10 +1477,12 @@ export function subscribeToAudioContributions(
     }
   };
   const onLocalUpdate = () => emitMerged();
+  const onFocus = () => void syncWithSharedServerAndRelay();
 
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', onStorageChange);
     window.addEventListener('lw-contributions-local-update', onLocalUpdate);
+    window.addEventListener('focus', onFocus);
     try {
       if ('BroadcastChannel' in window) {
         bc = new BroadcastChannel(CONTRIBUTIONS_BROADCAST_CHANNEL);
@@ -1249,12 +1495,14 @@ export function subscribeToAudioContributions(
 
   return () => {
     unsubSnapshot();
+    unsubRelay();
     if (pollId !== null && typeof window !== 'undefined') {
       window.clearInterval(pollId);
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('storage', onStorageChange);
       window.removeEventListener('lw-contributions-local-update', onLocalUpdate);
+      window.removeEventListener('focus', onFocus);
     }
     if (bc) {
       try {
@@ -1290,7 +1538,7 @@ export async function approveAudioContribution(
       ? customWordSpelling.trim().slice(0, 120)
       : contribution.word;
 
-  // 1. Update General Cloud Audio in /recordings/{wordId} + Shared Server
+  // 1. Update General Cloud Audio in /recordings/{wordId} + Shared Server + Global Cloud Relay
   await publishGeneralCloudRecording({
     wordId: contribution.wordId,
     word: finalWord,
@@ -1304,6 +1552,7 @@ export async function approveAudioContribution(
     },
     ownerId: contribution.contributorId,
     ownerName: `${contribution.contributorName} (Approved)`,
+    existingAudioKey: `aud_${contribution.id}`,
   });
 
   // If the Admin also changed the word spelling or Bangla meaning from the original catalog, save it as a global word override for all users
@@ -1319,10 +1568,11 @@ export async function approveAudioContribution(
     });
   }
 
-  // 2. Update local contributions cache
+  // 2. Update local contributions cache (mark this contribution & any older pending contribution for the same wordId as approved)
   const nowMs = Date.now();
   const updatedList = readLocalContributionsCache().map((c) =>
-    c.id === contribution.id
+    c.id === contribution.id ||
+    (c.wordId === contribution.wordId && c.status === 'pending')
       ? {
           ...c,
           word: finalWord,
@@ -1334,9 +1584,9 @@ export async function approveAudioContribution(
   );
   writeLocalContributionsCache(updatedList, true);
 
-  // 3. Update Shared Backend Server
-  try {
-    await fetch(
+  // 3. Update Shared Backend Server + Global Cloud Relay
+  await Promise.all([
+    fetch(
       `/api/sync/audio-contributions/${encodeURIComponent(contribution.id)}`,
       {
         method: 'PATCH',
@@ -1347,10 +1597,15 @@ export async function approveAudioContribution(
           banglaMeaning: finalBangla,
         }),
       }
-    );
-  } catch {
-    // ignore
-  }
+    ).catch(() => {}),
+    publishContributionStatusToRelay({
+      id: contribution.id,
+      wordId: contribution.wordId,
+      status: 'approved',
+      word: finalWord,
+      banglaMeaning: finalBangla,
+    }).catch(() => {}),
+  ]);
 
   // 4. Mark contribution as 'approved' in Cloud Firestore in background
   void updateDoc(doc(db, CONTRIBUTIONS_PATH, contribution.id), {
@@ -1375,25 +1630,34 @@ export async function rejectAudioContribution(
   }
 
   const nowMs = Date.now();
+  const target = readLocalContributionsCache().find(
+    (c) => c.id === contributionId
+  );
+  const targetWordId = target?.wordId || '';
+
   const updatedList = readLocalContributionsCache().map((c) =>
-    c.id === contributionId
+    c.id === contributionId ||
+    (targetWordId && c.wordId === targetWordId && c.status === 'pending')
       ? { ...c, status: 'rejected' as const, updatedAtMs: nowMs }
       : c
   );
   writeLocalContributionsCache(updatedList, true);
 
-  try {
-    await fetch(
+  await Promise.all([
+    fetch(
       `/api/sync/audio-contributions/${encodeURIComponent(contributionId)}`,
       {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'rejected' }),
       }
-    );
-  } catch {
-    // ignore
-  }
+    ).catch(() => {}),
+    publishContributionStatusToRelay({
+      id: contributionId,
+      wordId: targetWordId,
+      status: 'rejected',
+    }).catch(() => {}),
+  ]);
 
   void updateDoc(doc(db, CONTRIBUTIONS_PATH, contributionId), {
     status: 'rejected',
@@ -1413,20 +1677,28 @@ export async function deleteAudioContribution(
     );
   }
 
+  const target = readLocalContributionsCache().find(
+    (c) => c.id === contributionId
+  );
+  const targetWordId = target?.wordId || '';
+
   markContributionDeletedLocally(contributionId);
   const remaining = readLocalContributionsCache().filter(
     (c) => c.id !== contributionId
   );
   writeLocalContributionsCache(remaining, true);
 
-  try {
-    await fetch(
+  await Promise.all([
+    fetch(
       `/api/sync/audio-contributions/${encodeURIComponent(contributionId)}`,
       { method: 'DELETE' }
-    );
-  } catch {
-    // ignore
-  }
+    ).catch(() => {}),
+    publishContributionStatusToRelay({
+      id: contributionId,
+      wordId: targetWordId,
+      status: 'deleted',
+    }).catch(() => {}),
+  ]);
 
   void deleteDoc(doc(db, CONTRIBUTIONS_PATH, contributionId)).catch(() => {});
 }
@@ -1459,11 +1731,15 @@ export async function updateRecordingBanglaMeaning(params: {
   });
 
   if (!recording.isPersonalOverride && isAdminUser(auth.currentUser)) {
-    await pushGeneralRecordingToSharedServer({
+    const updatedRec: CloudRecording = {
       ...recording,
       banglaMeaning: safeBangla,
       updatedAtMs: Date.now(),
-    });
+    };
+    await Promise.all([
+      pushGeneralRecordingToSharedServer(updatedRec),
+      publishRecordingUpsertToRelay(updatedRec).catch(() => {}),
+    ]);
 
     const docRef = doc(db, RECORDINGS_PATH, recording.wordId);
     try {
@@ -1499,7 +1775,7 @@ export async function removePersonalRecordingOverride(
 }
 
 /**
- * Admin Action: Removes a General Audio recording from Cloud Firestore, Shared Server, and local cache.
+ * Admin Action: Removes a General Audio recording from Cloud Firestore, Global Cloud Relay, Shared Server, and local cache.
  */
 export async function deleteWordRecording(
   wordId: string,
@@ -1517,50 +1793,56 @@ export async function deleteWordRecording(
   await removeRecordingFromLocalCache(wordId);
   notifyRecordingsListeners();
 
-    if (alsoDeleteFromGeneralCloud) {
-      try {
-        await fetch(`/api/sync/recordings/${encodeURIComponent(wordId)}`, {
-          method: 'DELETE',
-        });
-      } catch {
-        // ignore
-      }
+  if (alsoDeleteFromGeneralCloud) {
+    await Promise.all([
+      fetch(`/api/sync/recordings/${encodeURIComponent(wordId)}`, {
+        method: 'DELETE',
+      }).catch(() => {}),
+      publishRecordingDeleteToRelay(wordId).catch(() => {}),
+    ]);
 
-      const docRef = doc(db, RECORDINGS_PATH, wordId);
-      void deleteDoc(docRef).catch(() => {});
-      notifyRecordingsListeners();
-    }
+    const docRef = doc(db, RECORDINGS_PATH, wordId);
+    void deleteDoc(docRef).catch(() => {});
+    notifyRecordingsListeners();
   }
+}
 
 /**
- * Pushes any local unsynced recordings to Shared Server & Firestore Cloud without overwriting
+ * Pushes any local unsynced recordings to Shared Server, Global Cloud Relay & Firestore Cloud without overwriting
  * contributions that have already been approved, rejected, or deleted by the Admin.
  */
 export async function syncLocalRecordingsToCloud(): Promise<number> {
   try {
-    const state = await fetchSharedServerAudioState(false);
+    const [state, relaySnap] = await Promise.all([
+      fetchSharedServerAudioState(false),
+      pollCloudRelaySnapshot(false),
+    ]);
     const deletedSet = readDeletedContributionIds();
-    const existingServerWordIds = new Set<string>();
+    const existingRemoteWordIds = new Set<string>();
     if (state) {
       for (const delId of state.deletedContributionIds) {
         deletedSet.add(delId);
       }
       for (const c of state.contributions) {
-        if (c?.wordId) existingServerWordIds.add(c.wordId);
+        if (c?.wordId) existingRemoteWordIds.add(c.wordId);
+      }
+    }
+    if (relaySnap) {
+      for (const delId of relaySnap.deletedContributionIds) {
+        deletedSet.add(delId);
+      }
+      for (const c of relaySnap.contributions.values()) {
+        if (c?.wordId) existingRemoteWordIds.add(c.wordId);
       }
     }
 
     const localMap = await getAllLocalCachedRecordings();
     let count = 0;
     for (const item of Object.values(localMap)) {
-      const pendingId = `pending_${item.wordId}`
-        .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .slice(0, 120);
       if (
         item.isPersonalOverride &&
-        item.contributedToAdmin !== false &&
-        !existingServerWordIds.has(item.wordId) &&
-        !deletedSet.has(pendingId) &&
+        item.contributedToAdmin === true &&
+        !existingRemoteWordIds.has(item.wordId) &&
         !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
       ) {
         await submitAudioContribution({

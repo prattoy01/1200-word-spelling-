@@ -33,6 +33,7 @@ import {
   deleteWordRecording,
   saveGlobalWordSpellingOverride,
   resetGlobalWordSpellingOverride,
+  syncAudioContributionsNow,
 } from '../services/recordingsService';
 import {
   type ContestRecord,
@@ -45,6 +46,7 @@ import {
   isAdminUser,
   updateAdminPassword,
   signInAsAdminDirect,
+  signInWithGoogle,
   ADMIN_EMAIL,
 } from '../firebase';
 
@@ -156,14 +158,42 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
 
   const handleDirectAdminUnlock = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
+    if (!unlockAdminPwd.trim()) {
+      setUnlockError('Please enter the Admin Password to unlock the Admin Panel.');
+      return;
+    }
     setIsUnlockingAdmin(true);
     setUnlockError(null);
     try {
       await signInAsAdminDirect(unlockAdminPwd);
+      setUnlockAdminPwd('');
       await onRefreshAudioState?.();
     } catch (err) {
       setUnlockError(
-        err instanceof Error ? err.message : 'Could not sign in as Admin.'
+        err instanceof Error ? err.message : 'Incorrect Admin Password.'
+      );
+    } finally {
+      setIsUnlockingAdmin(false);
+    }
+  };
+
+  const handleGoogleAdminUnlock = async () => {
+    setIsUnlockingAdmin(true);
+    setUnlockError(null);
+    try {
+      const profile = await signInWithGoogle();
+      if (!profile.isVerifiedAdmin) {
+        setUnlockError(
+          `Access Denied: "${profile.email}" is not the authorized Admin account (${ADMIN_EMAIL}).`
+        );
+        return;
+      }
+      await onRefreshAudioState?.();
+    } catch (err) {
+      setUnlockError(
+        err instanceof Error
+          ? err.message
+          : 'Google sign-in popup was cancelled or blocked. Please enter your Admin Password above.'
       );
     } finally {
       setIsUnlockingAdmin(false);
@@ -174,19 +204,20 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     return (
       <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 pt-12 pb-28 text-center space-y-5">
         <div className="rounded-3xl bg-[#0d1d16] border border-[#244737] p-7 space-y-4 shadow-2xl">
-          <div className="w-14 h-14 rounded-2xl bg-[#10b981]/15 border border-[#10b981]/40 flex items-center justify-center text-[#10b981] mx-auto">
-            <ShieldCheck className="w-7 h-7" />
+          <div className="w-14 h-14 rounded-2xl bg-[#fbbf24]/15 border border-[#fbbf24]/40 flex items-center justify-center text-[#fbbf24] mx-auto">
+            <Lock className="w-7 h-7" />
           </div>
           <h1 className="text-xl font-extrabold text-white">
-            Switch to Admin Account
+            Admin Panel — Password Protected
           </h1>
           <p className="text-xs sm:text-sm text-[#9bb8aa] leading-relaxed">
             You are currently signed in as{' '}
             <strong className="text-white">
               {userEmail || auth.currentUser?.displayName || 'a Participant / Guest'}
             </strong>
-            . Click below to switch back to the verified Admin account (
-            <strong className="text-[#10b981]">{ADMIN_EMAIL}</strong>) and open the Admin Panel.
+            . Only the verified Administrator (
+            <strong className="text-[#10b981]">{ADMIN_EMAIL}</strong>) with the valid{' '}
+            <strong className="text-white">Admin Password</strong> can unlock this panel.
           </p>
 
           {unlockError && (
@@ -198,35 +229,48 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
           <form onSubmit={handleDirectAdminUnlock} className="space-y-3 max-w-sm mx-auto">
             <input
               type="password"
+              required
               value={unlockAdminPwd}
               onChange={(e) => setUnlockAdminPwd(e.target.value)}
-              placeholder="Admin password (optional unless custom password set)"
+              placeholder="Enter Admin Password (Required)"
               className="w-full min-h-[42px] px-3.5 py-2 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-xs text-white placeholder-[#5e7d6e] focus:outline-none focus:border-[#10b981]"
             />
-            <div className="flex flex-wrap items-center justify-center gap-2.5">
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2.5">
               <button
                 type="submit"
-                disabled={isUnlockingAdmin}
-                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-2 transition-colors disabled:opacity-50"
+                disabled={isUnlockingAdmin || !unlockAdminPwd.trim()}
+                className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] text-xs font-extrabold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
               >
-                <LogIn className="w-4 h-4" />
+                <Lock className="w-4 h-4" />
                 <span>
                   {isUnlockingAdmin
-                    ? 'Switching to Admin...'
-                    : `Unlock Admin Panel (${ADMIN_EMAIL})`}
+                    ? 'Verifying Password...'
+                    : 'Verify Password & Unlock Admin'}
                 </span>
               </button>
 
               <button
                 type="button"
                 onClick={onBackToPractice}
-                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-[#d2e5dc] text-xs font-bold inline-flex items-center gap-2 transition-colors"
+                className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-[#d2e5dc] text-xs font-bold inline-flex items-center justify-center gap-2 transition-colors"
               >
                 <ArrowLeft className="w-4 h-4" />
                 <span>Back to Practice</span>
               </button>
             </div>
           </form>
+
+          <div className="pt-2 border-t border-[#183327] max-w-sm mx-auto">
+            <button
+              type="button"
+              disabled={isUnlockingAdmin}
+              onClick={handleGoogleAdminUnlock}
+              className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
+            >
+              <ShieldCheck className="w-4 h-4 text-[#10b981]" />
+              <span>Or Verify via Google OAuth ({ADMIN_EMAIL})</span>
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -886,10 +930,35 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
       {/* TAB 1: PENDING CONTRIBUTIONS QUEUE */}
       {activeAdminTab === 'pending' && (
         <section className="rounded-3xl bg-[#0d1d16] border border-[#1f3b2e] p-4 sm:p-6 space-y-4">
-          <div className="flex items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-2">
             <h2 className="text-base sm:text-lg font-bold text-white">
               Pending User Audio Contributions ({pendingList.length})
             </h2>
+            <button
+              type="button"
+              disabled={processingId === 'sync_contribs'}
+              onClick={async () => {
+                setProcessingId('sync_contribs');
+                try {
+                  await syncAudioContributionsNow();
+                  await onRefreshAudioState?.();
+                } finally {
+                  setProcessingId(null);
+                }
+              }}
+              className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors disabled:opacity-50"
+            >
+              <RotateCcw
+                className={`w-3.5 h-3.5 ${
+                  processingId === 'sync_contribs' ? 'animate-spin' : ''
+                }`}
+              />
+              <span>
+                {processingId === 'sync_contribs'
+                  ? 'Syncing...'
+                  : 'Sync Contributions'}
+              </span>
+            </button>
           </div>
 
           {pendingList.length === 0 ? (
