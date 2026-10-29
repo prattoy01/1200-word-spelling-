@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   Play,
   Upload,
@@ -455,16 +455,29 @@ export default function App() {
     [contributions]
   );
 
+  const [appNowMs, setAppNowMs] = useState<number>(() => Date.now());
+  useEffect(() => {
+    const id = window.setInterval(() => setAppNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  const handleSyncContests = useCallback(
+    (c: ContestRecord[], s: ContestSubmissionRecord[]) => {
+      setContests(c);
+      setContestSubmissions(s);
+    },
+    []
+  );
+
   const liveOrUpcomingContest = useMemo(() => {
-    const now = Date.now();
-    const live = contests.find((c) => getContestPhase(c, now) === 'live');
+    const live = contests.find((c) => getContestPhase(c, appNowMs) === 'live');
     if (live) return { contest: live, phase: 'live' as const };
     const upcoming = contests.find(
-      (c) => getContestPhase(c, now) === 'upcoming'
+      (c) => getContestPhase(c, appNowMs) === 'upcoming'
     );
     if (upcoming) return { contest: upcoming, phase: 'upcoming' as const };
     return null;
-  }, [contests]);
+  }, [contests, appNowMs]);
 
   // Filtered words for the active tab, Page 1/Page 2 filter & search bar
   const filteredWords: WordItem[] = useMemo(() => {
@@ -1113,10 +1126,7 @@ export default function App() {
           contests={contests}
           submissions={contestSubmissions}
           onBackToPractice={() => setActiveScreen('practice')}
-          onSyncContests={(c, s) => {
-            setContests(c);
-            setContestSubmissions(s);
-          }}
+          onSyncContests={handleSyncContests}
         />
       ) : activeScreen === 'admin' ? (
         <AdminPanelView

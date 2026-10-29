@@ -504,121 +504,130 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
     [currentUserIdSanitized, user?.displayName, participantNameInput]
   );
 
+  const isStartingExamRef = useRef<boolean>(false);
+  const waitingLobbyContestIdRef = useRef<string | null>(null);
+
   // Launch or Resume the strict synchronized contest exam
   const handleStartLiveContestExam = useCallback(
     async (contest: ContestRecord) => {
-      const existingDeviceLock = getDeviceContestLock(contest.id);
-      if (existingDeviceLock?.status === 'completed') {
-        setStatusMessage({
-          type: 'error',
-          text: `Anti-Cheat Lock: This device has already completed and submitted "${contest.title}" (${existingDeviceLock.userName}). Re-entry is blocked.`,
-        });
-        return;
-      }
-
-      const activeUser = await ensureSignedInForContest(false, contest.id);
-      if (!activeUser) {
-        onRequestSignIn();
-        return;
-      }
-      const activeUserIdSanitized = activeUser.uid
-        .replace(/[^a-zA-Z0-9_-]/g, '_')
-        .slice(0, 120);
-      const nowWall = Date.now();
-      const phase = getContestPhase(contest, nowWall);
-      if (phase === 'upcoming') {
-        setStatusMessage({
-          type: 'error',
-          text: 'This contest has not started yet! Wait for the countdown to reach 00:00.',
-        });
-        return;
-      }
-      if (phase !== 'live') {
-        setStatusMessage({
-          type: 'error',
-          text: 'This contest has already ended simultaneously for all participants.',
-        });
-        return;
-      }
-
-      const existingSub = (submissionsByContest[contest.id] || []).find(
-        (s) => s.userId === activeUserIdSanitized
-      );
-      if (existingSub?.status === 'completed') {
-        setStatusMessage({
-          type: 'error',
-          text: 'You have already completed and submitted this contest exam! Only 1 attempt is permitted.',
-        });
-        return;
-      }
-
-      const timeline = getLiveContestTimeline(contest, nowWall);
-      if (timeline.slots.length === 0 || timeline.isFinished) {
-        setStatusMessage({
-          type: 'error',
-          text: 'This contest broadcast has just finished.',
-        });
-        return;
-      }
-
-      // Restore any existing in_progress checkpoint from this device so backing out / refreshing NEVER restarts from Word 1
-      const restoredLocks: Record<number, ContestAttemptLockedWord> = {
-        ...(existingDeviceLock?.lockedWords || {}),
-      };
-      // Any earlier word slot (0 .. activeSlotIndex - 1) that already passed on the global clock while the user was away or late
-      // is permanently locked as missed so nobody can ever go back to earlier words!
-      for (let i = 0; i < timeline.activeSlotIndex; i++) {
-        if (!restoredLocks[i]) {
-          restoredLocks[i] = {
-            userAnswer: '',
-            lockedAfterMs: timeline.slots[i].durationMs,
-            lockedAtWallMs: nowWall,
-            missedWhileAway: true,
-          };
+      if (isStartingExamRef.current) return;
+      isStartingExamRef.current = true;
+      try {
+        const existingDeviceLock = getDeviceContestLock(contest.id);
+        if (existingDeviceLock?.status === 'completed') {
+          setStatusMessage({
+            type: 'error',
+            text: `Anti-Cheat Lock: This device has already completed and submitted "${contest.title}" (${existingDeviceLock.userName}). Re-entry is blocked.`,
+          });
+          return;
         }
+
+        const activeUser = await ensureSignedInForContest(false, contest.id);
+        if (!activeUser) {
+          onRequestSignIn();
+          return;
+        }
+        const activeUserIdSanitized = activeUser.uid
+          .replace(/[^a-zA-Z0-9_-]/g, '_')
+          .slice(0, 120);
+        const nowWall = Date.now();
+        const phase = getContestPhase(contest, nowWall);
+        if (phase === 'upcoming') {
+          setStatusMessage({
+            type: 'error',
+            text: 'This contest has not started yet! Wait for the countdown to reach 00:00.',
+          });
+          return;
+        }
+        if (phase !== 'live') {
+          setStatusMessage({
+            type: 'error',
+            text: 'This contest has already ended simultaneously for all participants.',
+          });
+          return;
+        }
+
+        const existingSub = (
+          submissionsByContestRef.current[contest.id] || []
+        ).find((s) => s.userId === activeUserIdSanitized);
+        if (existingSub?.status === 'completed') {
+          setStatusMessage({
+            type: 'error',
+            text: 'You have already completed and submitted this contest exam! Only 1 attempt is permitted.',
+          });
+          return;
+        }
+
+        const timeline = getLiveContestTimeline(contest, nowWall);
+        if (timeline.slots.length === 0 || timeline.isFinished) {
+          setStatusMessage({
+            type: 'error',
+            text: 'This contest broadcast has just finished.',
+          });
+          return;
+        }
+
+        // Restore any existing in_progress checkpoint from this device so backing out / refreshing NEVER restarts from Word 1
+        const restoredLocks: Record<number, ContestAttemptLockedWord> = {
+          ...(existingDeviceLock?.lockedWords || {}),
+        };
+        // Any earlier word slot (0 .. activeSlotIndex - 1) that already passed on the global clock while the user was away or late
+        // is permanently locked as missed so nobody can ever go back to earlier words!
+        for (let i = 0; i < timeline.activeSlotIndex; i++) {
+          if (!restoredLocks[i]) {
+            restoredLocks[i] = {
+              userAnswer: '',
+              lockedAfterMs: timeline.slots[i].durationMs,
+              lockedAtWallMs: nowWall,
+              missedWhileAway: true,
+            };
+          }
+        }
+
+        const initialStartedAt = existingDeviceLock?.startedAtMs || nowWall;
+        const initialTabSwitches = existingDeviceLock?.tabSwitchCount || 0;
+
+        saveDeviceContestCheckpoint({
+          contestId: contest.id,
+          userId: activeUserIdSanitized,
+          userName: activeUser.displayName || 'Participant',
+          status: 'in_progress',
+          lockedWords: restoredLocks,
+          tabSwitchCount: initialTabSwitches,
+          startedAtMs: initialStartedAt,
+          updatedAtMs: nowWall,
+        });
+
+        void markContestAttemptInProgress({
+          contest,
+          existingSubmission: existingSub,
+        });
+
+        const activeSlot = timeline.slots[timeline.activeSlotIndex];
+        isFinalizingRef.current = false;
+        prevSlotIndexRef.current = timeline.activeSlotIndex;
+        setContestDeck(timeline.slots.map((s) => s.word));
+        setLockedWordsMap(restoredLocks);
+        lockedWordsMapRef.current = restoredLocks;
+        setTabSwitchCount(initialTabSwitches);
+        tabSwitchCountRef.current = initialTabSwitches;
+        setProctorAlertText(null);
+        setConfirmEarlyForfeit(false);
+        setExamIndex(timeline.activeSlotIndex);
+        const currentLocked = restoredLocks[timeline.activeSlotIndex];
+        setExamInput(currentLocked ? currentLocked.userAnswer : '');
+        latestExamInputRef.current = currentLocked
+          ? currentLocked.userAnswer
+          : '';
+        setExamTotalMs(activeSlot.durationMs);
+        setExamRemainingMs(Math.max(0, activeSlot.endMs - nowWall));
+        setExamStartedAtMs(initialStartedAt);
+        setRunningContest(contest);
+      } finally {
+        isStartingExamRef.current = false;
       }
-
-      const initialStartedAt = existingDeviceLock?.startedAtMs || nowWall;
-      const initialTabSwitches = existingDeviceLock?.tabSwitchCount || 0;
-
-      saveDeviceContestCheckpoint({
-        contestId: contest.id,
-        userId: activeUserIdSanitized,
-        userName: activeUser.displayName || 'Participant',
-        status: 'in_progress',
-        lockedWords: restoredLocks,
-        tabSwitchCount: initialTabSwitches,
-        startedAtMs: initialStartedAt,
-        updatedAtMs: nowWall,
-      });
-
-      void markContestAttemptInProgress({
-        contest,
-        existingSubmission: existingSub,
-      });
-
-      const activeSlot = timeline.slots[timeline.activeSlotIndex];
-      isFinalizingRef.current = false;
-      prevSlotIndexRef.current = timeline.activeSlotIndex;
-      setContestDeck(timeline.slots.map((s) => s.word));
-      setLockedWordsMap(restoredLocks);
-      lockedWordsMapRef.current = restoredLocks;
-      setTabSwitchCount(initialTabSwitches);
-      tabSwitchCountRef.current = initialTabSwitches;
-      setProctorAlertText(null);
-      setConfirmEarlyForfeit(false);
-      setExamIndex(timeline.activeSlotIndex);
-      const currentLocked = restoredLocks[timeline.activeSlotIndex];
-      setExamInput(currentLocked ? currentLocked.userAnswer : '');
-      latestExamInputRef.current = currentLocked
-        ? currentLocked.userAnswer
-        : '';
-      setExamTotalMs(activeSlot.durationMs);
-      setExamRemainingMs(Math.max(0, activeSlot.endMs - nowWall));
-      setExamStartedAtMs(initialStartedAt);
-      setRunningContest(contest);
     },
-    [ensureSignedInForContest, onRequestSignIn, submissionsByContest]
+    [ensureSignedInForContest, onRequestSignIn]
   );
 
   // Auto-launch exam if the user registered for the selected contest, is waiting in the lobby,
@@ -628,29 +637,37 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
       return;
     }
     const phase = getContestPhase(selectedContest, nowMs);
+    if (phase === 'upcoming') {
+      waitingLobbyContestIdRef.current = selectedContest.id;
+      return;
+    }
     if (phase !== 'live') return;
 
     const deviceLock = getDeviceContestLock(selectedContest.id);
-    if (
-      deviceLock?.status === 'in_progress' &&
-      mySubmissionForSelected?.status !== 'completed'
-    ) {
+    if (deviceLock?.status === 'completed' || mySubmissionForSelected?.status === 'completed') {
+      return;
+    }
+
+    if (deviceLock?.status === 'in_progress') {
       void handleStartLiveContestExam(selectedContest);
       return;
     }
 
+    const wasWaitingInLobby =
+      waitingLobbyContestIdRef.current === selectedContest.id;
+    const isRegistered = mySubmissionForSelected?.status === 'registered';
+
     if (
       autoStartWhenLive &&
-      user &&
-      mySubmissionForSelected?.status === 'registered' &&
-      nowMs - selectedContest.startTimeMs < 5000
+      (wasWaitingInLobby ||
+        (isRegistered && nowMs - selectedContest.startTimeMs < 30000))
     ) {
+      waitingLobbyContestIdRef.current = null;
       void handleStartLiveContestExam(selectedContest);
     }
   }, [
     nowMs,
     autoStartWhenLive,
-    user,
     selectedContest,
     runningContest,
     activeTab,
