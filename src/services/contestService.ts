@@ -449,6 +449,69 @@ function writeLocalSubmissions(list: ContestSubmissionRecord[]): void {
   }
 }
 
+async function pushContestsToSharedServer(contests: ContestRecord[]): Promise<void> {
+  if (typeof window === 'undefined' || contests.length === 0) return;
+  try {
+    await fetch('/api/sync/contests', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contests }),
+    });
+  } catch {
+    // Ignore if offline
+  }
+}
+
+async function deleteContestOnSharedServer(contestId: string): Promise<void> {
+  if (typeof window === 'undefined' || !contestId) return;
+  try {
+    await fetch(`/api/sync/contests/${encodeURIComponent(contestId)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // Ignore if offline
+  }
+}
+
+async function pushSubmissionsToSharedServer(
+  submissions: ContestSubmissionRecord[]
+): Promise<void> {
+  if (typeof window === 'undefined' || submissions.length === 0) return;
+  try {
+    await fetch('/api/sync/contest-submissions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ submissions }),
+    });
+  } catch {
+    // Ignore if offline
+  }
+}
+
+async function fetchSharedServerContestState(): Promise<{
+  contests: ContestRecord[];
+  deletedContestIds: string[];
+  submissions: ContestSubmissionRecord[];
+} | null> {
+  if (typeof window === 'undefined') return null;
+  try {
+    const res = await fetch('/api/sync/state?includeAudio=false', {
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return {
+      contests: Array.isArray(data?.contests) ? data.contests : [],
+      deletedContestIds: Array.isArray(data?.deletedContestIds)
+        ? data.deletedContestIds
+        : [],
+      submissions: Array.isArray(data?.submissions) ? data.submissions : [],
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Creates a new scheduled blind contest.
  * The word list is NOT chosen by the setter; a cryptographic randomSeed is stored so words
@@ -529,6 +592,10 @@ export async function createScheduledContest(params: {
   const existingLocal = readLocalContests().filter((c) => c.id !== contestId);
   writeLocalContests([record, ...existingLocal]);
 
+  // 1. Sync immediately to shared backend server so all connected users receive the contest right away
+  await pushContestsToSharedServer([record]);
+
+  // 2. Also persist to Cloud Firestore
   try {
     const docRef = doc(db, CONTESTS_PATH, contestId);
     await setDoc(docRef, {
@@ -549,7 +616,7 @@ export async function createScheduledContest(params: {
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    console.warn('Contest saved locally (cloud quota/offline fallback):', err);
+    console.warn('Contest saved via shared server & local cache (Firestore fallback):', err);
   }
 
   return record;
@@ -564,6 +631,10 @@ export async function deleteOrCancelContest(contestId: string): Promise<void> {
   );
   writeLocalSubmissions(existingSubs);
 
+  // 1. Delete on shared backend server so all users remove it immediately
+  await deleteContestOnSharedServer(contestId);
+
+  // 2. Also mark cancelled & delete in Cloud Firestore
   try {
     await updateDoc(doc(db, CONTESTS_PATH, contestId), {
       status: 'cancelled',
@@ -576,7 +647,7 @@ export async function deleteOrCancelContest(contestId: string): Promise<void> {
   try {
     await deleteDoc(doc(db, CONTESTS_PATH, contestId));
   } catch {
-    // Ignore if offline or quota reached; status: 'cancelled' & local tombstone already applied
+    // Ignore if offline or quota reached; status: 'cancelled' & server tombstone already applied
   }
 }
 
@@ -607,6 +678,16 @@ export async function registerForContest(
   const userEmail = (user.email || '').trim().slice(0, 160);
   const nowMs = Date.now();
 
+  const existingLocalSub = readLocalSubmissions().find((s) => s.id === subId);
+  if (
+    existingLocalSub &&
+    (existingLocalSub.status === 'in_progress' ||
+      existingLocalSub.status === 'completed')
+  ) {
+    await pushSubmissionsToSharedServer([existingLocalSub]);
+    return existingLocalSub;
+  }
+
   const record: ContestSubmissionRecord = {
     id: subId,
     contestId: contest.id,
@@ -618,13 +699,17 @@ export async function registerForContest(
     correctCount: 0,
     accuracy: 0,
     timeTakenMs: 0,
-    createdAtMs: nowMs,
+    createdAtMs: existingLocalSub?.createdAtMs || nowMs,
     updatedAtMs: nowMs,
   };
 
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
+  // 1. Push immediately to shared server
+  await pushSubmissionsToSharedServer([record]);
+
+  // 2. Also persist to Cloud Firestore
   try {
     await setDoc(doc(db, SUBMISSIONS_PATH, subId), {
       id: record.id,
@@ -641,14 +726,14 @@ export async function registerForContest(
       updatedAt: serverTimestamp(),
     });
   } catch (err) {
-    console.warn('Contest registration saved locally (cloud quota/offline fallback):', err);
+    console.warn('Contest registration synced via shared server (Firestore fallback):', err);
   }
 
   return record;
 }
 
 /**
- * Marks a user's contest attempt as 'in_progress' in both local cache and Cloud Firestore
+ * Marks a user's contest attempt as 'in_progress' in local cache, shared server, and Cloud Firestore
  * so leaving or refreshing the page can never reset their attempt back to 'registered' or Word 1.
  */
 export async function markContestAttemptInProgress(params: {
@@ -702,21 +787,15 @@ export async function markContestAttemptInProgress(params: {
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
+  // 1. Push immediately to shared server
+  await pushSubmissionsToSharedServer([record]);
+
+  // 2. Persist to Cloud Firestore
   const docRef = doc(db, SUBMISSIONS_PATH, subId);
   try {
-    if (params.existingSubmission) {
-      await updateDoc(docRef, {
-        userName: record.userName,
-        userEmail: record.userEmail,
-        status: 'in_progress',
-        totalWords: record.totalWords,
-        correctCount: record.correctCount,
-        accuracy: record.accuracy,
-        timeTakenMs: record.timeTakenMs,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(docRef, {
+    await setDoc(
+      docRef,
+      {
         id: record.id,
         contestId: record.contestId,
         userId: record.userId,
@@ -729,10 +808,11 @@ export async function markContestAttemptInProgress(params: {
         timeTakenMs: record.timeTakenMs,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
-    }
+      },
+      { merge: true }
+    );
   } catch {
-    // Ignore transient cloud sync error; local checkpoint is already saved
+    // Ignore transient cloud sync error; shared server & local checkpoint already saved
   }
 
   return record;
@@ -808,22 +888,15 @@ export async function submitContestExamResult(params: {
   const localList = readLocalSubmissions().filter((s) => s.id !== subId);
   writeLocalSubmissions([record, ...localList]);
 
+  // 1. Push immediately to shared server so leaderboard updates across all users
+  await pushSubmissionsToSharedServer([record]);
+
+  // 2. Also persist to Cloud Firestore
   const docRef = doc(db, SUBMISSIONS_PATH, subId);
   try {
-    if (params.existingSubmission) {
-      await updateDoc(docRef, {
-        userName: record.userName,
-        userEmail: record.userEmail,
-        status: 'completed',
-        totalWords: record.totalWords,
-        correctCount: record.correctCount,
-        accuracy: record.accuracy,
-        timeTakenMs: record.timeTakenMs,
-        results: sanitizedResults,
-        updatedAt: serverTimestamp(),
-      });
-    } else {
-      await setDoc(docRef, {
+    await setDoc(
+      docRef,
+      {
         id: record.id,
         contestId: record.contestId,
         userId: record.userId,
@@ -837,28 +910,11 @@ export async function submitContestExamResult(params: {
         results: sanitizedResults,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-      });
-    }
-  } catch {
-    try {
-      await setDoc(docRef, {
-        id: record.id,
-        contestId: record.contestId,
-        userId: record.userId,
-        userName: record.userName,
-        userEmail: record.userEmail,
-        status: 'completed',
-        totalWords: record.totalWords,
-        correctCount: record.correctCount,
-        accuracy: record.accuracy,
-        timeTakenMs: record.timeTakenMs,
-        results: sanitizedResults,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (err) {
-      console.warn('Contest submission saved locally (cloud quota/offline fallback):', err);
-    }
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Contest submission synced via shared server (Firestore fallback):', err);
   }
 
   // Also save to the user's personal Practice/Exam history so their per-word accuracy bars update!
@@ -894,13 +950,77 @@ function sortContestsLiveFirst(list: ContestRecord[]): ContestRecord[] {
   });
 }
 
+function mergeSubmissionsLists(
+  ...lists: ContestSubmissionRecord[][]
+): ContestSubmissionRecord[] {
+  const statusRank = (st?: string) => {
+    if (st === 'completed') return 3;
+    if (st === 'in_progress') return 2;
+    return 1;
+  };
+  const map = new Map<string, ContestSubmissionRecord>();
+  for (const list of lists) {
+    for (const item of list) {
+      if (!item || !item.id) continue;
+      const existing = map.get(item.id);
+      if (!existing) {
+        map.set(item.id, item);
+      } else {
+        const rIn = statusRank(item.status);
+        const rEx = statusRank(existing.status);
+        if (
+          rIn > rEx ||
+          (rIn === rEx && (item.updatedAtMs || 0) >= (existing.updatedAtMs || 0))
+        ) {
+          map.set(item.id, {
+            ...existing,
+            ...item,
+            results: item.results || existing.results,
+          });
+        }
+      }
+    }
+  }
+  return Array.from(map.values());
+}
+
 /**
- * Actively fetches all contests & submissions from Cloud Firestore and merges any unsynced local contests.
+ * Actively fetches all contests & submissions from Shared Backend Server + Cloud Firestore
+ * and merges any unsynced local contests/submissions so all users see the exact same state.
  */
 export async function syncContestsNow(): Promise<{
   contests: ContestRecord[];
   submissions: ContestSubmissionRecord[];
 }> {
+  const cancelledIds = readDeletedContestIds();
+  const byContestId = new Map<string, ContestRecord>();
+  const serverContestsIds = new Set<string>();
+  const serverSubIds = new Set<string>();
+
+  // Step 1: Pull from Shared Backend Server (/api/sync/state)
+  const serverState = await fetchSharedServerContestState();
+  if (serverState) {
+    for (const delId of serverState.deletedContestIds) {
+      cancelledIds.add(delId);
+      markContestDeletedLocally(delId);
+    }
+    for (const c of serverState.contests) {
+      if (!c || !c.id) continue;
+      serverContestsIds.add(c.id);
+      if (c.status === 'cancelled' || cancelledIds.has(c.id)) {
+        cancelledIds.add(c.id);
+        markContestDeletedLocally(c.id);
+        continue;
+      }
+      byContestId.set(c.id, c);
+    }
+    for (const s of serverState.submissions) {
+      if (s && s.id) serverSubIds.add(s.id);
+    }
+  }
+
+  // Step 2: Also pull from Cloud Firestore if quota is available
+  const firestoreSubs: ContestSubmissionRecord[] = [];
   try {
     const qContests = query(
       collection(db, CONTESTS_PATH),
@@ -918,20 +1038,16 @@ export async function syncContestsNow(): Promise<{
       getDocs(qSubs),
     ]);
 
-    const cloudIds = new Set<string>();
-    const cancelledIds = readDeletedContestIds();
-    const list: ContestRecord[] = [];
-
     contestSnap.forEach((docSnap) => {
       const d = docSnap.data();
       const cid = d.id || docSnap.id;
-      cloudIds.add(cid);
       if (d.status === 'cancelled' || cancelledIds.has(cid)) {
         cancelledIds.add(cid);
         markContestDeletedLocally(cid);
+        byContestId.delete(cid);
         return;
       }
-      list.push({
+      byContestId.set(cid, {
         id: cid,
         title: d.title || 'IELTS Spelling Contest',
         creatorId: d.creatorId || 'user',
@@ -953,27 +1069,11 @@ export async function syncContestsNow(): Promise<{
       });
     });
 
-    const localContests = readLocalContests();
-    for (const loc of localContests) {
-      if (
-        loc.status === 'active' &&
-        !cloudIds.has(loc.id) &&
-        !cancelledIds.has(loc.id)
-      ) {
-        list.push(loc);
-      }
-    }
-
-    const sortedContests = sortContestsLiveFirst(list);
-    writeLocalContests(sortedContests);
-
-    const cloudSubIds = new Set<string>();
-    const subList: ContestSubmissionRecord[] = [];
     subSnap.forEach((docSnap) => {
       const d = docSnap.data();
       const sid = d.id || docSnap.id;
-      cloudSubIds.add(sid);
-      subList.push({
+      if (cancelledIds.has(d.contestId)) return;
+      firestoreSubs.push({
         id: sid,
         contestId: d.contestId || '',
         userId: d.userId || '',
@@ -992,26 +1092,56 @@ export async function syncContestsNow(): Promise<{
         updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
       });
     });
+  } catch {
+    // Firestore quota/offline fallback — shared server & local cache already active
+  }
 
-    for (const locSub of readLocalSubmissions()) {
-      if (!cloudSubIds.has(locSub.id)) {
-        subList.push(locSub);
+  // Step 3: Merge local contests & push any missing contests to Shared Server so other users get them
+  const localContests = readLocalContests();
+  const contestsToPush: ContestRecord[] = [];
+  for (const loc of localContests) {
+    if (loc.status === 'active' && !cancelledIds.has(loc.id)) {
+      if (!byContestId.has(loc.id)) {
+        byContestId.set(loc.id, loc);
+      }
+      if (!serverContestsIds.has(loc.id)) {
+        contestsToPush.push(loc);
       }
     }
-    writeLocalSubmissions(subList);
-
-    return { contests: sortedContests, submissions: subList };
-  } catch (err) {
-    console.warn('Contest sync using local cache (quota/offline fallback):', err);
-    return {
-      contests: sortContestsLiveFirst(readLocalContests()),
-      submissions: readLocalSubmissions(),
-    };
   }
+  for (const c of byContestId.values()) {
+    if (!serverContestsIds.has(c.id)) {
+      contestsToPush.push(c);
+    }
+  }
+  if (contestsToPush.length > 0) {
+    void pushContestsToSharedServer(contestsToPush);
+  }
+
+  const sortedContests = sortContestsLiveFirst(Array.from(byContestId.values()));
+  writeLocalContests(sortedContests);
+
+  // Step 4: Merge submissions from Shared Server, Firestore, and Local Cache
+  const localSubs = readLocalSubmissions().filter(
+    (s) => !cancelledIds.has(s.contestId)
+  );
+  const mergedSubs = mergeSubmissionsLists(
+    serverState?.submissions || [],
+    firestoreSubs,
+    localSubs
+  ).filter((s) => !cancelledIds.has(s.contestId));
+
+  const subsToPush = mergedSubs.filter((s) => !serverSubIds.has(s.id));
+  if (subsToPush.length > 0) {
+    void pushSubmissionsToSharedServer(mergedSubs);
+  }
+
+  writeLocalSubmissions(mergedSubs);
+  return { contests: sortedContests, submissions: mergedSubs };
 }
 
 /**
- * Subscribes to all active contests in real time (with local storage & BroadcastChannel sync).
+ * Subscribes to all active contests in real time across users (Shared Server polling + Firestore onSnapshot + BroadcastChannel).
  */
 export function subscribeToContests(
   onUpdate: (contests: ContestRecord[]) => void
@@ -1020,6 +1150,21 @@ export function subscribeToContests(
     onUpdate(sortContestsLiveFirst(readLocalContests()));
   };
   emitLocal();
+
+  // Immediately sync with shared server & Firestore
+  void syncContestsNow().then(({ contests }) => {
+    onUpdate(contests);
+  });
+
+  // Poll shared server every 2.5s so any contest created or deleted by another user syncs immediately
+  const pollInterval =
+    typeof window !== 'undefined'
+      ? window.setInterval(() => {
+          void syncContestsNow().then(({ contests }) => {
+            onUpdate(contests);
+          });
+        }, 2500)
+      : null;
 
   const q = query(
     collection(db, CONTESTS_PATH),
@@ -1082,6 +1227,7 @@ export function subscribeToContests(
     } catch {
       // ignore
     }
+    void pushContestsToSharedServer(sorted);
     onUpdate(sorted);
   };
 
@@ -1092,8 +1238,7 @@ export function subscribeToContests(
       snapshot.forEach((docSnap) => docs.push(docSnap));
       processDocs(docs);
     },
-    (err) => {
-      console.warn('Contest subscription operating from local cache:', err);
+    () => {
       emitLocal();
     }
   );
@@ -1121,6 +1266,9 @@ export function subscribeToContests(
 
   return () => {
     unsubSnapshot();
+    if (pollInterval !== null && typeof window !== 'undefined') {
+      window.clearInterval(pollInterval);
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('storage', onStorageChange);
       window.removeEventListener('lw-contest-local-update', onLocalCustomUpdate);
@@ -1136,7 +1284,7 @@ export function subscribeToContests(
 }
 
 /**
- * Subscribes to contest submissions for live leaderboard updates.
+ * Subscribes to contest submissions for live leaderboard updates across all users.
  */
 export function subscribeToContestSubmissions(
   onUpdate: (submissions: ContestSubmissionRecord[]) => void
@@ -1155,12 +1303,10 @@ export function subscribeToContestSubmissions(
   const processSubDocs = (
     docs: Array<{ id: string; data: () => Record<string, any> }>
   ) => {
-    const cloudSubIds = new Set<string>();
     const list: ContestSubmissionRecord[] = [];
     docs.forEach((docSnap) => {
       const d = docSnap.data();
       const sid = d.id || docSnap.id;
-      cloudSubIds.add(sid);
       list.push({
         id: sid,
         contestId: d.contestId || '',
@@ -1181,21 +1327,17 @@ export function subscribeToContestSubmissions(
       });
     });
 
-    for (const locSub of readLocalSubmissions()) {
-      if (!cloudSubIds.has(locSub.id)) {
-        list.push(locSub);
-      }
-    }
-
+    const merged = mergeSubmissionsLists(list, readLocalSubmissions());
     try {
       localStorage.setItem(
         LOCAL_SUBMISSIONS_KEY,
-        JSON.stringify(list.slice(0, 200))
+        JSON.stringify(merged.slice(0, 200))
       );
     } catch {
       // ignore
     }
-    onUpdate(list);
+    void pushSubmissionsToSharedServer(merged);
+    onUpdate(merged);
   };
 
   const unsubSnapshot = onSnapshot(
@@ -1205,8 +1347,7 @@ export function subscribeToContestSubmissions(
       snapshot.forEach((docSnap) => docs.push(docSnap));
       processSubDocs(docs);
     },
-    (err) => {
-      console.warn('Contest submissions operating from local cache:', err);
+    () => {
       emitLocal();
     }
   );
@@ -1247,5 +1388,6 @@ export function subscribeToContestSubmissions(
     }
   };
 }
+
 
 
