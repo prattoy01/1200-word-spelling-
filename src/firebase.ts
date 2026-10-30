@@ -838,6 +838,12 @@ const isolatedGoogleAuth = getAuth(googleAuthApp);
 const googleOAuthProvider = new GoogleAuthProvider();
 googleOAuthProvider.setCustomParameters({ prompt: 'select_account' });
 
+let inMemoryFirebaseIdToken: string | null = null;
+
+export function getInMemoryFirebaseIdToken(): string | null {
+  return inMemoryFirebaseIdToken;
+}
+
 /**
  * Real Google OAuth Popup sign-in via isolated Firebase App instance (`lw-google-auth`).
  * Grants Admin access ONLY if Google's official OAuth server verifies `prattoy.photos01@gmail.com`.
@@ -855,6 +861,21 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
   const uid = emailToDeterministicUid(email);
   const isVerifiedAdmin =
     email === ADMIN_EMAIL.toLowerCase() && fbUser.emailVerified;
+
+  try {
+    const idToken = await fbUser.getIdToken();
+    inMemoryFirebaseIdToken = idToken;
+    await fetch('/api/users/sync', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${idToken}`,
+      },
+      body: JSON.stringify({ email, displayName }),
+    });
+  } catch {
+    // Non-blocking if running on static host
+  }
 
   const sessionToken = await computeSessionToken(uid, email, fbUser.uid);
 
