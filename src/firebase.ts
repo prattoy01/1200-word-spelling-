@@ -34,6 +34,48 @@ export const ADMIN_EMAIL = 'prattoy.photos01@gmail.com';
 const DEFAULT_ADMIN_INITIAL_SECRET = 'Prattoy@2026';
 const USER_ACCOUNTS_COLLECTION = 'userAccounts';
 
+/**
+ * Primary Cloud Sync Mode:
+ * By default, high-frequency collections (Contests, Leaderboard Submissions, Audio Contributions,
+ * General Recordings, and Word Overrides) use our built-in `/api/sync` Cloud Server + Global Relay
+ * instead of opening 6 simultaneous Firestore `onSnapshot` collection listeners on every page load
+ * (which previously consumed ~500 Firestore document reads per refresh and hit the 50,000/day free limit).
+ */
+export const USE_FIRESTORE_COLLECTION_LISTENERS = false;
+const FIRESTORE_QUOTA_COOLDOWN_KEY = 'lw_firestore_quota_exhausted_until_v1';
+
+export function isFirestoreQuotaExhausted(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    const until = Number(
+      window.localStorage.getItem(FIRESTORE_QUOTA_COOLDOWN_KEY) || '0'
+    );
+    return until > Date.now();
+  } catch {
+    return false;
+  }
+}
+
+export function markFirestoreQuotaExhausted(error?: unknown): void {
+  if (typeof window === 'undefined') return;
+  const msg = error instanceof Error ? error.message : String(error || '');
+  if (
+    !error ||
+    msg.includes('Quota limit exceeded') ||
+    msg.includes('resource-exhausted')
+  ) {
+    try {
+      // Pause Firestore requests for 60 minutes when daily quota is exhausted
+      window.localStorage.setItem(
+        FIRESTORE_QUOTA_COOLDOWN_KEY,
+        String(Date.now() + 60 * 60 * 1000)
+      );
+    } catch {
+      // ignore
+    }
+  }
+}
+
 export interface CloudUserProfile {
   uid: string;
   displayName: string;
@@ -293,6 +335,9 @@ const ADMIN_CUSTOM_PWD_STORAGE_KEY = 'lw_admin_custom_pwd_hash_v1';
  * when online, without ever force-signing-out an active Admin session during quota/offline states.
  */
 async function ensureAdminAccountProtectedAndVerifySession(): Promise<void> {
+  if (!USE_FIRESTORE_COLLECTION_LISTENERS || isFirestoreQuotaExhausted()) {
+    return;
+  }
   const adminUid = emailToDeterministicUid(ADMIN_EMAIL);
   const adminRef = doc(db, USER_ACCOUNTS_COLLECTION, adminUid);
 
@@ -322,6 +367,7 @@ async function ensureAdminAccountProtectedAndVerifySession(): Promise<void> {
       }
     }
   } catch (err) {
+    markFirestoreQuotaExhausted(err);
     console.warn('Account verification check skipped while offline/quota:', err);
   }
 }
@@ -882,6 +928,7 @@ export function handleFirestoreError(
     errMsg.includes('unavailable');
 
   if (isQuotaOrOffline) {
+    markFirestoreQuotaExhausted(error);
     console.warn(
       `[Cloud Sync Cache Mode] Firestore ${operationType} on "${path}" using local cache (quota/offline):`,
       errMsg

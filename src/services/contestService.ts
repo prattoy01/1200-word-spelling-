@@ -12,7 +12,13 @@ import {
   serverTimestamp,
   type Unsubscribe,
 } from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import {
+  db,
+  auth,
+  USE_FIRESTORE_COLLECTION_LISTENERS,
+  isFirestoreQuotaExhausted,
+  markFirestoreQuotaExhausted,
+} from '../firebase';
 import { WORDS_CATALOG, type WordItem } from '../data/words';
 import {
   type SessionWordResult,
@@ -1281,17 +1287,22 @@ export function subscribeToContests(
     emitIfChanged(sorted);
   };
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    (snapshot) => {
-      const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
-      snapshot.forEach((docSnap) => docs.push(docSnap));
-      processDocs(docs);
-    },
-    () => {
-      emitLocal();
-    }
-  );
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          (snapshot) => {
+            const docs: Array<{ id: string; data: () => Record<string, any> }> =
+              [];
+            snapshot.forEach((docSnap) => docs.push(docSnap));
+            processDocs(docs);
+          },
+          (err) => {
+            markFirestoreQuotaExhausted(err);
+            emitLocal();
+          }
+        )
+      : () => {};
 
   let bc: BroadcastChannel | null = null;
   const onStorageChange = (e: StorageEvent) => {
@@ -1305,7 +1316,9 @@ export function subscribeToContests(
     window.addEventListener('storage', onStorageChange);
     window.addEventListener('lw-contest-local-update', onLocalCustomUpdate);
     window.addEventListener('focus', () => {
-      void syncContestsNow().then(({ contests }) => emitIfChanged(contests));
+      void syncContestsNow(false).then(({ contests }) =>
+        emitIfChanged(contests)
+      );
     });
     try {
       if ('BroadcastChannel' in window) {
@@ -1411,17 +1424,22 @@ export function subscribeToContestSubmissions(
     emitSubsIfChanged(merged);
   };
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    (snapshot) => {
-      const docs: Array<{ id: string; data: () => Record<string, any> }> = [];
-      snapshot.forEach((docSnap) => docs.push(docSnap));
-      processSubDocs(docs);
-    },
-    () => {
-      emitLocal();
-    }
-  );
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          (snapshot) => {
+            const docs: Array<{ id: string; data: () => Record<string, any> }> =
+              [];
+            snapshot.forEach((docSnap) => docs.push(docSnap));
+            processSubDocs(docs);
+          },
+          (err) => {
+            markFirestoreQuotaExhausted(err);
+            emitLocal();
+          }
+        )
+      : () => {};
 
   let bc: BroadcastChannel | null = null;
   const onStorageChange = (e: StorageEvent) => {

@@ -22,6 +22,9 @@ import {
   emailToDeterministicUid,
   OperationType,
   handleFirestoreError,
+  USE_FIRESTORE_COLLECTION_LISTENERS,
+  isFirestoreQuotaExhausted,
+  markFirestoreQuotaExhausted,
 } from '../firebase';
 import {
   type ProcessedAudio,
@@ -690,74 +693,78 @@ export function subscribeToPublishedRecordings(
     }
   }
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    async (snapshot) => {
-      const deletedRecSet = readDeletedRecordingIds();
-      const localMap = await getAllLocalCachedRecordings();
-      const nextFirestoreGeneral: Record<string, CloudRecording> = {};
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          async (snapshot) => {
+            const deletedRecSet = readDeletedRecordingIds();
+            const localMap = await getAllLocalCachedRecordings();
+            const nextFirestoreGeneral: Record<string, CloudRecording> = {};
 
-      snapshot.forEach((docSnap) => {
-        const data = docSnap.data();
-        const wordId = data.wordId || docSnap.id;
-        if (deletedRecSet.has(wordId)) return;
-        const word = data.word || wordId;
+            snapshot.forEach((docSnap) => {
+              const data = docSnap.data();
+              const wordId = data.wordId || docSnap.id;
+              if (deletedRecSet.has(wordId)) return;
+              const word = data.word || wordId;
 
-        if (isSyntheticRestoredPlaceholder(word, data.audioDataUrl)) {
-          return;
-        }
+              if (isSyntheticRestoredPlaceholder(word, data.audioDataUrl)) {
+                return;
+              }
 
-        const updatedAtMs =
-          data.updatedAt?.toMillis?.() ||
-          data.createdAt?.toMillis?.() ||
-          Date.now();
+              const updatedAtMs =
+                data.updatedAt?.toMillis?.() ||
+                data.createdAt?.toMillis?.() ||
+                Date.now();
 
-        const cloudRec: CloudRecording = {
-          wordId,
-          word,
-          banglaMeaning: data.banglaMeaning || '',
-          audioDataUrl: data.audioDataUrl,
-          mimeType: data.mimeType || 'audio/mpeg',
-          fileName: data.fileName || `${wordId}.mp3`,
-          fileSize: data.fileSize || 0,
-          durationMs: data.durationMs || 1200,
-          ownerId: data.ownerId || 'cloud_studio_admin',
-          ownerName: data.ownerName || 'General Audio',
-          status: 'published',
-          updatedAtMs,
-          source: 'cloud',
-          isPersonalOverride: false,
-        };
+              const cloudRec: CloudRecording = {
+                wordId,
+                word,
+                banglaMeaning: data.banglaMeaning || '',
+                audioDataUrl: data.audioDataUrl,
+                mimeType: data.mimeType || 'audio/mpeg',
+                fileName: data.fileName || `${wordId}.mp3`,
+                fileSize: data.fileSize || 0,
+                durationMs: data.durationMs || 1200,
+                ownerId: data.ownerId || 'cloud_studio_admin',
+                ownerName: data.ownerName || 'General Audio',
+                status: 'published',
+                updatedAtMs,
+                source: 'cloud',
+                isPersonalOverride: false,
+              };
 
-        nextFirestoreGeneral[wordId] = cloudRec;
+              nextFirestoreGeneral[wordId] = cloudRec;
 
-        const existingLocal = localMap[wordId];
-        if (!existingLocal?.isPersonalOverride) {
-          void saveRecordingToLocalCache({
-            wordId: cloudRec.wordId,
-            word: cloudRec.word,
-            banglaMeaning: cloudRec.banglaMeaning,
-            audioDataUrl: cloudRec.audioDataUrl,
-            mimeType: cloudRec.mimeType,
-            fileName: cloudRec.fileName,
-            fileSize: cloudRec.fileSize,
-            durationMs: cloudRec.durationMs,
-            ownerId: cloudRec.ownerId,
-            ownerName: cloudRec.ownerName,
-            updatedAtMs: cloudRec.updatedAtMs,
-            syncedToCloud: true,
-            isPersonalOverride: false,
-          });
-        }
-      });
+              const existingLocal = localMap[wordId];
+              if (!existingLocal?.isPersonalOverride) {
+                void saveRecordingToLocalCache({
+                  wordId: cloudRec.wordId,
+                  word: cloudRec.word,
+                  banglaMeaning: cloudRec.banglaMeaning,
+                  audioDataUrl: cloudRec.audioDataUrl,
+                  mimeType: cloudRec.mimeType,
+                  fileName: cloudRec.fileName,
+                  fileSize: cloudRec.fileSize,
+                  durationMs: cloudRec.durationMs,
+                  ownerId: cloudRec.ownerId,
+                  ownerName: cloudRec.ownerName,
+                  updatedAtMs: cloudRec.updatedAtMs,
+                  syncedToCloud: true,
+                  isPersonalOverride: false,
+                });
+              }
+            });
 
-      latestFirestoreGeneral = nextFirestoreGeneral;
-      await buildAndEmitMerged();
-    },
-    () => {
-      void buildAndEmitMerged();
-    }
-  );
+            latestFirestoreGeneral = nextFirestoreGeneral;
+            await buildAndEmitMerged();
+          },
+          (err) => {
+            markFirestoreQuotaExhausted(err);
+            void buildAndEmitMerged();
+          }
+        )
+      : () => {};
 
   return () => {
     unsubSnapshot();
@@ -1156,15 +1163,20 @@ export async function syncAudioContributionsNow(): Promise<
   const [state, relaySnap, firestoreSnap] = await Promise.all([
     fetchSharedServerAudioState(true),
     pollCloudRelaySnapshot(true),
-    Promise.race([
-      getDocs(
-        query(
-          collection(db, CONTRIBUTIONS_PATH),
-          where('status', 'in', ['pending', 'approved', 'rejected'])
-        )
-      ),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
-    ]).catch(() => null),
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? Promise.race([
+          getDocs(
+            query(
+              collection(db, CONTRIBUTIONS_PATH),
+              where('status', 'in', ['pending', 'approved', 'rejected'])
+            )
+          ),
+          new Promise<null>((resolve) => setTimeout(() => resolve(null), 3000)),
+        ]).catch((err) => {
+          markFirestoreQuotaExhausted(err);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
   const deletedSet = readDeletedContributionIds();
@@ -1421,41 +1433,49 @@ export function subscribeToAudioContributions(
     where('status', 'in', ['pending', 'approved', 'rejected'])
   );
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    (snapshot) => {
-      const nextFirestore: AudioContributionRecord[] = [];
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        if (isSyntheticRestoredPlaceholder(d.word || docSnap.id, d.audioDataUrl)) {
-          return;
-        }
-        nextFirestore.push({
-          id: docSnap.id,
-          wordId: d.wordId,
-          word: d.word,
-          banglaMeaning: d.banglaMeaning || '',
-          audioDataUrl: d.audioDataUrl,
-          mimeType: d.mimeType || 'audio/mpeg',
-          fileName: d.fileName || `${d.wordId}.mp3`,
-          fileSize: d.fileSize || 0,
-          durationMs: d.durationMs || 1200,
-          contributorId: d.contributorId || 'community_user',
-          contributorName: d.contributorName || 'Community Member',
-          status: d.status || 'pending',
-          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-          updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-        });
-      });
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          (snapshot) => {
+            const nextFirestore: AudioContributionRecord[] = [];
+            snapshot.forEach((docSnap) => {
+              const d = docSnap.data();
+              if (
+                isSyntheticRestoredPlaceholder(
+                  d.word || docSnap.id,
+                  d.audioDataUrl
+                )
+              ) {
+                return;
+              }
+              nextFirestore.push({
+                id: docSnap.id,
+                wordId: d.wordId,
+                word: d.word,
+                banglaMeaning: d.banglaMeaning || '',
+                audioDataUrl: d.audioDataUrl,
+                mimeType: d.mimeType || 'audio/mpeg',
+                fileName: d.fileName || `${d.wordId}.mp3`,
+                fileSize: d.fileSize || 0,
+                durationMs: d.durationMs || 1200,
+                contributorId: d.contributorId || 'community_user',
+                contributorName: d.contributorName || 'Community Member',
+                status: d.status || 'pending',
+                createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+                updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+              });
+            });
 
-      firestoreList = nextFirestore;
-      emitMerged();
-    },
-    () => {
-      // Never wipe contributions to [] when Firestore hits daily read quota!
-      emitMerged();
-    }
-  );
+            firestoreList = nextFirestore;
+            emitMerged();
+          },
+          (err) => {
+            markFirestoreQuotaExhausted(err);
+            emitMerged();
+          }
+        )
+      : () => {};
 
   let bc: BroadcastChannel | null = null;
   const onStorageChange = (e: StorageEvent) => {
@@ -1948,6 +1968,10 @@ export function subscribeToUserPracticeSessions(
 
   onUpdate(getLocalUserSessions());
 
+  if (!USE_FIRESTORE_COLLECTION_LISTENERS || isFirestoreQuotaExhausted()) {
+    return () => {};
+  }
+
   return onSnapshot(
     q,
     (snapshot) => {
@@ -1995,6 +2019,7 @@ export function subscribeToUserPracticeSessions(
       onUpdate(list.slice(0, 20));
     },
     (error) => {
+      markFirestoreQuotaExhausted(error);
       console.warn('Practice sessions operating from local cache:', error);
       onUpdate(getLocalUserSessions());
     }
@@ -2461,74 +2486,84 @@ export function subscribeToPersonalWords(
     where('ownerId', '==', ownerId)
   );
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    (snapshot) => {
-      const deletedSet = readDeletedPersonalWordIds(ownerId);
-      const localList = readLocalPersonalWordsCache(ownerId).filter(
-        (w) => !deletedSet.has(w.wordId)
-      );
-      const cloudWordIds = new Set<string>();
-      const mergedByWordId = new Map<string, PersonalWordRecord>();
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          (snapshot) => {
+            const deletedSet = readDeletedPersonalWordIds(ownerId);
+            const localList = readLocalPersonalWordsCache(ownerId).filter(
+              (w) => !deletedSet.has(w.wordId)
+            );
+            const cloudWordIds = new Set<string>();
+            const mergedByWordId = new Map<string, PersonalWordRecord>();
 
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        if (!d.wordId || !d.word) return;
-        if (deletedSet.has(d.wordId)) {
-          void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docSnap.id)).catch(() => {});
-          return;
-        }
-        cloudWordIds.add(d.wordId);
-        const item: PersonalWordRecord = {
-          id: docSnap.id,
-          wordId: d.wordId,
-          word: d.word,
-          bangla: d.bangla || '',
-          example: d.example || '',
-          ownerId: d.ownerId || ownerId,
-          createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
-          updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
-        };
-        mergedByWordId.set(item.wordId, item);
-      });
+            snapshot.forEach((docSnap) => {
+              const d = docSnap.data();
+              if (!d.wordId || !d.word) return;
+              if (deletedSet.has(d.wordId)) {
+                void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docSnap.id)).catch(
+                  () => {}
+                );
+                return;
+              }
+              cloudWordIds.add(d.wordId);
+              const item: PersonalWordRecord = {
+                id: docSnap.id,
+                wordId: d.wordId,
+                word: d.word,
+                bangla: d.bangla || '',
+                example: d.example || '',
+                ownerId: d.ownerId || ownerId,
+                createdAtMs: d.createdAt?.toMillis?.() || Date.now(),
+                updatedAtMs: d.updatedAt?.toMillis?.() || Date.now(),
+              };
+              mergedByWordId.set(item.wordId, item);
+            });
 
-      // Preserve & auto-upload any locally added personal words not yet in Cloud Firestore
-      for (const loc of localList) {
-        if (!cloudWordIds.has(loc.wordId) && !deletedSet.has(loc.wordId)) {
-          const safeWordId =
-            loc.wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44) || 'word';
-          const docId = `${ownerId}_${safeWordId}`
-            .replace(/[^a-zA-Z0-9_-]/g, '_')
-            .slice(0, 128);
-          mergedByWordId.set(safeWordId, {
-            ...loc,
-            id: docId,
-            wordId: safeWordId,
-            ownerId,
-          });
-          void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
-            wordId: safeWordId,
-            word: loc.word.trim().slice(0, 120),
-            bangla: (loc.bangla || '').trim().slice(0, 200),
-            example: (loc.example || '').trim().slice(0, 300),
-            ownerId,
-            createdAt: serverTimestamp(),
-            updatedAt: serverTimestamp(),
-          }).catch(() => {});
-        }
-      }
+            // Preserve & auto-upload any locally added personal words not yet in Cloud Firestore
+            for (const loc of localList) {
+              if (!cloudWordIds.has(loc.wordId) && !deletedSet.has(loc.wordId)) {
+                const safeWordId =
+                  loc.wordId.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 44) ||
+                  'word';
+                const docId = `${ownerId}_${safeWordId}`
+                  .replace(/[^a-zA-Z0-9_-]/g, '_')
+                  .slice(0, 128);
+                mergedByWordId.set(safeWordId, {
+                  ...loc,
+                  id: docId,
+                  wordId: safeWordId,
+                  ownerId,
+                });
+                void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
+                  wordId: safeWordId,
+                  word: loc.word.trim().slice(0, 120),
+                  bangla: (loc.bangla || '').trim().slice(0, 200),
+                  example: (loc.example || '').trim().slice(0, 300),
+                  ownerId,
+                  createdAt: serverTimestamp(),
+                  updatedAt: serverTimestamp(),
+                }).catch(() => {});
+              }
+            }
 
-      const finalWords = Array.from(mergedByWordId.values()).sort(
-        (a, b) => b.updatedAtMs - a.updatedAtMs
-      );
-      writeLocalPersonalWordsCache(ownerId, finalWords, false);
-      onUpdate(finalWords);
-    },
-    (error) => {
-      console.warn('Personal words operating from local private cache:', error);
-      emitLocal();
-    }
-  );
+            const finalWords = Array.from(mergedByWordId.values()).sort(
+              (a, b) => b.updatedAtMs - a.updatedAtMs
+            );
+            writeLocalPersonalWordsCache(ownerId, finalWords, false);
+            onUpdate(finalWords);
+          },
+          (error) => {
+            markFirestoreQuotaExhausted(error);
+            console.warn(
+              'Personal words operating from local private cache:',
+              error
+            );
+            emitLocal();
+          }
+        )
+      : () => {};
 
   let bc: BroadcastChannel | null = null;
   const onStorageChange = (e: StorageEvent) => {
@@ -2903,33 +2938,37 @@ export function subscribeToGlobalWordOverrides(
     where('status', '==', 'published')
   );
 
-  const unsubSnapshot = onSnapshot(
-    q,
-    (snapshot) => {
-      const deletedSet = readDeletedWordOverrideIds();
-      const nextFirestore: Record<string, GlobalWordOverride> = {};
-      snapshot.forEach((docSnap) => {
-        const d = docSnap.data();
-        const wid = d.wordId || docSnap.id;
-        if (!wid || !d.word || deletedSet.has(wid)) return;
-        nextFirestore[wid] = {
-          wordId: wid,
-          word: d.word,
-          bangla: d.bangla || '',
-          updatedBy: d.updatedBy || 'Admin',
-          updatedAtMs:
-            d.updatedAt?.toMillis?.() ||
-            d.createdAt?.toMillis?.() ||
-            Date.now(),
-        };
-      });
-      latestFirestoreOverrides = nextFirestore;
-      emitMerged();
-    },
-    () => {
-      emitMerged();
-    }
-  );
+  const unsubSnapshot: Unsubscribe =
+    USE_FIRESTORE_COLLECTION_LISTENERS && !isFirestoreQuotaExhausted()
+      ? onSnapshot(
+          q,
+          (snapshot) => {
+            const deletedSet = readDeletedWordOverrideIds();
+            const nextFirestore: Record<string, GlobalWordOverride> = {};
+            snapshot.forEach((docSnap) => {
+              const d = docSnap.data();
+              const wid = d.wordId || docSnap.id;
+              if (!wid || !d.word || deletedSet.has(wid)) return;
+              nextFirestore[wid] = {
+                wordId: wid,
+                word: d.word,
+                bangla: d.bangla || '',
+                updatedBy: d.updatedBy || 'Admin',
+                updatedAtMs:
+                  d.updatedAt?.toMillis?.() ||
+                  d.createdAt?.toMillis?.() ||
+                  Date.now(),
+              };
+            });
+            latestFirestoreOverrides = nextFirestore;
+            emitMerged();
+          },
+          (err) => {
+            markFirestoreQuotaExhausted(err);
+            emitMerged();
+          }
+        )
+      : () => {};
 
   let bc: BroadcastChannel | null = null;
   const onLocalEvent = () => emitMerged();

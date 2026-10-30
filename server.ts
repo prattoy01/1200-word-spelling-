@@ -543,6 +543,63 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  // Server-side relay proxy (/api/sync/relay) so client IPs are never blocked by ntfy.sh rate limits
+  const RELAY_HUB_URL = 'https://ntfy.sh/lw_sync_hub_12193dcd_v5';
+  let relayLinesCache: string[] = [];
+  let relayLastFetchMs = 0;
+
+  app.post('/api/sync/relay', async (req, res) => {
+    const rawEvent =
+      typeof req.body?.rawEvent === 'string' ? req.body.rawEvent : '';
+    if (!rawEvent) {
+      res.status(400).json({ ok: false });
+      return;
+    }
+    relayLinesCache.push(
+      JSON.stringify({
+        event: 'message',
+        time: Math.floor(Date.now() / 1000),
+        message: rawEvent,
+      })
+    );
+    if (relayLinesCache.length > 400) {
+      relayLinesCache = relayLinesCache.slice(-400);
+    }
+    try {
+      await fetch(RELAY_HUB_URL, {
+        method: 'POST',
+        body: rawEvent,
+        headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+      });
+    } catch {
+      // ignore
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/api/sync/relay', async (_req, res) => {
+    const now = Date.now();
+    if (now - relayLastFetchMs > 5000 || relayLinesCache.length === 0) {
+      try {
+        const upstream = await fetch(`${RELAY_HUB_URL}/json?poll=1&since=all`, {
+          cache: 'no-store',
+        });
+        if (upstream.ok) {
+          const text = await upstream.text();
+          relayLinesCache = text
+            .split('\n')
+            .map((l) => l.trim())
+            .filter(Boolean)
+            .slice(-400);
+          relayLastFetchMs = now;
+        }
+      } catch {
+        // ignore
+      }
+    }
+    res.json({ ok: true, lines: relayLinesCache });
+  });
+
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

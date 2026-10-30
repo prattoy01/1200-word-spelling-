@@ -468,5 +468,67 @@ export default async function handler(req, res) {
     return;
   }
 
+  // Server-side relay proxy (/api/sync/relay) so client IPs are never blocked by ntfy.sh rate limits
+  const RELAY_HUB_URL = 'https://ntfy.sh/lw_sync_hub_12193dcd_v5';
+  if (resource === 'relay') {
+    if (req.method === 'POST') {
+      const rawEvent = typeof body?.rawEvent === 'string' ? body.rawEvent : '';
+      if (!rawEvent) {
+        res.status(400).json({ ok: false });
+        return;
+      }
+      if (!Array.isArray(globalThis.__lwRelayLinesCache)) {
+        globalThis.__lwRelayLinesCache = [];
+      }
+      globalThis.__lwRelayLinesCache.push(
+        JSON.stringify({ event: 'message', time: Math.floor(Date.now() / 1000), message: rawEvent })
+      );
+      if (globalThis.__lwRelayLinesCache.length > 400) {
+        globalThis.__lwRelayLinesCache = globalThis.__lwRelayLinesCache.slice(-400);
+      }
+      try {
+        await fetch(RELAY_HUB_URL, {
+          method: 'POST',
+          body: rawEvent,
+          headers: { 'Content-Type': 'text/plain;charset=UTF-8' },
+        });
+      } catch {
+        // ignore
+      }
+      res.status(200).json({ ok: true });
+      return;
+    }
+
+    if (req.method === 'GET') {
+      const now = Date.now();
+      const lastFetch = Number(globalThis.__lwRelayLastFetchMs || 0);
+      if (now - lastFetch > 5000 || !Array.isArray(globalThis.__lwRelayLinesCache)) {
+        try {
+          const upstream = await fetch(`${RELAY_HUB_URL}/json?poll=1&since=all`, {
+            cache: 'no-store',
+          });
+          if (upstream.ok) {
+            const text = await upstream.text();
+            const fetchedLines = text
+              .split('\n')
+              .map((l) => l.trim())
+              .filter(Boolean);
+            globalThis.__lwRelayLinesCache = fetchedLines.slice(-400);
+            globalThis.__lwRelayLastFetchMs = now;
+          }
+        } catch {
+          // ignore
+        }
+      }
+      res.status(200).json({
+        ok: true,
+        lines: Array.isArray(globalThis.__lwRelayLinesCache)
+          ? globalThis.__lwRelayLinesCache
+          : [],
+      });
+      return;
+    }
+  }
+
   res.status(404).json({ ok: false, error: 'Route not found' });
 }

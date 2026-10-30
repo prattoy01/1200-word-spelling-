@@ -12,14 +12,15 @@ import type {
 import type { GlobalWordOverride } from '../data/words';
 
 /**
- * Dual-Topic Cross-Origin / Cross-Domain Real-Time Cloud Relay:
- * 1. CONTEST_RELAY_TOPIC: Lightweight (<600B) JSON events for Contests, Registrations, Leaderboards, & Spelling Overrides.
- * 2. AUDIO_RELAY_TOPIC: Inline-chunked (<4KB per message) Audio Contributions & General Recordings (zero file attachments!).
+ * Unified Single-Topic Cross-Origin / Cross-Domain Real-Time Cloud Relay:
+ * Uses a single lightweight topic (<3.5KB inline JSON per event, zero file attachments)
+ * and a single SSE connection per tab so home Wi-Fi IPs are never rate-limited by ntfy.sh,
+ * with automatic server-side relay fallback via `/api/sync/relay`.
  */
-export const CONTEST_RELAY_TOPIC = 'lw_contest_fast_12193dcd_v4';
-export const AUDIO_RELAY_TOPIC = 'lw_audio_studio_12193dcd_v4';
+export const CONTEST_RELAY_TOPIC = 'lw_sync_hub_12193dcd_v5';
+export const AUDIO_RELAY_TOPIC = 'lw_sync_hub_12193dcd_v5';
 export const CONTEST_RELAY_URL = `https://ntfy.sh/${CONTEST_RELAY_TOPIC}`;
-export const AUDIO_RELAY_URL = `https://ntfy.sh/${AUDIO_RELAY_TOPIC}`;
+export const AUDIO_RELAY_URL = CONTEST_RELAY_URL;
 const EVENT_PREFIX = 'LW_EVT:';
 const AUDIO_CHUNK_SIZE = 3450;
 
@@ -504,7 +505,8 @@ function getTargetRelayUrl(evt: CloudRelayEvent): string {
 }
 
 /**
- * Publishes an inline (<4KB) event to the appropriate global cross-domain relay topic.
+ * Publishes an inline (<4KB) event to the unified global cross-domain relay topic,
+ * with automatic fallback to `/api/sync/relay` if the client IP is rate-limited.
  */
 export async function publishCloudRelayEvent(
   evt: CloudRelayEvent
@@ -513,9 +515,10 @@ export async function publishCloudRelayEvent(
     notifyRelayListeners();
   }
 
+  const body = EVENT_PREFIX + JSON.stringify(evt);
+  const targetUrl = getTargetRelayUrl(evt);
+
   try {
-    const body = EVENT_PREFIX + JSON.stringify(evt);
-    const targetUrl = getTargetRelayUrl(evt);
     const res = await fetch(targetUrl, {
       method: 'POST',
       body,
@@ -523,7 +526,18 @@ export async function publishCloudRelayEvent(
         'Content-Type': 'text/plain;charset=UTF-8',
       },
     });
-    return res.ok;
+    if (res.ok) return true;
+  } catch {
+    // Fall through to server-side relay proxy
+  }
+
+  try {
+    const proxyRes = await fetch('/api/sync/relay', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rawEvent: body }),
+    });
+    return proxyRes.ok;
   } catch {
     return false;
   }
@@ -571,7 +585,7 @@ async function publishInlineAudioChunksToRelay(
       break;
     }
     if (i + 1 < totalChunks) {
-      await new Promise((r) => setTimeout(r, 140));
+      await new Promise((r) => setTimeout(r, 180));
     }
   }
 
@@ -770,12 +784,29 @@ async function pollSingleRelayTopic(topicUrl: string): Promise<boolean> {
       signal: controller.signal,
     });
     clearTimeout(timeoutId);
-    if (!res.ok) return false;
-    const text = await res.text();
-    const lines = text.split('\n');
+    if (res.ok) {
+      const text = await res.text();
+      const lines = text.split('\n');
+      let changed = false;
+      for (const line of lines) {
+        if (parseNtfyEnvelopeLine(line)) {
+          changed = true;
+        }
+      }
+      return changed;
+    }
+  } catch {
+    // Fall through to server-side relay proxy
+  }
+
+  try {
+    const proxyRes = await fetch('/api/sync/relay', { cache: 'no-store' });
+    if (!proxyRes.ok) return false;
+    const data = await proxyRes.json();
+    if (!Array.isArray(data?.lines)) return false;
     let changed = false;
-    for (const line of lines) {
-      if (parseNtfyEnvelopeLine(line)) {
+    for (const line of data.lines) {
+      if (typeof line === 'string' && parseNtfyEnvelopeLine(line)) {
         changed = true;
       }
     }
@@ -786,14 +817,15 @@ async function pollSingleRelayTopic(topicUrl: string): Promise<boolean> {
 }
 
 /**
- * Polls the 12-hour cached event log from the global cloud relay topics and applies all events in order.
- * Background interval polls (force=false) are throttled to once every 15s because SSE streams push in real time.
+ * Polls the 12-hour cached event log from the unified global cloud relay topic and applies all events in order.
+ * Throttled so even multiple tabs on the same Wi-Fi IP never hit ntfy.sh rate limits.
  */
 export async function pollCloudRelaySnapshot(
   force = false
 ): Promise<CloudRelaySnapshot> {
   const now = Date.now();
-  if (!force && lastPollAtMs > 0 && now - lastPollAtMs < 15000) {
+  const minCooldownMs = force ? 5000 : 25000;
+  if (lastPollAtMs > 0 && now - lastPollAtMs < minCooldownMs) {
     return relayState;
   }
   if (pollInFlight) {
@@ -803,11 +835,8 @@ export async function pollCloudRelaySnapshot(
   pollInFlight = (async () => {
     try {
       lastPollAtMs = Date.now();
-      const [cChanged, aChanged] = await Promise.all([
-        pollSingleRelayTopic(CONTEST_RELAY_URL),
-        pollSingleRelayTopic(AUDIO_RELAY_URL),
-      ]);
-      if (cChanged || aChanged) {
+      const changed = await pollSingleRelayTopic(CONTEST_RELAY_URL);
+      if (changed) {
         notifyRelayListeners();
       }
     } finally {
@@ -820,7 +849,7 @@ export async function pollCloudRelaySnapshot(
 }
 
 /**
- * Opens real-time Server-Sent Events (SSE) streams to both global cloud relay topics
+ * Opens a single real-time Server-Sent Events (SSE) stream to the unified global cloud relay topic
  * so new contests, registrations, scores, and audio contributions arrive in < 200ms across all browsers and domains.
  */
 export function subscribeToCloudRelay(
@@ -842,18 +871,6 @@ export function subscribeToCloudRelay(
         };
       } catch {
         contestSseSource = null;
-      }
-    }
-    if (!audioSseSource) {
-      try {
-        audioSseSource = new EventSource(`${AUDIO_RELAY_URL}/sse?since=all`);
-        audioSseSource.onmessage = (ev) => {
-          if (typeof ev.data === 'string' && parseNtfyEnvelopeLine(ev.data)) {
-            notifyRelayListeners();
-          }
-        };
-      } catch {
-        audioSseSource = null;
       }
     }
   }
