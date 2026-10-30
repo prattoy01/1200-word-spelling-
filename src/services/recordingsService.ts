@@ -357,51 +357,143 @@ function writeLocalContributionsCache(
   }
 }
 
-async function fetchSharedServerAudioState(includeAudio = true): Promise<{
+type SharedServerAudioState = {
   contributions: AudioContributionRecord[];
   deletedContributionIds: string[];
   recordings: Record<string, CloudRecording>;
   deletedRecordingIds: string[];
   wordOverrides: Record<string, GlobalWordOverride>;
   deletedWordOverrideIds: string[];
-} | null> {
+};
+
+let cachedServerAudioState: SharedServerAudioState | null = null;
+let cachedServerAudioFetchedAtMs = 0;
+let cachedFullAudioSignatures = new Set<string>();
+let inFlightServerAudioPromise: Promise<SharedServerAudioState | null> | null = null;
+
+async function fetchSharedServerAudioState(
+  includeAudio = true,
+  forceRefresh = false
+): Promise<SharedServerAudioState | null> {
   if (typeof window === 'undefined') return null;
-  try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 3500);
-    const res = await fetch(
-      `/api/sync/state?includeAudio=${includeAudio ? 'true' : 'false'}&_t=${Date.now()}`,
-      { cache: 'no-store', signal: controller.signal }
-    );
-    window.clearTimeout(timer);
-    if (!res.ok) return null;
-    const ct = res.headers.get('content-type') || '';
-    if (!ct.includes('application/json')) return null;
-    const data = await res.json();
-    if (!data || data.ok !== true) return null;
-    return {
-      contributions: Array.isArray(data?.contributions) ? data.contributions : [],
-      deletedContributionIds: Array.isArray(data?.deletedContributionIds)
-        ? data.deletedContributionIds
-        : [],
-      recordings:
-        data?.recordings && typeof data.recordings === 'object'
-          ? data.recordings
-          : {},
-      deletedRecordingIds: Array.isArray(data?.deletedRecordingIds)
-        ? data.deletedRecordingIds
-        : [],
-      wordOverrides:
-        data?.wordOverrides && typeof data.wordOverrides === 'object'
-          ? data.wordOverrides
-          : {},
-      deletedWordOverrideIds: Array.isArray(data?.deletedWordOverrideIds)
-        ? data.deletedWordOverrideIds
-        : [],
-    };
-  } catch {
-    return null;
+
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    cachedServerAudioState &&
+    now - cachedServerAudioFetchedAtMs < 10_000
+  ) {
+    return cachedServerAudioState;
   }
+
+  if (!forceRefresh && inFlightServerAudioPromise) {
+    return inFlightServerAudioPromise;
+  }
+
+  inFlightServerAudioPromise = (async () => {
+    try {
+      // If we already have full audio cached in memory, fetch lightweight metadata first
+      const shouldFetchFullAudioInitially =
+        includeAudio && (forceRefresh || !cachedServerAudioState);
+
+      const fetchState = async (withAudio: boolean) => {
+        const controller = new AbortController();
+        const timer = window.setTimeout(() => controller.abort(), 4500);
+        const res = await fetch(
+          `/api/sync/state?includeAudio=${withAudio ? 'true' : 'false'}&_t=${Date.now()}`,
+          { cache: 'no-store', signal: controller.signal }
+        );
+        window.clearTimeout(timer);
+        if (!res.ok) return null;
+        const ct = res.headers.get('content-type') || '';
+        if (!ct.includes('application/json')) return null;
+        const data = await res.json();
+        if (!data || data.ok !== true) return null;
+        return data;
+      };
+
+      let data = await fetchState(shouldFetchFullAudioInitially);
+      if (!data) return cachedServerAudioState;
+
+      // If we fetched lightweight metadata (`includeAudio=false`), check if any recording or contribution is new/updated
+      if (!shouldFetchFullAudioInitially && includeAudio) {
+        const nextSigs: string[] = [];
+        if (Array.isArray(data.contributions)) {
+          for (const c of data.contributions) {
+            if (c?.id) nextSigs.push(`c:${c.id}:${c.updatedAtMs || 0}:${c.status || ''}`);
+          }
+        }
+        if (data.recordings && typeof data.recordings === 'object') {
+          for (const [wid, r] of Object.entries(data.recordings as Record<string, CloudRecording>)) {
+            nextSigs.push(`r:${wid}:${r?.updatedAtMs || 0}`);
+          }
+        }
+        const hasNewAudioItem = nextSigs.some((sig) => !cachedFullAudioSignatures.has(sig));
+        if (hasNewAudioItem) {
+          const fullData = await fetchState(true);
+          if (fullData) {
+            data = fullData;
+          }
+        }
+      }
+
+      // Merge audioDataUrl from previous cache if current fetch was metadata-only
+      const prevRecordings = cachedServerAudioState?.recordings || {};
+      const prevContribMap = new Map(
+        (cachedServerAudioState?.contributions || []).map((c) => [c.id, c])
+      );
+
+      const mergedRecordings: Record<string, CloudRecording> = {};
+      if (data.recordings && typeof data.recordings === 'object') {
+        for (const [wid, r] of Object.entries(data.recordings as Record<string, CloudRecording>)) {
+          const audioDataUrl = r.audioDataUrl || prevRecordings[wid]?.audioDataUrl || '';
+          mergedRecordings[wid] = { ...r, audioDataUrl };
+          if (audioDataUrl) {
+            cachedFullAudioSignatures.add(`r:${wid}:${r?.updatedAtMs || 0}`);
+          }
+        }
+      }
+
+      const mergedContributions: AudioContributionRecord[] = [];
+      if (Array.isArray(data.contributions)) {
+        for (const c of data.contributions as AudioContributionRecord[]) {
+          const audioDataUrl = c.audioDataUrl || prevContribMap.get(c.id)?.audioDataUrl || '';
+          mergedContributions.push({ ...c, audioDataUrl });
+          if (audioDataUrl) {
+            cachedFullAudioSignatures.add(`c:${c.id}:${c.updatedAtMs || 0}:${c.status || ''}`);
+          }
+        }
+      }
+
+      const result: SharedServerAudioState = {
+        contributions: mergedContributions,
+        deletedContributionIds: Array.isArray(data.deletedContributionIds)
+          ? data.deletedContributionIds
+          : [],
+        recordings: mergedRecordings,
+        deletedRecordingIds: Array.isArray(data.deletedRecordingIds)
+          ? data.deletedRecordingIds
+          : [],
+        wordOverrides:
+          data.wordOverrides && typeof data.wordOverrides === 'object'
+            ? data.wordOverrides
+            : {},
+        deletedWordOverrideIds: Array.isArray(data.deletedWordOverrideIds)
+          ? data.deletedWordOverrideIds
+          : [],
+      };
+
+      cachedServerAudioState = result;
+      cachedServerAudioFetchedAtMs = Date.now();
+      return result;
+    } catch {
+      return cachedServerAudioState;
+    } finally {
+      inFlightServerAudioPromise = null;
+    }
+  })();
+
+  return inFlightServerAudioPromise;
 }
 
 async function pushContributionToSharedServer(
@@ -674,7 +766,7 @@ export function subscribeToPublishedRecordings(
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void pullServerAndRelayRecordings();
-        }, 4000)
+        }, 15000)
       : null;
 
   let bc: BroadcastChannel | null = null;
@@ -1420,12 +1512,11 @@ export function subscribeToAudioContributions(
     emitMerged();
   });
 
-  // Poll shared server & global relay every 2.5s so Admin Panel receives new user contributions in real time
   const pollId =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void syncWithSharedServerAndRelay();
-        }, 2500)
+        }, 15000)
       : null;
 
   const q = query(
@@ -2930,7 +3021,7 @@ export function subscribeToGlobalWordOverrides(
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void pullFromServerAndRelay();
-        }, 5000)
+        }, 15000)
       : null;
 
   const q = query(

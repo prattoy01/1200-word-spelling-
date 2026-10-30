@@ -331,20 +331,8 @@ export async function loadRealAudioFileAsProcessed(
 }
 
 export const OFFLINE_ORIGINAL_AUDIO_CACHE_NAME = 'lw-offline-original-audio-v1';
+const attemptedOriginalSaveWordIds = new Set<string>();
 
-/**
- * Register the dedicated offline audio Service Worker so `<audio>` tags can play
- * cached original spelling recordings even when the device is 100% offline.
- */
-if (typeof window !== 'undefined' && 'serviceWorker' in navigator) {
-  window.addEventListener('load', () => {
-    navigator.serviceWorker
-      .register('/offline-audio-sw.js', { scope: '/' })
-      .catch(() => {
-        // Ignore if service worker registration is restricted in a sandboxed preview
-      });
-  });
-}
 
 /**
  * Fast lookup index for words in WORDS_CATALOG by lowercase word and by slug id.
@@ -385,9 +373,6 @@ export function getCandidateOriginalAudioUrls(
 
   if (primaryBundled) {
     urls.push(primaryBundled);
-    if (primaryBundled.startsWith('/')) {
-      urls.push(`https://1200-word-spelling.vercel.app${primaryBundled}`);
-    }
   }
 
   const dictToken = word
@@ -608,10 +593,15 @@ export async function saveOriginalWordAudioLocally(
   }
 
   const existingItem = await getLocalOriginalAudioItem(wordId);
-  if (existingItem?.audioDataUrl) {
+  if (existingItem?.audioDataUrl || existingItem?.sourceUrl) {
     locallySavedOriginalWordIds.add(wordId);
     return true;
   }
+
+  if (attemptedOriginalSaveWordIds.has(wordId)) {
+    return false;
+  }
+  attemptedOriginalSaveWordIds.add(wordId);
 
   const candidateUrls = getCandidateOriginalAudioUrls(word, bundledAudioFile);
   if (candidateUrls.length === 0) return false;
@@ -692,26 +682,6 @@ export async function preloadOriginalAudioForWords(
   }
   const total = words.length;
   let savedCount = 0;
-
-  //Also notify Service Worker of all audio URLs for fast background caching
-  if (
-    typeof navigator !== 'undefined' &&
-    'serviceWorker' in navigator &&
-    navigator.serviceWorker.controller
-  ) {
-    const urlsToCache: string[] = [];
-    for (const w of words) {
-      const candidates = getCandidateOriginalAudioUrls(
-        w.word,
-        w.bundledAudioFile
-      );
-      if (candidates[0]) urlsToCache.push(candidates[0]);
-    }
-    navigator.serviceWorker.controller.postMessage({
-      type: 'CACHE_AUDIO_URLS',
-      urls: urlsToCache,
-    });
-  }
 
   const concurrency = 6;
   let index = 0;

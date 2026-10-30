@@ -514,35 +514,64 @@ async function pushSubmissionsToSharedServer(
   }
 }
 
-async function fetchSharedServerContestState(): Promise<{
+type SharedServerContestState = {
   contests: ContestRecord[];
   deletedContestIds: string[];
   submissions: ContestSubmissionRecord[];
-} | null> {
+};
+
+let cachedContestServerState: SharedServerContestState | null = null;
+let cachedContestServerAtMs = 0;
+let inFlightContestServerPromise: Promise<SharedServerContestState | null> | null = null;
+
+async function fetchSharedServerContestState(
+  force = false
+): Promise<SharedServerContestState | null> {
   if (typeof window === 'undefined') return null;
-  try {
-    const controller = new AbortController();
-    const timeoutId = window.setTimeout(() => controller.abort(), 2500);
-    const res = await fetch('/api/sync/state?includeAudio=false', {
-      cache: 'no-store',
-      signal: controller.signal,
-    });
-    window.clearTimeout(timeoutId);
-    if (!res.ok) return null;
-    const contentType = res.headers.get('content-type') || '';
-    if (!contentType.includes('application/json')) return null;
-    const data = await res.json();
-    if (!data || data.ok !== true) return null;
-    return {
-      contests: Array.isArray(data?.contests) ? data.contests : [],
-      deletedContestIds: Array.isArray(data?.deletedContestIds)
-        ? data.deletedContestIds
-        : [],
-      submissions: Array.isArray(data?.submissions) ? data.submissions : [],
-    };
-  } catch {
-    return null;
+  const now = Date.now();
+  if (
+    !force &&
+    cachedContestServerState &&
+    now - cachedContestServerAtMs < 10_000
+  ) {
+    return cachedContestServerState;
   }
+  if (!force && inFlightContestServerPromise) {
+    return inFlightContestServerPromise;
+  }
+
+  inFlightContestServerPromise = (async () => {
+    try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 3500);
+      const res = await fetch('/api/sync/state?includeAudio=false', {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
+      if (!res.ok) return cachedContestServerState;
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) return cachedContestServerState;
+      const data = await res.json();
+      if (!data || data.ok !== true) return cachedContestServerState;
+      const result: SharedServerContestState = {
+        contests: Array.isArray(data?.contests) ? data.contests : [],
+        deletedContestIds: Array.isArray(data?.deletedContestIds)
+          ? data.deletedContestIds
+          : [],
+        submissions: Array.isArray(data?.submissions) ? data.submissions : [],
+      };
+      cachedContestServerState = result;
+      cachedContestServerAtMs = Date.now();
+      return result;
+    } catch {
+      return cachedContestServerState;
+    } finally {
+      inFlightContestServerPromise = null;
+    }
+  })();
+
+  return inFlightContestServerPromise;
 }
 
 /**
@@ -1030,7 +1059,7 @@ export async function syncContestsNow(
 
   // Step 1: Pull from Shared Backend Server (/api/sync/state) AND Global Cloud Relay in parallel
   const [serverState, relaySnapshot] = await Promise.all([
-    fetchSharedServerContestState(),
+    fetchSharedServerContestState(forceRelayPoll),
     pollCloudRelaySnapshot(forceRelayPoll),
   ]);
 
@@ -1205,14 +1234,14 @@ export function subscribeToContests(
     emitIfChanged(sorted);
   });
 
-  // Poll shared server every 3.5s (relay polling is throttled unless forced since SSE is real-time)
+  // Poll shared server every 15s (SSE delivers real-time push updates in <0.5s)
   const pollInterval =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
           void syncContestsNow(false).then(({ contests }) => {
             emitIfChanged(contests);
           });
-        }, 3500)
+        }, 15000)
       : null;
 
   const q = query(

@@ -796,28 +796,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       );
   }, []);
 
-  // Automatically save original spelling recordings for the active category deck in the background
-  // so if the user loses internet connection while practicing, the original recordings play offline!
-  useEffect(() => {
-    if (filteredDeck.length === 0) return;
-    const startIdx = currentIndex % Math.max(1, filteredDeck.length);
-    const upcomingSlice = filteredDeck
-      .slice(startIdx, startIdx + 25)
-      .filter(
-        (w) =>
-          Boolean(w.bundledAudioFile) && !isWordOriginalAudioSavedLocally(w.word)
-      );
-    if (upcomingSlice.length === 0) return;
+  // Words are cached on-demand when played or when the user clicks Save Offline.
 
-    const timer = window.setTimeout(() => {
-      void preloadOriginalAudioForWords(upcomingSlice).then(async () => {
-        const cnt = await getLocalOfflineAudioCount();
-        setOfflineSavedCount(cnt);
-      });
-    }, 600);
-
-    return () => window.clearTimeout(timer);
-  }, [filteredDeck, currentIndex]);
 
   const handleSaveDeckOfflineNow = async () => {
     if (isDownloadingOfflineAudio) return;
