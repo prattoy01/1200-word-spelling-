@@ -1009,7 +1009,9 @@ function mergeSubmissionsLists(
  * and merges any unsynced local contests/submissions so all users across AI Studio, Vercel,
  * and Android APK see the exact same state in < 200ms without blocking on Firestore quota limits.
  */
-export async function syncContestsNow(): Promise<{
+export async function syncContestsNow(
+  forceRelayPoll = true
+): Promise<{
   contests: ContestRecord[];
   submissions: ContestSubmissionRecord[];
 }> {
@@ -1023,7 +1025,7 @@ export async function syncContestsNow(): Promise<{
   // Step 1: Pull from Shared Backend Server (/api/sync/state) AND Global Cloud Relay in parallel
   const [serverState, relaySnapshot] = await Promise.all([
     fetchSharedServerContestState(),
-    pollCloudRelaySnapshot(false),
+    pollCloudRelaySnapshot(forceRelayPoll),
   ]);
 
   if (serverState) {
@@ -1071,7 +1073,7 @@ export async function syncContestsNow(): Promise<{
     }
   }
 
-  // Step 2: Merge local contests & push any missing contests to Shared Server & Global Relay
+  // Step 2: Merge local contests & push any missing recent/active contests to Shared Server & Global Relay
   const localContests = readLocalContests();
   const contestsToPushServer: ContestRecord[] = [];
   for (const loc of localContests) {
@@ -1081,12 +1083,26 @@ export async function syncContestsNow(): Promise<{
       }
     }
   }
+
+  const nowMs = Date.now();
+  const activeContestIds = new Set<string>();
+  let relayPushedContests = 0;
+
   for (const c of byContestId.values()) {
     if (!serverContestsIds.has(c.id)) {
       contestsToPushServer.push(c);
     }
-    if (!relayContestsIds.has(c.id)) {
-      void publishContestUpsertToRelay(c);
+    const phase = getContestPhase(c, nowMs);
+    const isRecentOrActive =
+      phase === 'live' ||
+      phase === 'upcoming' ||
+      nowMs - (c.createdAtMs || 0) < 6 * 3600 * 1000;
+    if (isRecentOrActive) {
+      activeContestIds.add(c.id);
+      if (!relayContestsIds.has(c.id) && relayPushedContests < 2) {
+        relayPushedContests++;
+        void publishContestUpsertToRelay(c);
+      }
     }
   }
   if (contestsToPushServer.length > 0) {
@@ -1113,8 +1129,16 @@ export async function syncContestsNow(): Promise<{
   if (subsToPushServer.length > 0) {
     void pushSubmissionsToSharedServer(subsToPushServer);
   }
+
+  // Only push submissions for active/recent contests (max 2 per sync) so old history never rate-limits the relay
+  let relayPushedSubs = 0;
   for (const s of mergedSubs) {
-    if (!relaySubIds.has(s.id)) {
+    if (
+      activeContestIds.has(s.contestId) &&
+      !relaySubIds.has(s.id) &&
+      relayPushedSubs < 2
+    ) {
+      relayPushedSubs++;
       void publishSubmissionUpsertToRelay(s);
     }
   }
@@ -1145,7 +1169,7 @@ export function subscribeToContests(
   emitLocal();
 
   // Immediately sync with shared server & global cloud relay
-  void syncContestsNow().then(({ contests }) => {
+  void syncContestsNow(true).then(({ contests }) => {
     emitIfChanged(contests);
   });
 
@@ -1175,14 +1199,14 @@ export function subscribeToContests(
     emitIfChanged(sorted);
   });
 
-  // Poll shared server & relay every 2.5s so any contest created or deleted by another user syncs immediately
+  // Poll shared server every 3.5s (relay polling is throttled unless forced since SSE is real-time)
   const pollInterval =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
-          void syncContestsNow().then(({ contests }) => {
+          void syncContestsNow(false).then(({ contests }) => {
             emitIfChanged(contests);
           });
-        }, 2500)
+        }, 3500)
       : null;
 
   const q = query(

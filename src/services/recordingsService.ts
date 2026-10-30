@@ -968,31 +968,29 @@ export async function submitAudioContribution(params: {
     });
   }
 
-  // 3. Push in parallel to Shared Backend Server, Global Cloud Relay (cross-origin/Vercel/APK), and Cloud Firestore!
+  // 3. Push to Shared Backend Server & Global Cloud Relay immediately, and Cloud Firestore in background
+  void setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
+    wordId: clean.wordId,
+    word: clean.word,
+    banglaMeaning: clean.banglaMeaning,
+    audioDataUrl: clean.audioDataUrl,
+    mimeType: clean.mimeType,
+    fileName: clean.fileName,
+    fileSize: clean.fileSize,
+    durationMs: clean.durationMs,
+    contributorId: clean.ownerId,
+    contributorName: clean.ownerName,
+    status: 'pending',
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  }).catch(() => {});
+
   await Promise.all([
     pushContributionToSharedServer({
       ...contributionRecord,
       forcePending: true,
     }).catch(() => false),
-    publishContributionUpsertToRelay(contributionRecord).catch(() => {}),
-    Promise.race([
-      setDoc(doc(db, CONTRIBUTIONS_PATH, contributionDocId), {
-        wordId: clean.wordId,
-        word: clean.word,
-        banglaMeaning: clean.banglaMeaning,
-        audioDataUrl: clean.audioDataUrl,
-        mimeType: clean.mimeType,
-        fileName: clean.fileName,
-        fileSize: clean.fileSize,
-        durationMs: clean.durationMs,
-        contributorId: clean.ownerId,
-        contributorName: clean.ownerName,
-        status: 'pending',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      }),
-      new Promise<void>((resolve) => setTimeout(resolve, 3000)),
-    ]).catch(() => {}),
+    publishContributionUpsertToRelay(contributionRecord).catch(() => false),
   ]);
 }
 
@@ -1373,49 +1371,19 @@ export function subscribeToAudioContributions(
       writeLocalContributionsCache(upgradedLocalList, false);
     }
 
+    let pushedToRelayCount = 0;
     for (const loc of upgradedLocalList) {
       if (loc.status === 'pending' && !deletedSet.has(loc.id)) {
         if (!serverWordIds.has(loc.wordId)) {
           void pushContributionToSharedServer(loc);
           serverWordIds.add(loc.wordId);
         }
-        if (!relayWordIds.has(loc.wordId)) {
+        // Push at most the 1 newest pending contribution to the global relay per sync pass so we never burst-flood
+        if (!relayWordIds.has(loc.wordId) && pushedToRelayCount < 1) {
+          pushedToRelayCount++;
           void publishContributionUpsertToRelay(loc);
           relayWordIds.add(loc.wordId);
         }
-      }
-    }
-
-    if (!hasAutoSyncedPendingContributions) {
-      hasAutoSyncedPendingContributions = true;
-      try {
-        // Only auto-sync personal recordings from non-admin users (or explicitly contributed recordings)
-        const localMap = await getAllLocalCachedRecordings();
-        for (const item of Object.values(localMap)) {
-          if (
-            item.isPersonalOverride &&
-            item.contributedToAdmin === true &&
-            !serverWordIds.has(item.wordId) &&
-            !relayWordIds.has(item.wordId) &&
-            !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
-          ) {
-            await submitAudioContribution({
-              wordId: item.wordId,
-              word: item.word,
-              banglaMeaning: item.banglaMeaning,
-              audio: {
-                audioDataUrl: item.audioDataUrl,
-                mimeType: item.mimeType,
-                fileName: item.fileName,
-                fileSize: item.fileSize,
-                durationMs: item.durationMs,
-              },
-              contributorNameOverride: item.ownerName,
-            });
-          }
-        }
-      } catch {
-        // ignore
       }
     }
 
@@ -1832,53 +1800,14 @@ export async function deleteWordRecording(
  */
 export async function syncLocalRecordingsToCloud(): Promise<number> {
   try {
-    const [state, relaySnap] = await Promise.all([
-      fetchSharedServerAudioState(false),
-      pollCloudRelaySnapshot(false),
-    ]);
     const deletedSet = readDeletedContributionIds();
-    const existingRemoteWordIds = new Set<string>();
-    if (state) {
-      for (const delId of state.deletedContributionIds) {
-        deletedSet.add(delId);
-      }
-      for (const c of state.contributions) {
-        if (c?.wordId) existingRemoteWordIds.add(c.wordId);
-      }
-    }
-    if (relaySnap) {
-      for (const delId of relaySnap.deletedContributionIds) {
-        deletedSet.add(delId);
-      }
-      for (const c of relaySnap.contributions.values()) {
-        if (c?.wordId) existingRemoteWordIds.add(c.wordId);
-      }
-    }
-
-    const localMap = await getAllLocalCachedRecordings();
+    const localContribs = readLocalContributionsCache().filter(
+      (c) => c && c.status === 'pending' && !deletedSet.has(c.id)
+    );
     let count = 0;
-    for (const item of Object.values(localMap)) {
-      if (
-        item.isPersonalOverride &&
-        item.contributedToAdmin === true &&
-        !existingRemoteWordIds.has(item.wordId) &&
-        !isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)
-      ) {
-        await submitAudioContribution({
-          wordId: item.wordId,
-          word: item.word,
-          banglaMeaning: item.banglaMeaning,
-          audio: {
-            audioDataUrl: item.audioDataUrl,
-            mimeType: item.mimeType,
-            fileName: item.fileName,
-            fileSize: item.fileSize,
-            durationMs: item.durationMs,
-          },
-          contributorNameOverride: item.ownerName,
-        });
-        count++;
-      }
+    for (const c of localContribs.slice(0, 3)) {
+      await pushContributionToSharedServer(c);
+      count++;
     }
     return count;
   } catch {

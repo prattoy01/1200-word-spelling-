@@ -165,6 +165,51 @@ async function transcodeToCompactWav(
 }
 
 /**
+ * Ensures an audioDataUrl sent over the real-time inline relay fits in <= 10 inline chunks
+ * (3,500 chars each, < 4KB per message) so it never triggers public relay file-attachment rate limits.
+ * Standard MP3s (< 24 KB, e.g. 7 KB word clips) are returned 100% untouched.
+ */
+export async function compactAudioDataUrlForRelay(
+  audioDataUrl: string
+): Promise<string> {
+  if (!audioDataUrl || audioDataUrl.length <= 32000) {
+    return audioDataUrl;
+  }
+  if (typeof window === 'undefined') {
+    return audioDataUrl;
+  }
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioCtx) return audioDataUrl;
+
+  const audioCtx = new AudioCtx();
+  try {
+    const blob = dataUrlToBlob(audioDataUrl);
+    const arrayBuffer = await blob.arrayBuffer();
+    const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+    const maxSec = Math.min(decoded.duration, 3.0);
+    const rate = 8000;
+    const len = Math.max(1, Math.floor(maxSec * rate));
+    const offlineCtx = new OfflineAudioContext(1, len, rate);
+    const source = offlineCtx.createBufferSource();
+    source.buffer = decoded;
+    source.connect(offlineCtx.destination);
+    source.start(0);
+    const rendered = await offlineCtx.startRendering();
+    const channelData = rendered.getChannelData(0);
+    const wavBlob = encodeMonoWav(channelData, rate, 8);
+    return await blobToDataUrl(wavBlob);
+  } catch {
+    return audioDataUrl;
+  } finally {
+    await audioCtx.close().catch(() => {});
+  }
+}
+
+
+/**
  * Processes an uploaded audio file (MP3, M4A, OGG, WAV, WebM) or microphone recording.
  */
 export async function processAudioBlob(

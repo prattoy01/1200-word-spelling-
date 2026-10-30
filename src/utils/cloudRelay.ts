@@ -1,4 +1,5 @@
 import { WORDS_CATALOG } from '../data/words';
+import { compactAudioDataUrlForRelay } from './audioUtils';
 import type {
   ContestRecord,
   ContestSubmissionRecord,
@@ -11,16 +12,16 @@ import type {
 import type { GlobalWordOverride } from '../data/words';
 
 /**
- * Global Cross-Origin / Cross-Domain Real-Time Cloud Relay Topic.
- * Works across AI Studio (run.app), Vercel (1200-word-spelling.vercel.app),
- * Netlify, and Android APK with full CORS (*) and 12-hour server event caching,
- * ensuring 100% real-time contest, spelling, & audio contribution synchronization
- * even when Firebase Firestore free-tier daily read quotas are exhausted.
+ * Dual-Topic Cross-Origin / Cross-Domain Real-Time Cloud Relay:
+ * 1. CONTEST_RELAY_TOPIC: Lightweight (<600B) JSON events for Contests, Registrations, Leaderboards, & Spelling Overrides.
+ * 2. AUDIO_RELAY_TOPIC: Inline-chunked (<4KB per message) Audio Contributions & General Recordings (zero file attachments!).
  */
-export const CLOUD_RELAY_TOPIC = 'lw_ielts_contest_mesh_12193dcd_v3';
-export const CLOUD_RELAY_BASE_URL = `https://ntfy.sh/${CLOUD_RELAY_TOPIC}`;
+export const CONTEST_RELAY_TOPIC = 'lw_contest_fast_12193dcd_v4';
+export const AUDIO_RELAY_TOPIC = 'lw_audio_studio_12193dcd_v4';
+export const CONTEST_RELAY_URL = `https://ntfy.sh/${CONTEST_RELAY_TOPIC}`;
+export const AUDIO_RELAY_URL = `https://ntfy.sh/${AUDIO_RELAY_TOPIC}`;
 const EVENT_PREFIX = 'LW_EVT:';
-const AUDIO_CHUNK_SIZE = 2800;
+const AUDIO_CHUNK_SIZE = 3450;
 
 type CompactResultTuple = [string, string, 0 | 1]; // [wordId, userAnswer, isCorrect]
 
@@ -129,7 +130,8 @@ const pendingRecordingMetaByKey = new Map<string, RelayRecordingMeta>();
 const sentAudioKeys = new Set<string>();
 
 const listeners = new Set<(snapshot: CloudRelaySnapshot) => void>();
-let sseSource: EventSource | null = null;
+let contestSseSource: EventSource | null = null;
+let audioSseSource: EventSource | null = null;
 let lastPollAtMs = 0;
 let pollInFlight: Promise<CloudRelaySnapshot> | null = null;
 
@@ -461,9 +463,6 @@ function notifyRelayListeners(): void {
   });
 }
 
-const resolvedAttachmentsCache = new Map<string, CloudRelayEvent>();
-const inFlightAttachments = new Map<string, Promise<boolean>>();
-
 function parseRawEventPayload(msg: string): boolean {
   const rawJson = msg.startsWith(EVENT_PREFIX)
     ? msg.slice(EVENT_PREFIX.length)
@@ -477,71 +476,35 @@ function parseRawEventPayload(msg: string): boolean {
   }
 }
 
-function parseNtfyEnvelopeLine(
-  line: string,
-  pendingAttachmentPromises?: Promise<boolean>[]
-): boolean {
+function parseNtfyEnvelopeLine(line: string): boolean {
   const trimmed = line.trim();
   if (!trimmed) return false;
   try {
     const env = JSON.parse(trimmed);
-    if (env?.event !== 'message') {
+    if (env?.event !== 'message' || typeof env.message !== 'string') {
       return false;
     }
-
-    // Case 1: Large payload (>4KB) automatically stored by ntfy.sh as an attachment with CORS *
-    const attachmentUrl: string | undefined = env?.attachment?.url;
-    if (typeof attachmentUrl === 'string' && attachmentUrl.startsWith('http')) {
-      const cachedEvt = resolvedAttachmentsCache.get(attachmentUrl);
-      if (cachedEvt) {
-        return applyRelayEvent(cachedEvt);
-      }
-
-      let existingPromise = inFlightAttachments.get(attachmentUrl);
-      if (!existingPromise) {
-        existingPromise = (async () => {
-          try {
-            const res = await fetch(attachmentUrl);
-            if (!res.ok) return false;
-            const text = (await res.text()).trim();
-            const rawJson = text.startsWith(EVENT_PREFIX)
-              ? text.slice(EVENT_PREFIX.length)
-              : text;
-            if (!rawJson.startsWith('{')) return false;
-            const evt = JSON.parse(rawJson) as CloudRelayEvent;
-            resolvedAttachmentsCache.set(attachmentUrl, evt);
-            const applied = applyRelayEvent(evt);
-            if (applied) {
-              notifyRelayListeners();
-            }
-            return applied;
-          } catch {
-            return false;
-          } finally {
-            inFlightAttachments.delete(attachmentUrl);
-          }
-        })();
-        inFlightAttachments.set(attachmentUrl, existingPromise);
-      }
-      if (pendingAttachmentPromises) {
-        pendingAttachmentPromises.push(existingPromise);
-      }
-      return false;
-    }
-
-    // Case 2: Standard inline message (<=4KB)
-    if (typeof env.message === 'string') {
-      return parseRawEventPayload(env.message);
-    }
-    return false;
+    return parseRawEventPayload(env.message);
   } catch {
     return false;
   }
 }
 
+function getTargetRelayUrl(evt: CloudRelayEvent): string {
+  if (
+    evt.op === 'AUDIO_CHUNK' ||
+    evt.op === 'CONTRIBUTION_UPSERT' ||
+    evt.op === 'CONTRIBUTION_STATUS' ||
+    evt.op === 'RECORDING_UPSERT' ||
+    evt.op === 'RECORDING_DELETE'
+  ) {
+    return AUDIO_RELAY_URL;
+  }
+  return CONTEST_RELAY_URL;
+}
+
 /**
- * Publishes an event to the global cross-domain relay so all connected browsers
- * (across Vercel, AI Studio, and Android APK) receive it in real time.
+ * Publishes an inline (<4KB) event to the appropriate global cross-domain relay topic.
  */
 export async function publishCloudRelayEvent(
   evt: CloudRelayEvent
@@ -552,7 +515,8 @@ export async function publishCloudRelayEvent(
 
   try {
     const body = EVENT_PREFIX + JSON.stringify(evt);
-    const res = await fetch(CLOUD_RELAY_BASE_URL, {
+    const targetUrl = getTargetRelayUrl(evt);
+    const res = await fetch(targetUrl, {
       method: 'POST',
       body,
       headers: {
@@ -565,25 +529,101 @@ export async function publishCloudRelayEvent(
   }
 }
 
+async function publishInlineAudioChunksToRelay(
+  audioKey: string,
+  rawAudioDataUrl: string
+): Promise<{ totalChunks: number; finalAudioUrl: string; allSent: boolean }> {
+  const finalAudioUrl = await compactAudioDataUrlForRelay(rawAudioDataUrl);
+  const totalChunks = Math.ceil(finalAudioUrl.length / AUDIO_CHUNK_SIZE);
+
+  let chunkMap = audioChunksStore.get(audioKey);
+  if (!chunkMap) {
+    chunkMap = new Map();
+    audioChunksStore.set(audioKey, chunkMap);
+  }
+  audioTotalChunksStore.set(audioKey, totalChunks);
+  for (let i = 0; i < totalChunks; i++) {
+    chunkMap.set(
+      i,
+      finalAudioUrl.slice(i * AUDIO_CHUNK_SIZE, (i + 1) * AUDIO_CHUNK_SIZE)
+    );
+  }
+
+  if (sentAudioKeys.has(audioKey)) {
+    return { totalChunks, finalAudioUrl, allSent: true };
+  }
+
+  let allSent = true;
+  for (let i = 0; i < totalChunks; i++) {
+    const slice = finalAudioUrl.slice(
+      i * AUDIO_CHUNK_SIZE,
+      (i + 1) * AUDIO_CHUNK_SIZE
+    );
+    const ok = await publishCloudRelayEvent({
+      op: 'AUDIO_CHUNK',
+      k: audioKey,
+      i,
+      n: totalChunks,
+      d: slice,
+    });
+    if (!ok) {
+      allSent = false;
+      break;
+    }
+    if (i + 1 < totalChunks) {
+      await new Promise((r) => setTimeout(r, 140));
+    }
+  }
+
+  if (allSent) {
+    sentAudioKeys.add(audioKey);
+  }
+  return { totalChunks, finalAudioUrl, allSent };
+}
+
 export async function publishContributionUpsertToRelay(
   contribution: AudioContributionRecord
 ): Promise<boolean> {
   relayState.deletedContributionIds.delete(contribution.id);
-  const key = `contrib_${contribution.id}_${contribution.updatedAtMs}`;
-  if (sentAudioKeys.has(key)) {
+  const sentKey = `contrib_meta_${contribution.id}_${contribution.updatedAtMs}`;
+  if (sentAudioKeys.has(sentKey)) {
     return true;
   }
 
-  // Send the full contribution (including audioDataUrl) in a single POST request.
-  // Small payloads (<=4KB) are delivered inline; larger payloads (>4KB up to 900KB)
-  // are automatically stored as a CORS-enabled attachment on ntfy.sh in 1 single request!
+  const { audioDataUrl, ...metaRest } = contribution;
+  if (audioDataUrl.length <= 2400) {
+    const ok = await publishCloudRelayEvent({
+      op: 'CONTRIBUTION_UPSERT',
+      ts: Date.now(),
+      contrib: {
+        ...metaRest,
+        audioDataUrl,
+      },
+    });
+    if (ok) sentAudioKeys.add(sentKey);
+    return ok;
+  }
+
+  const audioKey = `aud_${contribution.id}`;
+  const { totalChunks, allSent } = await publishInlineAudioChunksToRelay(
+    audioKey,
+    audioDataUrl
+  );
+  if (!allSent || totalChunks <= 0) {
+    return false;
+  }
+
   const ok = await publishCloudRelayEvent({
     op: 'CONTRIBUTION_UPSERT',
     ts: Date.now(),
-    contrib: contribution,
+    contrib: {
+      ...metaRest,
+      audioKey,
+      totalChunks,
+    },
   });
   if (ok) {
-    sentAudioKeys.add(key);
+    sentAudioKeys.add(sentKey);
   }
   return ok;
 }
@@ -604,21 +644,49 @@ export async function publishContributionStatusToRelay(params: {
 
 export async function publishRecordingUpsertToRelay(
   recording: CloudRecording,
-  _existingAudioKey?: string
+  existingAudioKey?: string
 ): Promise<boolean> {
   relayState.deletedRecordingIds.delete(recording.wordId);
-  const key = `rec_${recording.wordId}_${recording.updatedAtMs}`;
-  if (sentAudioKeys.has(key)) {
+  const sentKey = `rec_meta_${recording.wordId}_${recording.updatedAtMs}`;
+  if (sentAudioKeys.has(sentKey)) {
     return true;
+  }
+
+  const { audioDataUrl, ...metaRest } = recording;
+  if (audioDataUrl.length <= 2400) {
+    const ok = await publishCloudRelayEvent({
+      op: 'RECORDING_UPSERT',
+      ts: Date.now(),
+      rec: {
+        ...metaRest,
+        audioDataUrl,
+      },
+    });
+    if (ok) sentAudioKeys.add(sentKey);
+    return ok;
+  }
+
+  const audioKey =
+    existingAudioKey || `rec_${recording.wordId}_${recording.updatedAtMs}`;
+  const { totalChunks, allSent } = await publishInlineAudioChunksToRelay(
+    audioKey,
+    audioDataUrl
+  );
+  if (!allSent || totalChunks <= 0) {
+    return false;
   }
 
   const ok = await publishCloudRelayEvent({
     op: 'RECORDING_UPSERT',
     ts: Date.now(),
-    rec: recording,
+    rec: {
+      ...metaRest,
+      audioKey,
+      totalChunks,
+    },
   });
   if (ok) {
-    sentAudioKeys.add(key);
+    sentAudioKeys.add(sentKey);
   }
   return ok;
 }
@@ -635,12 +703,16 @@ export async function publishRecordingDeleteToRelay(
 
 export async function publishContestUpsertToRelay(
   contest: ContestRecord
-): Promise<void> {
-  await publishCloudRelayEvent({
+): Promise<boolean> {
+  const sentKey = `contest_${contest.id}_${contest.updatedAtMs}`;
+  if (sentAudioKeys.has(sentKey)) return true;
+  const ok = await publishCloudRelayEvent({
     op: 'CONTEST_UPSERT',
     ts: Date.now(),
     contest,
   });
+  if (ok) sentAudioKeys.add(sentKey);
+  return ok;
 }
 
 export async function publishContestDeleteToRelay(
@@ -655,14 +727,18 @@ export async function publishContestDeleteToRelay(
 
 export async function publishSubmissionUpsertToRelay(
   submission: ContestSubmissionRecord
-): Promise<void> {
+): Promise<boolean> {
+  const sentKey = `sub_${submission.id}_${submission.status}_${submission.updatedAtMs}`;
+  if (sentAudioKeys.has(sentKey)) return true;
   const { results, ...rest } = submission;
-  await publishCloudRelayEvent({
+  const ok = await publishCloudRelayEvent({
     op: 'SUBMISSION_UPSERT',
     ts: Date.now(),
     sub: rest,
     r: compactResults(results),
   });
+  if (ok) sentAudioKeys.add(sentKey);
+  return ok;
 }
 
 export async function publishWordOverrideUpsertToRelay(
@@ -685,14 +761,39 @@ export async function publishWordOverrideDeleteToRelay(
   });
 }
 
+async function pollSingleRelayTopic(topicUrl: string): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 4000);
+    const res = await fetch(`${topicUrl}/json?poll=1&since=all`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    if (!res.ok) return false;
+    const text = await res.text();
+    const lines = text.split('\n');
+    let changed = false;
+    for (const line of lines) {
+      if (parseNtfyEnvelopeLine(line)) {
+        changed = true;
+      }
+    }
+    return changed;
+  } catch {
+    return false;
+  }
+}
+
 /**
- * Polls the 12-hour cached event log from the global cloud relay and applies all events in order.
+ * Polls the 12-hour cached event log from the global cloud relay topics and applies all events in order.
+ * Background interval polls (force=false) are throttled to once every 15s because SSE streams push in real time.
  */
 export async function pollCloudRelaySnapshot(
   force = false
 ): Promise<CloudRelaySnapshot> {
   const now = Date.now();
-  if (!force && now - lastPollAtMs < 1500) {
+  if (!force && lastPollAtMs > 0 && now - lastPollAtMs < 15000) {
     return relayState;
   }
   if (pollInFlight) {
@@ -701,37 +802,14 @@ export async function pollCloudRelaySnapshot(
 
   pollInFlight = (async () => {
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 4500);
-      const res = await fetch(`${CLOUD_RELAY_BASE_URL}/json?poll=1&since=all`, {
-        cache: 'no-store',
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (res.ok) {
-        lastPollAtMs = Date.now();
-        const text = await res.text();
-        const lines = text.split('\n');
-        const pendingAttachments: Promise<boolean>[] = [];
-        let changed = false;
-        for (const line of lines) {
-          if (parseNtfyEnvelopeLine(line, pendingAttachments)) {
-            changed = true;
-          }
-        }
-        if (pendingAttachments.length > 0) {
-          const results = await Promise.all(pendingAttachments);
-          if (results.some(Boolean)) {
-            changed = true;
-          }
-        }
-        if (changed) {
-          notifyRelayListeners();
-        }
+      lastPollAtMs = Date.now();
+      const [cChanged, aChanged] = await Promise.all([
+        pollSingleRelayTopic(CONTEST_RELAY_URL),
+        pollSingleRelayTopic(AUDIO_RELAY_URL),
+      ]);
+      if (cChanged || aChanged) {
+        notifyRelayListeners();
       }
-    } catch {
-      // Ignore offline/timeout errors
     } finally {
       pollInFlight = null;
     }
@@ -742,8 +820,8 @@ export async function pollCloudRelaySnapshot(
 }
 
 /**
- * Opens a real-time Server-Sent Events (SSE) stream to the global cloud relay
- * so new contests, registrations, and scores arrive in < 200ms across all browsers and domains.
+ * Opens real-time Server-Sent Events (SSE) streams to both global cloud relay topics
+ * so new contests, registrations, scores, and audio contributions arrive in < 200ms across all browsers and domains.
  */
 export function subscribeToCloudRelay(
   callback: (snapshot: CloudRelaySnapshot) => void
@@ -753,31 +831,52 @@ export function subscribeToCloudRelay(
 
   void pollCloudRelaySnapshot(false);
 
-  if (typeof window !== 'undefined' && 'EventSource' in window && !sseSource) {
-    try {
-      sseSource = new EventSource(`${CLOUD_RELAY_BASE_URL}/sse?since=all`);
-      sseSource.onmessage = (ev) => {
-        if (typeof ev.data === 'string' && parseNtfyEnvelopeLine(ev.data)) {
-          notifyRelayListeners();
-        }
-      };
-      sseSource.onerror = () => {
-        // Browser EventSource automatically reconnects; poll fallback keeps state fresh
-      };
-    } catch {
-      sseSource = null;
+  if (typeof window !== 'undefined' && 'EventSource' in window) {
+    if (!contestSseSource) {
+      try {
+        contestSseSource = new EventSource(`${CONTEST_RELAY_URL}/sse?since=all`);
+        contestSseSource.onmessage = (ev) => {
+          if (typeof ev.data === 'string' && parseNtfyEnvelopeLine(ev.data)) {
+            notifyRelayListeners();
+          }
+        };
+      } catch {
+        contestSseSource = null;
+      }
+    }
+    if (!audioSseSource) {
+      try {
+        audioSseSource = new EventSource(`${AUDIO_RELAY_URL}/sse?since=all`);
+        audioSseSource.onmessage = (ev) => {
+          if (typeof ev.data === 'string' && parseNtfyEnvelopeLine(ev.data)) {
+            notifyRelayListeners();
+          }
+        };
+      } catch {
+        audioSseSource = null;
+      }
     }
   }
 
   return () => {
     listeners.delete(callback);
-    if (listeners.size === 0 && sseSource) {
-      try {
-        sseSource.close();
-      } catch {
-        // ignore
+    if (listeners.size === 0) {
+      if (contestSseSource) {
+        try {
+          contestSseSource.close();
+        } catch {
+          // ignore
+        }
+        contestSseSource = null;
       }
-      sseSource = null;
+      if (audioSseSource) {
+        try {
+          audioSseSource.close();
+        } catch {
+          // ignore
+        }
+        audioSseSource = null;
+      }
     }
   };
 }

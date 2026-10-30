@@ -652,12 +652,7 @@ export default function App() {
       });
 
       await refreshLocalAndCloudState();
-
-      await playWordAudio({
-        word: selectedWord.word,
-        audioDataUrl: processed.audioDataUrl,
-        bundledAudioFile: selectedWord.bundledAudioFile,
-      });
+      setIsUploading(false);
 
       setStatusBanner({
         type: contributionError ? 'warning' : 'success',
@@ -666,6 +661,12 @@ export default function App() {
           : contributedToAdmin
           ? `Saved "${selectedWord.word}" as your Personal Audio AND submitted to the Admin Panel for review!`
           : `Saved "${selectedWord.word}" as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
+      });
+
+      void playWordAudio({
+        word: selectedWord.word,
+        audioDataUrl: processed.audioDataUrl,
+        bundledAudioFile: selectedWord.bundledAudioFile,
       });
     } catch (err) {
       setStatusBanner({
@@ -728,11 +729,7 @@ export default function App() {
           });
 
           await refreshLocalAndCloudState();
-
-          await playWordAudio({
-            word: selectedWord.word,
-            audioDataUrl: processed.audioDataUrl,
-          });
+          setIsUploading(false);
 
           setStatusBanner({
             type: contributionError ? 'warning' : 'success',
@@ -741,6 +738,11 @@ export default function App() {
               : contributedToAdmin
               ? `Recorded "${selectedWord.word}" as your Personal Audio AND sent to the Admin Panel for review!`
               : `Recorded "${selectedWord.word}" as your Personal Audio! It will never be overwritten by general updates.`,
+          });
+
+          void playWordAudio({
+            word: selectedWord.word,
+            audioDataUrl: processed.audioDataUrl,
           });
         } catch (err) {
           setStatusBanner({
