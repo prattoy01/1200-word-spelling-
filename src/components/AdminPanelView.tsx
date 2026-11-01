@@ -177,29 +177,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     }
   };
 
-  const handleGoogleAdminUnlock = async () => {
-    setIsUnlockingAdmin(true);
-    setUnlockError(null);
-    try {
-      const profile = await signInWithGoogle();
-      if (!profile.isVerifiedAdmin) {
-        setUnlockError(
-          `Access Denied: "${profile.email}" is not the authorized Admin account (${ADMIN_EMAIL}).`
-        );
-        return;
-      }
-      await onRefreshAudioState?.();
-    } catch (err) {
-      setUnlockError(
-        err instanceof Error
-          ? err.message
-          : 'Google sign-in popup was cancelled or blocked. Please enter your Admin Password above.'
-      );
-    } finally {
-      setIsUnlockingAdmin(false);
-    }
-  };
-
   if (!isRecognizedOwner) {
     return (
       <main className="flex-1 max-w-xl w-full mx-auto px-4 sm:px-6 pt-12 pb-28 text-center space-y-5">
@@ -208,16 +185,14 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             <Lock className="w-7 h-7" />
           </div>
           <h1 className="text-xl font-extrabold text-white">
-            Admin Panel — Password Protected
+            Admin Panel — Password Required
           </h1>
           <p className="text-xs sm:text-sm text-[#9bb8aa] leading-relaxed">
             You are currently signed in as{' '}
             <strong className="text-white">
               {userEmail || auth.currentUser?.displayName || 'a Participant / Guest'}
             </strong>
-            . Only the verified Administrator (
-            <strong className="text-[#10b981]">{ADMIN_EMAIL}</strong>) with the valid{' '}
-            <strong className="text-white">Admin Password</strong> can unlock this panel.
+            . Entering the valid <strong className="text-white">Admin Password</strong> is strictly required to unlock the Admin Panel.
           </p>
 
           {unlockError && (
@@ -259,18 +234,6 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               </button>
             </div>
           </form>
-
-          <div className="pt-2 border-t border-[#183327] max-w-sm mx-auto">
-            <button
-              type="button"
-              disabled={isUnlockingAdmin}
-              onClick={handleGoogleAdminUnlock}
-              className="w-full min-h-[40px] px-4 py-2 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50"
-            >
-              <ShieldCheck className="w-4 h-4 text-[#10b981]" />
-              <span>Or Verify via Google OAuth ({ADMIN_EMAIL})</span>
-            </button>
-          </div>
         </div>
       </main>
     );

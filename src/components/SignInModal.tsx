@@ -19,7 +19,6 @@ import {
   ADMIN_EMAIL,
   signInWithGoogle,
   signInWithEmailPassword,
-  signInQuickProfile,
   signInStudentWithUniqueId,
   signInAsAdminDirect,
   signOutUser,
@@ -46,9 +45,9 @@ export const SignInModal: React.FC<SignInModalProps> = ({
   const [password, setPassword] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [isLoadingGoogle, setIsLoadingGoogle] = useState(false);
-  const [quickGoogleMode, setQuickGoogleMode] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const emailInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
 
   if (!isOpen) return null;
 
@@ -58,26 +57,12 @@ export const SignInModal: React.FC<SignInModalProps> = ({
   const handleGooglePopup = async () => {
     setErrorMsg(null);
 
-    // For non-admin emails (or if admin password was explicitly entered), allow direct profile sign-in
-    if (email.trim().includes('@') && (!isTypingAdminEmail || password.trim().length > 0)) {
-      setIsLoadingGoogle(true);
-      try {
-        const profile = await signInQuickProfile({
-          email,
-          displayName,
-          password,
-        });
-        setPassword('');
-        onSignedIn(profile);
-        onClose();
-        return;
-      } catch (err) {
-        setErrorMsg(
-          err instanceof Error ? err.message : 'Could not sign in with this email.'
-        );
-        setIsLoadingGoogle(false);
-        return;
-      }
+    if (isTypingAdminEmail) {
+      setErrorMsg(
+        'Protected Admin Account: Admin access strictly requires your Admin Password. Please enter your Admin Password above.'
+      );
+      passwordInputRef.current?.focus();
+      return;
     }
 
     setIsLoadingGoogle(true);
@@ -86,14 +71,11 @@ export const SignInModal: React.FC<SignInModalProps> = ({
       setPassword('');
       onSignedIn(profile);
       onClose();
-    } catch {
-      // Browser/iframe blocked popup or third-party cookies ->
-      // Switch smoothly to Instant In-Page Google Email Sign-In (no popup required)
-      setQuickGoogleMode(true);
+    } catch (err) {
       setErrorMsg(
-        isTypingAdminEmail
-          ? 'Google OAuth popup was blocked. Please enter your Admin Password above to sign in as Admin.'
-          : null
+        err instanceof Error
+          ? err.message
+          : 'Google OAuth popup was blocked in this browser. Please sign in with your Email & Password above, or use 1-Click Student Login below.'
       );
       setTimeout(() => {
         emailInputRef.current?.focus();
@@ -107,13 +89,13 @@ export const SignInModal: React.FC<SignInModalProps> = ({
     setErrorMsg(null);
     setIsSubmitting(true);
     try {
-      // Always creates a 100% unique internal UID (`stu_<timestamp>_<randomHex>`) and unique `#XXXX` name tag
+      // Creates a 100% unique internal UID (`stu_<timestamp>_<randomHex>`) and unique `#XXXX` name tag
       const profile = await signInStudentWithUniqueId(displayName);
       onSignedIn(profile);
       onClose();
     } catch (err) {
       setErrorMsg(
-        err instanceof Error ? err.message : 'Quick sign-in failed.'
+        err instanceof Error ? err.message : 'Quick student sign-in failed.'
       );
     } finally {
       setIsSubmitting(false);
@@ -126,21 +108,27 @@ export const SignInModal: React.FC<SignInModalProps> = ({
     setIsSubmitting(true);
     try {
       let profile: User;
-      // If a student submitted ONLY their name (without typing an email), generate a guaranteed unique Student ID
-      if (!email.trim() && displayName.trim()) {
+      if (isTypingAdminEmail) {
+        if (!password.trim()) {
+          throw new Error(
+            'Admin Password is required. Nobody can sign in as Admin without the password.'
+          );
+        }
+        profile = await signInAsAdminDirect(password);
+      } else if (!email.trim() && displayName.trim()) {
+        // Student entered ONLY their name (no email) -> generate a guaranteed unique Student ID
         profile = await signInStudentWithUniqueId(displayName);
-      } else if (!isTypingAdminEmail && (quickGoogleMode || password.trim().length < 6)) {
-        profile = await signInQuickProfile({
-          email,
-          displayName,
-          password,
-        });
       } else {
+        if (!password || password.trim().length < 6) {
+          throw new Error(
+            'Please enter your account password (at least 6 characters).'
+          );
+        }
         profile = await signInWithEmailPassword({
           email,
           password,
           displayName,
-          mode: isTypingAdminEmail ? 'signin' : authMode,
+          mode: authMode,
         });
       }
       setPassword('');
@@ -228,7 +216,6 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               type="button"
               onClick={() => {
                 setAuthMode('signin');
-                setQuickGoogleMode(false);
                 setErrorMsg(null);
               }}
               className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
@@ -244,7 +231,6 @@ export const SignInModal: React.FC<SignInModalProps> = ({
               type="button"
               onClick={() => {
                 setAuthMode('signup');
-                setQuickGoogleMode(false);
                 setErrorMsg(null);
               }}
               className={`py-2 px-3 rounded-lg text-xs font-bold transition-colors flex items-center justify-center gap-1.5 ${
@@ -258,15 +244,6 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             </button>
           </div>
 
-          {quickGoogleMode && (
-            <div className="p-3 rounded-xl bg-[#0e291e] border border-[#10b981]/50 text-xs text-[#a7f3d0] flex items-start gap-2">
-              <Sparkles className="w-4 h-4 text-[#10b981] shrink-0 mt-0.5" />
-              <span>
-                <strong>Direct In-Page Google Sign-In Active:</strong> Browser popup windows are restricted here, so simply type your <strong>Gmail / Email address</strong> below and click <strong>Sign In</strong>!
-              </span>
-            </div>
-          )}
-
           {errorMsg && (
             <div className="p-3 rounded-xl bg-[#2a1215] border border-[#5c2026] text-xs text-[#fda4af] flex items-start gap-2">
               <AlertCircle className="w-4 h-4 text-[#f43f5e] shrink-0 mt-0.5" />
@@ -278,9 +255,8 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             <div className="p-3 rounded-xl bg-[#0e291e] border border-[#10b981]/40 text-xs text-[#a7f3d0] flex items-start gap-2">
               <ShieldCheck className="w-4 h-4 text-[#10b981] shrink-0 mt-0.5" />
               <span>
-                <strong>Protected Admin Account:</strong> Entering{' '}
-                <code className="font-mono">{ADMIN_EMAIL}</code> verifies your{' '}
-                <strong>Admin Password</strong>.
+                <strong>Password Verification Required:</strong> Enter your{' '}
+                <strong>Admin Password</strong> below to authenticate.
               </span>
             </div>
           )}
@@ -290,7 +266,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
             {!isTypingAdminEmail && (
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                  Student / Participant Name (Auto-Generates Unique #ID)
+                  Student / Participant Name
                 </label>
                 <div className="relative">
                   <UserIcon className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -298,7 +274,7 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                     type="text"
                     value={displayName}
                     onChange={(e) => setDisplayName(e.target.value)}
-                    placeholder="e.g. Rahat Ahmed (gets unique #ID automatically)"
+                    placeholder="e.g. Rahat Ahmed"
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                   />
                 </div>
@@ -307,10 +283,10 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
             <div>
               <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
-                Email / Gmail Address{' '}
+                Email Address{' '}
                 {displayName.trim() && !isTypingAdminEmail ? (
                   <span className="text-[#10b981] font-normal normal-case">
-                    (Optional if entering Student Name above)
+                    (Optional if using 1-Click Student Login)
                   </span>
                 ) : null}
               </label>
@@ -322,30 +298,31 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                   required={!displayName.trim() || isTypingAdminEmail}
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  placeholder="e.g. yourname@gmail.com (or leave blank for Name-Only)"
+                  placeholder="Enter your email address..."
                   className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                 />
               </div>
             </div>
 
-            {(!quickGoogleMode || isTypingAdminEmail) && (
+            {(email.trim().length > 0 || isTypingAdminEmail || !displayName.trim()) && (
               <div>
                 <label className="block text-[11px] font-bold uppercase tracking-wider text-[#9bb8aa] mb-1.5">
                   {isTypingAdminEmail
                     ? 'Admin Password (Required)'
-                    : 'Password (or leave blank for Quick Sign-In)'}
+                    : 'Password (Required for Email Sign-In)'}
                 </label>
                 <div className="relative">
                   <Lock className="w-4 h-4 text-[#5e8070] absolute left-3.5 top-1/2 -translate-y-1/2" />
                   <input
+                    ref={passwordInputRef}
                     type="password"
-                    required={isTypingAdminEmail}
+                    required={Boolean(email.trim()) || isTypingAdminEmail}
                     value={password}
                     onChange={(e) => setPassword(e.target.value)}
                     placeholder={
                       isTypingAdminEmail
                         ? 'Enter Admin Password (Required)...'
-                        : 'Enter password (optional for quick student login)...'
+                        : 'Enter your password (min. 6 characters)...'
                     }
                     className="w-full pl-10 pr-3.5 py-2.5 rounded-xl bg-[#07120e] border border-[#1d3d2f] text-sm text-white placeholder-[#527062] focus:outline-none focus:border-[#10b981]"
                   />
@@ -355,7 +332,10 @@ export const SignInModal: React.FC<SignInModalProps> = ({
 
             <button
               type="submit"
-              disabled={isSubmitting || (isTypingAdminEmail && !password.trim())}
+              disabled={
+                isSubmitting ||
+                (Boolean(email.trim()) && !password.trim())
+              }
               className="w-full min-h-[44px] py-2.5 px-4 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm transition-colors flex items-center justify-center gap-2 shadow-sm disabled:opacity-50"
             >
               <LogIn className="w-4 h-4" />
@@ -366,77 +346,57 @@ export const SignInModal: React.FC<SignInModalProps> = ({
                   ? 'Verify Password & Sign In as Admin'
                   : !email.trim() && displayName.trim()
                   ? `Sign In as "${displayName.trim()}" (Unique Student ID)`
-                  : quickGoogleMode
-                  ? 'Continue with Gmail Address'
                   : authMode === 'signup'
                   ? 'Create Account & Sign In'
-                  : 'Sign In'}
+                  : 'Sign In with Password'}
               </span>
             </button>
           </form>
 
-          {/* Divider */}
-          <div className="relative flex items-center justify-center">
-            <div className="border-t border-[#183327] w-full" />
-            <span className="bg-[#0d1f18] px-3 text-[11px] text-[#6c8c7d] uppercase tracking-wider">
-              or quick access
-            </span>
-            <div className="border-t border-[#183327] w-full" />
-          </div>
+          {!isTypingAdminEmail && (
+            <>
+              {/* Divider */}
+              <div className="relative flex items-center justify-center">
+                <div className="border-t border-[#183327] w-full" />
+                <span className="bg-[#0d1f18] px-3 text-[11px] text-[#6c8c7d] uppercase tracking-wider">
+                  or student access
+                </span>
+                <div className="border-t border-[#183327] w-full" />
+              </div>
 
-          <div className="space-y-2">
-            {/* Google OAuth Button (with automatic In-Page fallback) */}
-            <button
-              type="button"
-              onClick={handleGooglePopup}
-              disabled={isLoadingGoogle}
-              className="w-full min-h-[42px] py-2.5 px-4 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              <Sparkles className="w-4 h-4 text-[#10b981]" />
-              <span>
-                {isLoadingGoogle
-                  ? 'Connecting Google Account...'
-                  : email.trim().includes('@') && !isTypingAdminEmail
-                  ? `Continue Instantly as ${email.trim()}`
-                  : 'Continue with Google Account'}
-              </span>
-            </button>
+              <div className="space-y-2">
+                {/* 1-Click Instant Student Contest Access */}
+                <button
+                  type="button"
+                  onClick={handleQuickGuestParticipant}
+                  disabled={isSubmitting}
+                  className="w-full min-h-[42px] py-2.5 px-4 rounded-xl bg-[#0a1812] hover:bg-[#11261d] border border-[#1d3b2d] text-xs font-semibold text-[#fbbf24] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Zap className="w-3.5 h-3.5 text-[#fbbf24]" />
+                  <span>
+                    {displayName.trim()
+                      ? `1-Click Student Login as "${displayName.trim()}" (Unique #ID)`
+                      : '1-Click Instant Student Login (Unique #ID)'}
+                  </span>
+                </button>
 
-            {/* 1-Click Instant Student Contest Access */}
-            <button
-              type="button"
-              onClick={handleQuickGuestParticipant}
-              disabled={isSubmitting}
-              className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0a1812] hover:bg-[#11261d] border border-[#1d3b2d] text-xs font-semibold text-[#fbbf24] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-            >
-              <Zap className="w-3.5 h-3.5 text-[#fbbf24]" />
-              <span>
-                {displayName.trim()
-                  ? `1-Click Student Login as "${displayName.trim()}" (Unique #ID)`
-                  : '1-Click Instant Student Login (Unique #ID)'}
-              </span>
-            </button>
-
-            {/* Admin Login Helper (Requires Password) */}
-            {!currentUser?.isVerifiedAdmin && !isTypingAdminEmail && (
-              <button
-                type="button"
-                disabled={isSubmitting}
-                onClick={() => {
-                  setAuthMode('signin');
-                  setQuickGoogleMode(false);
-                  setEmail(ADMIN_EMAIL);
-                  setErrorMsg(
-                    'Enter the Admin Password above to sign in as Admin.'
-                  );
-                }}
-                className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#0e291e] hover:bg-[#143a2a] border border-[#10b981]/50 text-xs font-extrabold text-[#10b981] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-              >
-                <ShieldCheck className="w-3.5 h-3.5 text-[#10b981]" />
-                <span>Admin Login (Password Required)</span>
-              </button>
-            )}
-          </div>
+                {/* Google OAuth Button (for non-admin student accounts) */}
+                <button
+                  type="button"
+                  onClick={handleGooglePopup}
+                  disabled={isLoadingGoogle}
+                  className="w-full min-h-[40px] py-2 px-4 rounded-xl bg-[#132a20] hover:bg-[#19382b] border border-[#254d3c] text-xs font-semibold text-[#d5ebe0] transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  <Sparkles className="w-4 h-4 text-[#10b981]" />
+                  <span>
+                    {isLoadingGoogle
+                      ? 'Connecting Google Account...'
+                      : 'Continue with Google Account (Students)'}
+                  </span>
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

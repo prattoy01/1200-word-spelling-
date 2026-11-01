@@ -90,11 +90,16 @@ export interface CloudUserProfile {
   providerData: Array<{ providerId: string; email: string }>;
 }
 
-const SESSION_STORAGE_KEY = 'lw_verified_session_v3';
+const SESSION_STORAGE_KEY = 'lw_verified_session_v5';
 const LEGACY_KEYS = [
   'lw_cloud_sync_profile_v1',
   'lw_auth_session_v2',
   'lw_saved_accounts_v2',
+  'lw_verified_session_v3',
+  'lw_verified_session_v4',
+  'lw_session_strict_v2',
+  'lw_session_strict_v3',
+  'lw_session_strict_v4',
 ];
 
 // Clean up any legacy unverified sessions from previous versions immediately
@@ -251,7 +256,7 @@ export function isAdminUser(
   );
 }
 
-const SESSION_VERSION_KEY = 'lw_session_strict_v2';
+const SESSION_VERSION_KEY = 'lw_session_strict_v5';
 
 export function getStoredUserSession(): CloudUserProfile | null {
   if (typeof window === 'undefined') return null;
@@ -777,9 +782,15 @@ export async function updateAdminPassword(params: {
   if (!isAdminUser(auth.currentUser)) {
     throw new Error('Unauthorized: Only the verified Admin can change the Admin password.');
   }
+  if (!params.currentPassword || !params.currentPassword.trim()) {
+    throw new Error('Please enter your current Admin Password.');
+  }
   if (!params.newPassword || params.newPassword.length < 6) {
     throw new Error('New password must be at least 6 characters.');
   }
+
+  // Verify current password first
+  await signInAsAdminDirect(params.currentPassword);
 
   const adminUid = emailToDeterministicUid(ADMIN_EMAIL);
   const newHash = await hashAccountPassword(ADMIN_EMAIL, params.newPassword);
@@ -856,11 +867,21 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
     throw new Error('Google account did not provide a verified email.');
   }
 
+  // Strictly require the Admin Password for the Admin account even if Google OAuth is clicked
+  if (email === ADMIN_EMAIL.toLowerCase()) {
+    try {
+      await firebaseSignOut(isolatedGoogleAuth);
+    } catch {
+      // Ignore cleanup errors
+    }
+    throw new Error(
+      'Protected Admin Account: Admin access requires your Admin Password. Please enter your Admin Password in the password field above.'
+    );
+  }
+
   const displayName =
     fbUser.displayName || email.split('@')[0] || 'Google User';
   const uid = emailToDeterministicUid(email);
-  const isVerifiedAdmin =
-    email === ADMIN_EMAIL.toLowerCase() && fbUser.emailVerified;
 
   try {
     const idToken = await fbUser.getIdToken();
@@ -887,8 +908,8 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
     emailVerified: fbUser.emailVerified,
     isAnonymous: false,
     tenantId: null,
-    role: isVerifiedAdmin ? 'admin' : 'user',
-    isVerifiedAdmin,
+    role: 'user',
+    isVerifiedAdmin: false,
     sessionToken,
     providerData: [{ providerId: 'google_oauth_verified', email }],
   };

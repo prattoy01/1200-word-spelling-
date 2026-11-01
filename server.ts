@@ -135,25 +135,49 @@ function scheduleSaveStore(): void {
   }, 150);
 }
 
-async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
-  try {
-    if (!hasBackfilledSqlFromDisk) {
-      hasBackfilledSqlFromDisk = true;
-      const diskContests = Object.values(store.contests);
-      const diskSubs = Object.values(store.submissions);
-      const diskContribs = Object.values(store.contributions);
-      const diskRecordings = Object.values(store.recordings);
-      const diskOverrides = Object.values(store.wordOverrides);
-      if (diskContests.length > 0) await upsertContestsToSql(diskContests);
-      if (diskSubs.length > 0) await upsertSubmissionsToSql(diskSubs);
-      if (diskContribs.length > 0) await upsertContributionsToSql(diskContribs);
-      if (diskRecordings.length > 0)
-        await upsertRecordingsToSql(diskRecordings);
-      if (diskOverrides.length > 0)
-        await upsertWordOverridesToSql(diskOverrides);
-    }
+let lastSqlPullAtMs = 0;
+let lastSqlPullWithAudioAtMs = 0;
+let inFlightSqlSync: Promise<void> | null = null;
 
-    const sqlData = await fetchAllCloudSqlSyncData(includeAudio);
+async function backfillDiskStoreToCloudSqlOnce() {
+  if (hasBackfilledSqlFromDisk) return;
+  hasBackfilledSqlFromDisk = true;
+  try {
+    const diskContests = Object.values(store.contests);
+    const diskSubs = Object.values(store.submissions);
+    const diskContribs = Object.values(store.contributions);
+    const diskRecordings = Object.values(store.recordings);
+    const diskOverrides = Object.values(store.wordOverrides);
+    if (diskContests.length > 0) await upsertContestsToSql(diskContests);
+    if (diskSubs.length > 0) await upsertSubmissionsToSql(diskSubs);
+    if (diskContribs.length > 0) await upsertContributionsToSql(diskContribs);
+    if (diskRecordings.length > 0) await upsertRecordingsToSql(diskRecordings);
+    if (diskOverrides.length > 0) await upsertWordOverridesToSql(diskOverrides);
+  } catch (err) {
+    console.warn('Background Cloud SQL backfill skipped:', err);
+  }
+}
+
+async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
+  const now = Date.now();
+  if (includeAudio && now - lastSqlPullWithAudioAtMs < 8000) return;
+  if (!includeAudio && now - lastSqlPullAtMs < 6000) return;
+
+  if (inFlightSqlSync) {
+    await Promise.race([
+      inFlightSqlSync,
+      new Promise<void>((r) => setTimeout(r, 1200)),
+    ]);
+    return;
+  }
+
+  inFlightSqlSync = (async () => {
+    try {
+      const sqlData = await fetchAllCloudSqlSyncData(includeAudio);
+      lastSqlPullAtMs = Date.now();
+      if (includeAudio) {
+        lastSqlPullWithAudioAtMs = Date.now();
+      }
 
     for (const delId of sqlData.deletedContestIds) {
       delete store.contests[delId];
@@ -215,9 +239,17 @@ async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
         store.wordOverrides[wid] = ov;
       }
     }
-  } catch (error) {
-    console.warn('Cloud SQL sync fallback to local disk store:', error);
-  }
+    } catch (error) {
+      console.warn('Cloud SQL sync fallback to local disk store:', error);
+    } finally {
+      inFlightSqlSync = null;
+    }
+  })();
+
+  await Promise.race([
+    inFlightSqlSync,
+    new Promise<void>((r) => setTimeout(r, 1200)),
+  ]);
 }
 
 async function startServer() {
@@ -901,7 +933,9 @@ async function startServer() {
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
+    void backfillDiskStoreToCloudSqlOnce();
   });
 }
 
 void startServer();
+
