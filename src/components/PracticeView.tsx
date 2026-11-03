@@ -173,6 +173,25 @@ function checkSpellingCorrect(
   return accepted.includes(normAns);
 }
 
+function buildMaskedWordHint(word: string): string {
+  const primary = String(word).split('/')[0].trim();
+  return primary
+    .split(/\s+/)
+    .map((part) => {
+      if (part.length <= 2) return part[0] + ' _'.repeat(Math.max(0, part.length - 1));
+      const chars = part.split('');
+      return chars
+        .map((ch, idx) => {
+          if (idx === 0) return ch;
+          if (part.length >= 5 && idx === part.length - 1) return ch;
+          if (ch === '-' || ch === "'") return ch;
+          return '_';
+        })
+        .join(' ');
+    })
+    .join('   ');
+}
+
 /**
  * Finds matching catalog words for legacy history entries that were saved before per-word results existed.
  */
@@ -394,7 +413,17 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
   const [userInput, setUserInput] = useState('');
   const [submitted, setSubmitted] = useState(false);
   const [showBanglaHint, setShowBanglaHint] = useState(true);
+  const [showLetterHint, setShowLetterHint] = useState(false);
   const [showStudyWord, setShowStudyWord] = useState(false);
+  const [autoPlayOnSwitch, setAutoPlayOnSwitch] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('lw_auto_play_next_v1');
+      if (saved === 'false') return false;
+    } catch {
+      // ignore
+    }
+    return true;
+  });
   const [isPracticingBlur, setIsPracticingBlur] = useState(false);
   const [playingStudyWordId, setPlayingStudyWordId] = useState<string | null>(
     null
@@ -936,9 +965,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
+    setShowLetterHint(false);
     setIsPracticingBlur(false);
     setCurrentIndex(prevIdx);
-    void playSpecificWord(prevWord, 1.0);
+    if (autoPlayOnSwitch) {
+      void playSpecificWord(prevWord, 1.0);
+    }
   };
 
   const handleNextPracticeWord = () => {
@@ -948,9 +980,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
     setSubmitted(false);
     setUserInput('');
     setShowStudyWord(false);
+    setShowLetterHint(false);
     setIsPracticingBlur(false);
     setCurrentIndex(nextIdx);
-    void playSpecificWord(nextWord, 1.0);
+    if (autoPlayOnSwitch) {
+      void playSpecificWord(nextWord, 1.0);
+    }
   };
 
   // ============================================================================
@@ -1349,8 +1384,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             </div>
 
             {/* Mobile Compact Summary + Drawer Toggle Bar */}
-            <div className="flex md:hidden items-center justify-between gap-2 pt-0.5">
-              <div className="min-w-0 flex items-center gap-1.5 text-xs">
+            <div className="flex flex-wrap md:hidden items-center justify-between gap-2 pt-0.5">
+              <div className="min-w-0 flex-1 flex items-center gap-1.5 text-xs">
                 <FolderOpen className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
                 <span className="text-[#c4d9ce] font-semibold truncate">
                   {selectedCategoriesLabel}
@@ -1360,13 +1395,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center gap-1.5 shrink-0">
+              <div className="flex flex-wrap items-center gap-1.5 shrink-0">
                 <button
                   type="button"
                   disabled={isDownloadingOfflineAudio}
                   onClick={() => void handleSaveDeckOfflineNow()}
                   title="Save original spelling recordings for offline playback"
-                  className="min-h-[34px] px-2.5 py-1 rounded-xl bg-[#0e241a] border border-[#10b981]/40 text-[11px] font-bold text-[#10b981] flex items-center gap-1"
+                  className="min-h-[36px] px-2.5 py-1 rounded-xl bg-[#0e241a] border border-[#10b981]/40 text-[11px] font-bold text-[#10b981] flex items-center gap-1"
                 >
                   <Download className="w-3 h-3 shrink-0" />
                   <span>
@@ -1379,7 +1414,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setSelectedCategories([])}
-                    className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[#29200e] border border-[#fbbf24]/40 text-[11px] font-bold text-[#fbbf24]"
+                    className="min-h-[36px] px-2.5 py-1 rounded-lg bg-[#29200e] border border-[#fbbf24]/40 text-[11px] font-bold text-[#fbbf24]"
                   >
                     Reset
                   </button>
@@ -1387,7 +1422,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setIsMobileFilterOpen((v) => !v)}
-                  className={`min-h-[34px] px-3 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 transition-colors ${
+                  className={`min-h-[36px] px-2.5 py-1 rounded-xl border text-[11px] font-bold flex items-center gap-1 transition-colors ${
                     isMobileFilterOpen
                       ? 'bg-[#10b981] border-[#10b981] text-[#04120c]'
                       : 'bg-[#12281e] border-[#254b3a] text-[#10b981]'
@@ -1395,8 +1430,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 >
                   <span>
                     {isMobileFilterOpen
-                      ? 'Hide Categories'
-                      : `Categories (${
+                      ? 'Hide'
+                      : `Topics (${
                           selectedCategories.length > 0
                             ? selectedCategories.length
                             : 'All'
@@ -2170,24 +2205,23 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 </div>
               ) : (
                 <>
-                  {/* Word Metadata & Audio Source Header */}
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-[#162d22] text-xs text-[#8ba89a]">
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0">
+                  {/* Word Metadata & Quick Action Header */}
+                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-[#162d22] text-xs text-[#8ba89a]">
+                    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1 min-w-0">
                       <span className="font-mono tabular-nums font-bold text-[#10b981] whitespace-nowrap">
-                        Word {(currentIndex % filteredDeck.length) + 1} of{' '}
-                        {filteredDeck.length}
+                        #{(currentIndex % filteredDeck.length) + 1}/{filteredDeck.length}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span className="whitespace-nowrap">
-                        Page {currentWord.page}
+                        P{currentWord.page}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span className="text-[#c4d9ce] font-medium">
+                      <span className="text-[#c4d9ce] font-medium truncate max-w-[150px] sm:max-w-none">
                         {currentWord.category}
                       </span>
                       <span aria-hidden="true">·</span>
                       <span
-                        className={`whitespace-nowrap ${
+                        className={`whitespace-nowrap text-[11px] ${
                           activeRecording
                             ? 'text-[#fbbf24] font-semibold'
                             : currentWord.hasBundledAudio
@@ -2196,14 +2230,39 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         }`}
                       >
                         {activeRecording
-                          ? 'Cloud Upload Active'
+                          ? 'Custom Audio'
                           : currentWord.hasBundledAudio
-                          ? 'Bundled Voice'
-                          : 'Browser Voice'}
+                          ? 'Studio Voice'
+                          : 'TTS Voice'}
                       </span>
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setAutoPlayOnSwitch((prev) => {
+                            const next = !prev;
+                            try {
+                              localStorage.setItem('lw_auto_play_next_v1', String(next));
+                            } catch {
+                              // ignore
+                            }
+                            return next;
+                          });
+                        }}
+                        title="Automatically play pronunciation when switching to the next word"
+                        className={`min-h-[34px] px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap transition-colors ${
+                          autoPlayOnSwitch
+                            ? 'bg-[#0e291e] border-[#10b981]/50 text-[#10b981]'
+                            : 'bg-[#13291f] border-[#234435] text-[#8ba89a]'
+                        }`}
+                      >
+                        <Play className="w-3 h-3 shrink-0" />
+                        <span>Auto-Play: {autoPlayOnSwitch ? 'ON' : 'OFF'}</span>
+                      </button>
+
                       <button
                         type="button"
                         onClick={(e) => {
@@ -2215,7 +2274,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             ? 'Remove from your private Struggling Words'
                             : 'Save this word to your private Struggling Words list'
                         }
-                        className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors ${
+                        className={`min-h-[34px] px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap transition-colors ${
                           personalWordIdsSet.has(currentWord.id)
                             ? 'bg-[#0c2a36] border-[#38bdf8] text-[#7dd3fc]'
                             : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#9ab5a7] hover:text-white'
@@ -2230,8 +2289,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         />
                         <span>
                           {personalWordIdsSet.has(currentWord.id)
-                            ? 'In Struggling Words'
-                            : '+ Struggling Word'}
+                            ? 'Saved'
+                            : '+ Save Word'}
                         </span>
                       </button>
 
@@ -2241,13 +2300,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           e.stopPropagation();
                           onOpenRecordingsManager(currentWord.id);
                         }}
-                        className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors"
+                        className="min-h-[34px] px-2.5 py-1 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-[11px] font-semibold text-[#10b981] flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors"
                       >
                         <Mic className="w-3.5 h-3.5 shrink-0" />
                         <span>
-                          {activeRecording
-                            ? 'Edit / Replace Audio'
-                            : 'Upload Custom Audio'}
+                          {activeRecording ? 'Edit Audio' : 'Custom Audio'}
                         </span>
                       </button>
 
@@ -2258,7 +2315,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             e.stopPropagation();
                             setIsAdminEditingSpelling((v) => !v);
                           }}
-                          className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition-colors ${
+                          className={`min-h-[34px] px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
                             isAdminEditingSpelling ||
                             hasGlobalWordOverride(currentWord.id)
                               ? 'bg-[#fbbf24]/20 border-[#fbbf24] text-[#fbbf24]'
@@ -2268,8 +2325,8 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           <Edit3 className="w-3.5 h-3.5 shrink-0" />
                           <span>
                             {hasGlobalWordOverride(currentWord.id)
-                              ? 'Edit Spelling (Modified)'
-                              : 'Edit Spelling'}
+                              ? 'Edit (Modified)'
+                              : 'Edit Word'}
                           </span>
                         </button>
                       )}
@@ -2385,103 +2442,53 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     </div>
                   )}
 
-                  {/* Active Word Test History Accuracy & Visual Progress Bar */}
-                  <div className="rounded-xl bg-[#091510] border border-[#193327] px-3.5 py-2.5 space-y-1.5">
-                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
-                      <div className="flex items-center gap-2">
-                        <span className="text-[11px] font-semibold text-[#8ba89a]">
-                          Your Test Accuracy:
-                        </span>
-                        {currentWordStats.attempts > 0 ? (
-                          <span
-                            className={`font-mono tabular-nums font-bold ${
-                              currentWordStats.accuracyPct < 50
-                                ? 'text-[#f87171]'
-                                : currentWordStats.accuracyPct < 80
-                                ? 'text-[#fbbf24]'
-                                : 'text-[#10b981]'
-                            }`}
-                          >
-                            {currentWordStats.accuracyPct}% (
-                            {currentWordStats.correct}/
-                            {currentWordStats.attempts} correct
-                            {currentWordStats.failed > 0
-                              ? ` · ${currentWordStats.failed} failed`
-                              : ''}
-                            )
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-[#6d8a7b] font-medium">
-                            Not tested yet (0 attempts)
-                          </span>
-                        )}
-                      </div>
-
-                      {currentWordStats.attempts > 0 && (
-                        <span
-                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
-                            currentWordStats.accuracyPct < 50
-                              ? 'bg-[#2a1215] text-[#f87171] border border-[#f87171]/30'
-                              : currentWordStats.accuracyPct < 80
-                              ? 'bg-[#29200e] text-[#fbbf24] border border-[#fbbf24]/30'
-                              : 'bg-[#0e291e] text-[#10b981] border border-[#10b981]/30'
-                          }`}
-                        >
-                          {currentWordStats.accuracyPct < 50
-                            ? 'High Failure · Needs Practice'
-                            : currentWordStats.accuracyPct < 80
-                            ? 'Improving'
-                            : 'Mastered'}
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="w-full h-2 rounded-full bg-[#12261d] overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          currentWordStats.attempts === 0
-                            ? 'bg-[#234435]'
-                            : currentWordStats.accuracyPct < 50
-                            ? 'bg-[#f87171]'
-                            : currentWordStats.accuracyPct < 80
-                            ? 'bg-[#fbbf24]'
-                            : 'bg-[#10b981]'
-                        }`}
-                        style={{
-                          width:
-                            currentWordStats.attempts === 0
-                              ? '0%'
-                              : `${Math.max(6, currentWordStats.accuracyPct)}%`,
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {/* Audio Playback & Study Toggle Controls */}
-                  <div className="space-y-2.5">
-                    <button
-                      type="button"
-                      onClick={() => handlePlay(1.0)}
-                      className={`w-full min-h-[52px] py-3.5 px-5 rounded-xl font-bold text-sm flex items-center justify-center gap-2.5 transition-colors active:scale-[0.99] ${
-                        isPlaying
-                          ? 'bg-[#059669] text-white'
-                          : 'bg-[#10b981] hover:bg-[#059669] text-[#04120c]'
-                      }`}
-                    >
-                      <Volume2 className="w-5 h-5 shrink-0" />
-                      <span className="whitespace-nowrap">
-                        Play Pronunciation (1.0x)
-                      </span>
-                    </button>
-
+                  {/* Ergonomic Audio Playback & Assist Controls (Kept compact so input stays above mobile keyboard) */}
+                  <div className="space-y-2">
                     <div className="grid grid-cols-3 gap-2">
                       <button
                         type="button"
-                        onClick={() => handlePlay(0.72)}
-                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
+                        onClick={() => handlePlay(1.0)}
+                        className={`col-span-2 min-h-[48px] sm:min-h-[52px] py-2.5 px-4 rounded-xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-colors active:scale-[0.99] ${
+                          isPlaying
+                            ? 'bg-[#059669] text-white'
+                            : 'bg-[#10b981] hover:bg-[#059669] text-[#04120c]'
+                        }`}
                       >
-                        <Gauge className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
-                        <span className="truncate">Slow (0.75x)</span>
+                        <Volume2 className="w-4 h-4 sm:w-5 sm:h-5 shrink-0" />
+                        <span className="truncate">
+                          Play Audio (1.0x)
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handlePlay(0.72)}
+                        className="col-span-1 min-h-[48px] sm:min-h-[52px] py-2.5 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-bold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors active:scale-[0.99]"
+                      >
+                        <Gauge className="w-4 h-4 text-[#10b981] shrink-0" />
+                        <span className="truncate">Slow 0.75x</span>
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-1.5 sm:gap-2">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowLetterHint((v) => !v);
+                        }}
+                        className={`min-h-[40px] py-1.5 px-2 rounded-xl border text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1 transition-colors ${
+                          showLetterHint
+                            ? 'bg-[#29200e] border-[#fbbf24]/60 text-[#fbbf24]'
+                            : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#d2e5dc]'
+                        }`}
+                      >
+                        <span className="font-mono font-bold text-[#fbbf24] shrink-0">
+                          A_Z
+                        </span>
+                        <span className="truncate">
+                          {showLetterHint ? 'Hide Hint' : 'Letter Hint'}
+                        </span>
                       </button>
 
                       <button
@@ -2496,7 +2503,11 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             return next;
                           });
                         }}
-                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
+                        className={`min-h-[40px] py-1.5 px-2 rounded-xl border text-[11px] sm:text-xs font-semibold flex items-center justify-center gap-1 transition-colors ${
+                          showStudyWord
+                            ? 'bg-[#0e291e] border-[#10b981]/60 text-[#10b981]'
+                            : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#d2e5dc]'
+                        }`}
                       >
                         {showStudyWord ? (
                           <>
@@ -2514,17 +2525,17 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowBanglaHint((v) => !v)}
-                        className="min-h-[44px] py-2 px-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1.5 transition-colors"
+                        className="min-h-[40px] py-1.5 px-2 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-[11px] sm:text-xs font-semibold text-[#d2e5dc] flex items-center justify-center gap-1 transition-colors"
                       >
                         {showBanglaHint ? (
                           <>
                             <EyeOff className="w-3.5 h-3.5 text-[#8ba89a] shrink-0" />
-                            <span className="truncate">Hide Meaning</span>
+                            <span className="truncate">Hide Clue</span>
                           </>
                         ) : (
                           <>
                             <Eye className="w-3.5 h-3.5 text-[#10b981] shrink-0" />
-                            <span className="truncate">Show Meaning</span>
+                            <span className="truncate">Show Clue</span>
                           </>
                         )}
                       </button>
@@ -2533,55 +2544,59 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                   {/* Study Word Display Box (English Word + Pronunciation Study View) */}
                   {showStudyWord && (
-                    <div className="rounded-xl bg-[#0a1c14] border border-[#10b981]/40 px-4 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="rounded-xl bg-[#0a1c14] border border-[#10b981]/40 px-3.5 py-2.5 flex items-center justify-between gap-3">
                       <div className="min-w-0">
-                        <div className="text-[11px] font-semibold uppercase tracking-wider text-[#10b981]">
-                          Study Word Spelling &amp; Pronunciation
+                        <div className="text-[10px] font-semibold uppercase tracking-wider text-[#10b981]">
+                          Answer Spelling
                         </div>
-                        <div className="text-xl sm:text-2xl font-bold font-mono text-white mt-0.5 break-words tracking-wide">
+                        <div className="text-lg sm:text-2xl font-bold font-mono text-white break-words tracking-wide">
                           {currentWord.word}
                         </div>
                       </div>
-                      <div className="flex items-center gap-2 shrink-0">
-                        <button
-                          type="button"
-                          onClick={() => handlePlay(1.0)}
-                          className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[#10b981]/20 hover:bg-[#10b981]/30 border border-[#10b981]/50 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
-                        >
-                          <Volume2 className="w-3.5 h-3.5" />
-                          <span>Listen</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handlePlay(0.72)}
-                          className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-semibold text-[#d2e5dc] flex items-center gap-1 transition-colors"
-                        >
-                          <Gauge className="w-3.5 h-3.5 text-[#10b981]" />
-                          <span>0.75x</span>
-                        </button>
-                      </div>
+                      <button
+                        type="button"
+                        onClick={() => handlePlay(1.0)}
+                        className="min-h-[36px] px-3 py-1.5 rounded-lg bg-[#10b981]/20 hover:bg-[#10b981]/30 border border-[#10b981]/50 text-xs font-bold text-[#10b981] flex items-center gap-1.5 shrink-0 transition-colors"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Listen</span>
+                      </button>
                     </div>
                   )}
 
-                  {/* Bangla Meaning Box */}
-                  {showBanglaHint && (
-                    <div className="rounded-xl bg-[#11241b] border border-[#1f3d2f] px-4 py-3 flex items-center justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="text-[11px] text-[#7ea090]">
-                          Bangla Meaning / Clue
+                  {/* Compact Bangla Meaning & Letter Slot Hint Bar */}
+                  {(showBanglaHint || showLetterHint) && (
+                    <div className="rounded-xl bg-[#11241b] border border-[#1f3d2f] px-3.5 py-2.5 space-y-1.5">
+                      {showBanglaHint && (
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="min-w-0 flex items-baseline gap-2 flex-wrap">
+                            <span className="text-[11px] text-[#7ea090] shrink-0">
+                              Clue:
+                            </span>
+                            <span className="text-sm sm:text-base font-medium text-white break-words">
+                              {displayBangla}
+                            </span>
+                          </div>
+                          <span className="text-xs font-mono tabular-nums text-[#10b981] font-semibold whitespace-nowrap shrink-0">
+                            {currentWord.word.length} letters
+                          </span>
                         </div>
-                        <div className="text-base font-medium text-white mt-0.5 break-words">
-                          {displayBangla}
+                      )}
+                      {showLetterHint && (
+                        <div className="pt-1 border-t border-[#1c382b] flex items-center justify-between gap-2">
+                          <span className="text-[11px] text-[#fbbf24] font-semibold shrink-0">
+                            Pattern:
+                          </span>
+                          <span className="font-mono text-sm sm:text-base font-bold text-[#fde68a] tracking-wider break-all">
+                            {buildMaskedWordHint(currentWord.word)}
+                          </span>
                         </div>
-                      </div>
-                      <span className="text-xs font-mono tabular-nums text-[#7ea090] whitespace-nowrap shrink-0">
-                        {currentWord.word.length} letters
-                      </span>
+                      )}
                     </div>
                   )}
 
-                  {/* Spelling Input Box (No form wrapper so mobile keyboards never show password/autofill/suggestion popups) */}
-                  <div className="space-y-4">
+                  {/* Spelling Input Box & Thumb-Friendly Action Bar */}
+                  <div className="space-y-3">
                     <div
                       onClick={(e) => {
                         e.stopPropagation();
@@ -2589,12 +2604,28 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         setIsPracticingBlur(true);
                       }}
                     >
-                      <label
-                        htmlFor="spelling-input"
-                        className="block text-xs font-medium text-[#8ba89a] mb-2"
-                      >
-                        Type the exact word or phrase you hear:
-                      </label>
+                      <div className="flex items-center justify-between gap-2 mb-1.5">
+                        <label
+                          htmlFor="spelling-input"
+                          className="block text-xs font-medium text-[#8ba89a]"
+                        >
+                          Type the exact word you hear:
+                        </label>
+                        {userInput.length > 0 && !submitted && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setUserInput('');
+                              practiceInputRef.current?.focus();
+                            }}
+                            className="text-[11px] font-semibold text-[#8ba89a] hover:text-white flex items-center gap-1"
+                          >
+                            <X className="w-3 h-3" />
+                            <span>Clear ({userInput.length})</span>
+                          </button>
+                        )}
+                      </div>
                       <NoSuggestSpellingInput
                         id="spelling-input"
                         inputRef={practiceInputRef}
@@ -2610,7 +2641,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           setIsPracticingBlur(true);
                         }}
                         disabled={submitted}
-                        placeholder="Type the word you hear..."
+                        placeholder="Type spelling here..."
                         enterKeyHint="done"
                         variant="practice"
                       />
@@ -2618,13 +2649,13 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
 
                     {submitted && (
                       <div
-                        className={`rounded-xl p-4 border flex flex-col sm:flex-row sm:items-center justify-between gap-3.5 ${
+                        className={`rounded-xl p-3.5 border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
                           isCorrect
                             ? 'bg-[#0f291e] border-[#10b981]/50 text-[#a7f3d0]'
                             : 'bg-[#2a1215] border-[#f87171]/50 text-[#fecaca]'
                         }`}
                       >
-                        <div className="flex items-start gap-3">
+                        <div className="flex items-start gap-2.5">
                           {isCorrect ? (
                             <CheckCircle2 className="w-5 h-5 text-[#10b981] shrink-0 mt-0.5" />
                           ) : (
@@ -2636,7 +2667,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                                 ? 'Correct Spelling!'
                                 : 'Check Spelling Carefully'}
                             </div>
-                            <div className="mt-1 text-sm">
+                            <div className="mt-0.5 text-sm">
                               Correct Answer:{' '}
                               <strong className="font-mono text-white underline decoration-[#10b981]">
                                 {currentWord.word}
@@ -2651,50 +2682,37 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             e.stopPropagation();
                             handlePracticeAgainWord();
                           }}
-                          className="self-start sm:self-center min-h-[40px] px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] border border-[#2a5440] text-xs font-bold text-[#10b981] hover:text-white flex items-center gap-1.5 shrink-0 transition-colors"
+                          className="w-full sm:w-auto min-h-[42px] px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] border border-[#2a5440] text-xs font-bold text-[#10b981] hover:text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Practice Again (Enter)</span>
+                          <span>Retry This Word</span>
                         </button>
                       </div>
                     )}
 
-                    <div className="flex flex-wrap items-center justify-between gap-2.5 pt-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handlePrevPracticeWord();
-                          }}
-                          className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
-                        >
-                          Prev Word
-                        </button>
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleNextPracticeWord();
-                          }}
-                          className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] text-xs font-semibold text-[#9ab5a7] hover:text-white transition-colors"
-                        >
-                          Skip / Next
-                        </button>
-                        {submitted && (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handlePracticeAgainWord();
-                            }}
-                            className="min-h-[46px] px-3.5 py-2.5 rounded-xl bg-[#163326] hover:bg-[#1f4534] border border-[#10b981]/40 text-xs font-bold text-[#10b981] flex items-center gap-1.5 transition-colors"
-                          >
-                            <RotateCcw className="w-3.5 h-3.5" />
-                            <span>Practice Again (Enter)</span>
-                          </button>
-                        )}
-                      </div>
+                    {/* One-Handed Mobile Thumb Bar: Prev | Skip | Primary Action */}
+                    <div className="grid grid-cols-4 sm:flex sm:flex-wrap items-center justify-between gap-2 pt-0.5">
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handlePrevPracticeWord();
+                        }}
+                        className="col-span-1 min-h-[48px] px-2.5 sm:px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-bold text-[#c4d9ce] hover:text-white flex items-center justify-center transition-colors"
+                      >
+                        Prev
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleNextPracticeWord();
+                        }}
+                        className="col-span-1 min-h-[48px] px-2.5 sm:px-3.5 py-2.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#234435] text-xs font-bold text-[#c4d9ce] hover:text-white flex items-center justify-center transition-colors"
+                      >
+                        Skip
+                      </button>
 
                       {submitted ? (
                         <button
@@ -2703,7 +2721,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             e.stopPropagation();
                             handleNextPracticeWord();
                           }}
-                          className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                          className="col-span-2 sm:flex-1 min-h-[48px] px-4 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2 transition-colors"
                         >
                           <span>Next Word</span>
                           <ArrowRight className="w-4 h-4 shrink-0" />
@@ -2715,12 +2733,84 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             e.stopPropagation();
                             handleSubmitPractice();
                           }}
-                          className="min-h-[46px] px-5 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-bold text-sm flex items-center justify-center gap-2 transition-colors"
+                          className="col-span-2 sm:flex-1 min-h-[48px] px-4 py-2.5 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2 transition-colors"
                         >
                           <span>Check Spelling</span>
                           <ArrowRight className="w-4 h-4 shrink-0" />
                         </button>
                       )}
+                    </div>
+                  </div>
+
+                  {/* Active Word Test History Accuracy & Visual Progress Bar (Placed below primary controls for mobile comfort) */}
+                  <div className="rounded-xl bg-[#091510] border border-[#193327] px-3 py-2 space-y-1.5">
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] font-semibold text-[#8ba89a]">
+                          Word Mastery:
+                        </span>
+                        {currentWordStats.attempts > 0 ? (
+                          <span
+                            className={`font-mono tabular-nums font-bold ${
+                              currentWordStats.accuracyPct < 50
+                                ? 'text-[#f87171]'
+                                : currentWordStats.accuracyPct < 80
+                                ? 'text-[#fbbf24]'
+                                : 'text-[#10b981]'
+                            }`}
+                          >
+                            {currentWordStats.accuracyPct}% (
+                            {currentWordStats.correct}/
+                            {currentWordStats.attempts}
+                            {currentWordStats.failed > 0
+                              ? ` · ${currentWordStats.failed} missed`
+                              : ''}
+                            )
+                          </span>
+                        ) : (
+                          <span className="text-[11px] text-[#6d8a7b] font-medium">
+                            Not tested yet
+                          </span>
+                        )}
+                      </div>
+
+                      {currentWordStats.attempts > 0 && (
+                        <span
+                          className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider ${
+                            currentWordStats.accuracyPct < 50
+                              ? 'bg-[#2a1215] text-[#f87171] border border-[#f87171]/30'
+                              : currentWordStats.accuracyPct < 80
+                              ? 'bg-[#29200e] text-[#fbbf24] border border-[#fbbf24]/30'
+                              : 'bg-[#0e291e] text-[#10b981] border border-[#10b981]/30'
+                          }`}
+                        >
+                          {currentWordStats.accuracyPct < 50
+                            ? 'Needs Practice'
+                            : currentWordStats.accuracyPct < 80
+                            ? 'Improving'
+                            : 'Mastered'}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="w-full h-1.5 rounded-full bg-[#12261d] overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          currentWordStats.attempts === 0
+                            ? 'bg-[#234435]'
+                            : currentWordStats.accuracyPct < 50
+                            ? 'bg-[#f87171]'
+                            : currentWordStats.accuracyPct < 80
+                            ? 'bg-[#fbbf24]'
+                            : 'bg-[#10b981]'
+                        }`}
+                        style={{
+                          width:
+                            currentWordStats.attempts === 0
+                              ? '0%'
+                              : `${Math.max(6, currentWordStats.accuracyPct)}%`,
+                        }}
+                      />
                     </div>
                   </div>
                 </>

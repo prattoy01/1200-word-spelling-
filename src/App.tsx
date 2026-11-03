@@ -885,11 +885,11 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-[#08120e] text-[#e6f2ed] flex flex-col">
+    <div className="min-h-screen w-full max-w-[100vw] overflow-x-hidden bg-[#08120e] text-[#e6f2ed] flex flex-col">
       <OfflineIndicator />
 
       {/* Top Bar Contract: Native App Bar on Mobile, 3-Zone Header on Desktop */}
-      <header className="flex items-center justify-between gap-2 sm:gap-8 px-3 sm:px-8 py-2.5 sm:py-3.5 border-b border-[#142920] bg-[#06100c]/95 sticky top-0 z-30 backdrop-blur-xl">
+      <header className="flex items-center justify-between gap-2 sm:gap-8 px-3.5 sm:px-8 h-[54px] sm:h-auto sm:py-3.5 border-b border-[#142920] bg-[#06100c]/95 sticky top-0 z-30 backdrop-blur-xl">
         {/* Zone 1: Brand Title */}
         <a
           href="#top"
@@ -903,22 +903,9 @@ export default function App() {
           <span className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl sm:rounded-full bg-[#10b981] flex items-center justify-center text-[#051a11] font-extrabold shadow-sm shrink-0">
             <Volume2 className="w-4 h-4 sm:w-5 sm:h-5" />
           </span>
-          <div className="flex flex-col leading-tight">
-            <span>
-              Listen <span className="font-normal text-[#8ba89a]">&amp;</span> Write
-            </span>
-            <span className="md:hidden text-[10px] font-semibold text-[#10b981]">
-              {activeScreen === 'contests'
-                ? 'Live Contest Arena'
-                : activeScreen === 'recordings'
-                ? 'Audio Studio'
-                : activeScreen === 'admin'
-                ? 'Admin Panel'
-                : practiceSubMode === 'test'
-                ? 'Strict IELTS Exam'
-                : 'IELTS 1200 Practice'}
-            </span>
-          </div>
+          <span>
+            Listen <span className="font-normal text-[#8ba89a]">&amp;</span> Write
+          </span>
         </a>
 
         {/* Zone 2: Clean Single-Line Navigation Links (Desktop) */}
@@ -1015,34 +1002,8 @@ export default function App() {
           </button>
         </nav>
 
-        {/* Zone 3: Mobile Quick Contest Pill + APK Trigger + Primary Auth Action */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              void syncContestsNow().then(({ contests: c, submissions: s }) => {
-                setContests(c);
-                setContestSubmissions(s);
-              });
-              setActiveScreen('contests');
-            }}
-            title="Open Live Contests"
-            className={`md:hidden min-h-[36px] px-2.5 py-1 rounded-xl border text-[11px] font-extrabold flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors ${
-              activeScreen === 'contests'
-                ? 'bg-[#fbbf24] border-[#fbbf24] text-[#08120e]'
-                : liveOrUpcomingContest?.phase === 'live'
-                ? 'bg-[#fbbf24]/20 border-[#fbbf24] text-[#fbbf24] animate-pulse'
-                : 'bg-[#1a180b] border-[#fbbf24]/40 text-[#fbbf24]'
-            }`}
-          >
-            <Trophy className="w-3.5 h-3.5 shrink-0" />
-            <span>
-              {liveOrUpcomingContest?.phase === 'live'
-                ? 'LIVE'
-                : `Contest (${contests.length})`}
-            </span>
-          </button>
-
+        {/* Zone 3: Primary Action & Mobile App Trigger */}
+        <div className="flex items-center gap-1.5 min-w-0 shrink-0">
           <button
             type="button"
             onClick={() => {
@@ -1050,10 +1011,10 @@ export default function App() {
               setIsSyncModalOpen(true);
             }}
             title="Download Android APK & Mobile Link"
-            className="md:hidden min-h-[36px] px-2 py-1 rounded-xl bg-[#11281e] border border-[#1f4735] text-[11px] font-bold text-[#10b981] flex items-center gap-1 whitespace-nowrap shrink-0"
+            className="md:hidden min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#11281e] border border-[#1f4735] text-xs font-bold text-[#10b981] flex items-center gap-1 whitespace-nowrap shrink-0"
           >
-            <Smartphone className="w-3 h-3 shrink-0" />
-            <span>.APK</span>
+            <Smartphone className="w-3.5 h-3.5 shrink-0" />
+            <span>App</span>
           </button>
 
           {user ? (
@@ -1062,11 +1023,11 @@ export default function App() {
                 type="button"
                 onClick={() => setIsSignInModalOpen(true)}
                 title={`Signed in as ${user.email} — Click to switch account`}
-                className="min-h-[36px] sm:min-h-[38px] pl-2.5 pr-2 py-1 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[38px] pl-2.5 pr-2 py-1 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
               >
                 <CloudCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="max-w-[78px] sm:max-w-none truncate">
-                  {user.displayName || user.email?.split('@')[0] || 'Synced'}
+                <span className="max-w-[92px] sm:max-w-[160px] truncate">
+                  {user.displayName || user.email?.split('@')[0] || 'Account'}
                 </span>
               </button>
               <button
@@ -1079,7 +1040,7 @@ export default function App() {
                   });
                 }}
                 title="Sign out"
-                className="min-h-[36px] sm:min-h-[38px] px-2 py-1 text-[#7ea090] hover:text-[#fda4af] hover:bg-[#2a1215] border-l border-[#1f4735] transition-colors flex items-center justify-center"
+                className="min-h-[38px] px-2.5 py-1 text-[#7ea090] hover:text-[#fda4af] hover:bg-[#2a1215] border-l border-[#1f4735] transition-colors flex items-center justify-center"
               >
                 <LogOut className="w-3.5 h-3.5 shrink-0" />
               </button>
@@ -1088,97 +1049,49 @@ export default function App() {
             <button
               type="button"
               onClick={handleSignIn}
-              className="min-h-[36px] sm:min-h-[38px] px-2.5 sm:px-3 py-1 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+              className="min-h-[38px] px-3 py-1.5 text-xs font-bold text-[#04120c] bg-[#10b981] rounded-xl hover:bg-[#059669] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <LogIn className="w-3.5 h-3.5 shrink-0" />
-              <span>Sign in</span>
+              <span>Sign In</span>
             </button>
           )}
         </div>
       </header>
 
-      {/* Mobile Live / Upcoming Contest Alert Banner (Always Visible on Mobile when a Contest is Active/Scheduled) */}
-      {activeScreen !== 'contests' && (
+      {/* Mobile Live / Upcoming Contest Alert Banner (Shown only when an active or scheduled contest exists) */}
+      {activeScreen !== 'contests' && liveOrUpcomingContest && (
         <div className="md:hidden px-3 pt-2">
-          {liveOrUpcomingContest ? (
-            <button
-              type="button"
-              onClick={() => {
-                void syncContestsNow().then(({ contests: c, submissions: s }) => {
-                  setContests(c);
-                  setContestSubmissions(s);
-                });
-                setActiveScreen('contests');
-              }}
-              className={`w-full px-3.5 py-2.5 rounded-2xl border flex items-center justify-between gap-2 text-left shadow-lg transition-transform active:scale-[0.99] ${
-                liveOrUpcomingContest.phase === 'live'
-                  ? 'bg-gradient-to-r from-[#2b1f07] via-[#1f2912] to-[#0e261b] border-[#fbbf24] text-white'
-                  : 'bg-[#12241b] border-[#fbbf24]/50 text-[#e6f2ed]'
-              }`}
-            >
-              <div className="flex items-center gap-2.5 min-w-0">
-                <span className="w-8 h-8 rounded-xl bg-[#fbbf24] text-[#08120e] flex items-center justify-center shrink-0 font-extrabold">
-                  <Trophy className="w-4 h-4" />
-                </span>
-                <div className="min-w-0">
-                  <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#fbbf24] flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-[#fbbf24] animate-ping" />
-                    <span>
-                      {liveOrUpcomingContest.phase === 'live'
-                        ? 'LIVE CONTEST OPEN NOW'
-                        : 'UPCOMING SCHEDULED CONTEST'}
-                    </span>
-                  </div>
-                  <div className="text-xs font-bold text-white truncate">
-                    {liveOrUpcomingContest.contest.title} (
-                    {liveOrUpcomingContest.contest.wordCount} words)
-                  </div>
+          <button
+            type="button"
+            onClick={() => {
+              void syncContestsNow().then(({ contests: c, submissions: s }) => {
+                setContests(c);
+                setContestSubmissions(s);
+              });
+              setActiveScreen('contests');
+            }}
+            className={`w-full px-3 py-2 rounded-2xl border flex items-center justify-between gap-2 text-left shadow-sm transition-transform active:scale-[0.99] ${
+              liveOrUpcomingContest.phase === 'live'
+                ? 'bg-[#201907] border-[#fbbf24] text-white'
+                : 'bg-[#12241b] border-[#fbbf24]/50 text-[#e6f2ed]'
+            }`}
+          >
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="w-7 h-7 rounded-lg bg-[#fbbf24] text-[#08120e] flex items-center justify-center shrink-0 font-extrabold">
+                <Trophy className="w-3.5 h-3.5" />
+              </span>
+              <div className="min-w-0">
+                <div className="text-xs font-bold text-white truncate">
+                  {liveOrUpcomingContest.phase === 'live'
+                    ? `Live Contest: ${liveOrUpcomingContest.contest.title}`
+                    : `Upcoming: ${liveOrUpcomingContest.contest.title}`}
                 </div>
               </div>
-              <span className="px-2.5 py-1 rounded-xl bg-[#fbbf24] text-[#08120e] text-[11px] font-extrabold shrink-0">
-                {liveOrUpcomingContest.phase === 'live' ? 'Join Now' : 'Lobby'}
-              </span>
-            </button>
-          ) : (
-            <div className="grid grid-cols-3 gap-1.5">
-              <button
-                type="button"
-                onClick={() => {
-                  void syncContestsNow().then(
-                    ({ contests: c, submissions: s }) => {
-                      setContests(c);
-                      setContestSubmissions(s);
-                    }
-                  );
-                  setActiveScreen('contests');
-                }}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#19170b] border border-[#fbbf24]/40 text-[#fbbf24] text-[11px] font-extrabold flex items-center justify-center gap-1.5 truncate"
-              >
-                <Trophy className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">
-                  Contests ({contests.length})
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setIsPersonalWordsModalOpen(true)}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#0b1f29] border border-[#38bdf8]/40 text-[#7dd3fc] text-[11px] font-extrabold flex items-center justify-center gap-1.5 truncate"
-              >
-                <Bookmark className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">
-                  My Words ({personalWords.length})
-                </span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setActiveScreen('recordings')}
-                className="min-h-[38px] px-2.5 py-1.5 rounded-xl bg-[#0e241a] border border-[#10b981]/40 text-[#10b981] text-[11px] font-extrabold flex items-center justify-center gap-1.5 truncate"
-              >
-                <ListMusic className="w-3.5 h-3.5 shrink-0" />
-                <span className="truncate">Audio ({counts.uploads})</span>
-              </button>
             </div>
-          )}
+            <span className="px-2.5 py-1 rounded-lg bg-[#fbbf24] text-[#08120e] text-[11px] font-extrabold shrink-0 whitespace-nowrap">
+              {liveOrUpcomingContest.phase === 'live' ? 'Join Live' : 'Lobby'}
+            </span>
+          </button>
         </div>
       )}
 
@@ -1824,7 +1737,7 @@ export default function App() {
       {/* Fixed Native Mobile App Bottom Navigation Dock (Visible on Phone Viewports) */}
       <nav
         aria-label="Mobile navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#050e0a]/98 backdrop-blur-xl border-t border-[#183528] grid grid-cols-6 items-center h-[64px] px-1.5 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-[#050e0a]/98 backdrop-blur-xl border-t border-[#183528] grid grid-cols-6 items-center h-[60px] px-1 shadow-[0_-8px_24px_rgba(0,0,0,0.45)]"
       >
         <button
           type="button"
@@ -1832,14 +1745,14 @@ export default function App() {
             setActiveScreen('practice');
             setPracticeSubMode('practice');
           }}
-          className={`flex flex-col items-center justify-center h-full transition-all ${
+          className={`min-w-0 flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'practice' && practiceSubMode === 'practice'
-              ? 'text-[#10b981] font-extrabold'
+              ? 'text-[#10b981] font-bold'
               : 'text-[#7fa190]'
           }`}
         >
           <span
-            className={`px-3 py-1 rounded-full transition-colors ${
+            className={`px-2.5 py-1 rounded-full transition-colors ${
               activeScreen === 'practice' && practiceSubMode === 'practice'
                 ? 'bg-[#10b981]/20 text-[#10b981]'
                 : ''
@@ -1847,7 +1760,7 @@ export default function App() {
           >
             <BookOpenCheck className="w-4 h-4" />
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">Practice</span>
+          <span className="text-[10px] mt-0.5 truncate max-w-full">Practice</span>
         </button>
 
         <button
@@ -1856,14 +1769,14 @@ export default function App() {
             setActiveScreen('practice');
             setPracticeSubMode('test');
           }}
-          className={`flex flex-col items-center justify-center h-full transition-all ${
+          className={`min-w-0 flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'practice' && practiceSubMode === 'test'
-              ? 'text-[#fbbf24] font-extrabold'
+              ? 'text-[#fbbf24] font-bold'
               : 'text-[#7fa190]'
           }`}
         >
           <span
-            className={`px-3 py-1 rounded-full transition-colors ${
+            className={`px-2.5 py-1 rounded-full transition-colors ${
               activeScreen === 'practice' && practiceSubMode === 'test'
                 ? 'bg-[#fbbf24]/20 text-[#fbbf24]'
                 : ''
@@ -1871,9 +1784,7 @@ export default function App() {
           >
             <Timer className="w-4 h-4" />
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">
-            Strict Test
-          </span>
+          <span className="text-[10px] mt-0.5 truncate max-w-full">Exam</span>
         </button>
 
         <button
@@ -1885,16 +1796,16 @@ export default function App() {
             });
             setActiveScreen('contests');
           }}
-          className={`relative flex flex-col items-center justify-center h-full transition-all ${
+          className={`relative min-w-0 flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'contests'
-              ? 'text-[#fbbf24] font-extrabold'
-              : liveOrUpcomingContest
               ? 'text-[#fbbf24] font-bold'
+              : liveOrUpcomingContest
+              ? 'text-[#fbbf24] font-semibold'
               : 'text-[#7fa190]'
           }`}
         >
           <span
-            className={`relative px-3 py-1 rounded-full transition-colors ${
+            className={`relative px-2.5 py-1 rounded-full transition-colors ${
               activeScreen === 'contests'
                 ? 'bg-[#fbbf24]/25 text-[#fbbf24]'
                 : liveOrUpcomingContest
@@ -1903,24 +1814,21 @@ export default function App() {
             }`}
           >
             <Trophy className="w-4 h-4" />
-            {liveOrUpcomingContest?.phase === 'live' && (
-              <span className="absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-[#fbbf24] animate-ping" />
-            )}
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">
-            Contests{contests.length > 0 ? ` (${contests.length})` : ''}
+          <span className="text-[10px] mt-0.5 truncate max-w-full">
+            Contest{contests.length > 0 ? ` (${contests.length})` : ''}
           </span>
         </button>
 
         <button
           type="button"
           onClick={() => setIsPersonalWordsModalOpen(true)}
-          className="flex flex-col items-center justify-center h-full text-[#7dd3fc] transition-all"
+          className="min-w-0 flex flex-col items-center justify-center h-full text-[#7dd3fc] transition-colors"
         >
-          <span className="px-3 py-1 rounded-full">
+          <span className="px-2.5 py-1 rounded-full">
             <Bookmark className="w-4 h-4" />
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">
+          <span className="text-[10px] mt-0.5 truncate max-w-full">
             My Words{personalWords.length > 0 ? ` (${personalWords.length})` : ''}
           </span>
         </button>
@@ -1928,14 +1836,14 @@ export default function App() {
         <button
           type="button"
           onClick={() => setActiveScreen('recordings')}
-          className={`flex flex-col items-center justify-center h-full transition-all ${
+          className={`min-w-0 flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'recordings'
-              ? 'text-[#10b981] font-extrabold'
+              ? 'text-[#10b981] font-bold'
               : 'text-[#7fa190]'
           }`}
         >
           <span
-            className={`px-3 py-1 rounded-full transition-colors ${
+            className={`px-2.5 py-1 rounded-full transition-colors ${
               activeScreen === 'recordings'
                 ? 'bg-[#10b981]/20 text-[#10b981]'
                 : ''
@@ -1943,20 +1851,20 @@ export default function App() {
           >
             <ListMusic className="w-4 h-4" />
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">Audio</span>
+          <span className="text-[10px] mt-0.5 truncate max-w-full">Audio</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveScreen('admin')}
-          className={`relative flex flex-col items-center justify-center h-full transition-all ${
+          className={`relative min-w-0 flex flex-col items-center justify-center h-full transition-colors ${
             activeScreen === 'admin'
-              ? 'text-[#10b981] font-extrabold'
+              ? 'text-[#10b981] font-bold'
               : 'text-[#7fa190]'
           }`}
         >
           <span
-            className={`px-3 py-1 rounded-full transition-colors ${
+            className={`px-2.5 py-1 rounded-full transition-colors ${
               activeScreen === 'admin'
                 ? 'bg-[#10b981]/20 text-[#10b981]'
                 : ''
@@ -1964,7 +1872,7 @@ export default function App() {
           >
             <ShieldCheck className="w-4 h-4" />
           </span>
-          <span className="text-[10px] mt-0.5 whitespace-nowrap">
+          <span className="text-[10px] mt-0.5 truncate max-w-full">
             Admin{pendingContributionsCount > 0 ? ` (${pendingContributionsCount})` : ''}
           </span>
         </button>
