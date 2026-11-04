@@ -23,6 +23,7 @@ import {
   X,
   FileText,
   Bookmark,
+  Star,
   Plus,
   Download,
   Edit3,
@@ -1207,12 +1208,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
       <div className="hidden md:flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-[#0e2219] border border-[#1f4433]">
         <div className="min-w-0">
           <div className="text-xs font-bold text-[#10b981]">
-            Pronunciation Audio Studio &amp; Personal Words
+            Pronunciation Audio Studio &amp; Favourite Words
           </div>
           <div className="text-[11px] text-[#9ab5a7] truncate">
             782 Bundled · {Object.keys(recordingsMap).length} Cloud Uploads ·{' '}
-            <span className="text-[#38bdf8] font-semibold">
-              {personalWords.length} My Struggling Words (Private)
+            <span className="text-[#fbbf24] font-semibold">
+              {personalWords.length} ★ Favourite Words
             </span>
           </div>
         </div>
@@ -1233,10 +1234,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
           <button
             type="button"
             onClick={onOpenPersonalWordsModal}
-            className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#38bdf8]/15 hover:bg-[#38bdf8]/25 border border-[#38bdf8]/40 text-[#7dd3fc] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
+            className="min-h-[42px] px-3.5 py-2 rounded-xl bg-[#fbbf24]/15 hover:bg-[#fbbf24]/25 border border-[#fbbf24]/50 text-[#fde68a] text-xs font-extrabold flex items-center gap-1.5 transition-colors whitespace-nowrap"
           >
-            <Plus className="w-4 h-4 text-[#38bdf8]" />
-            <span>Add Struggling Word ({personalWords.length})</span>
+            <Star className="w-4 h-4 fill-[#fbbf24] text-[#fbbf24]" />
+            <span>Favourite Words ({personalWords.length})</span>
           </button>
           <button
             type="button"
@@ -1315,7 +1316,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             <div className="space-y-1.5">
               <div className="hidden sm:flex text-xs font-semibold text-[#8ba89a] items-center gap-1.5">
                 <Layers className="w-3.5 h-3.5 text-[#10b981]" />
-                <span>Select Word Book Page or Personal Struggling Words</span>
+                <span>Select Word Book Page or ★ Favourite Words Section</span>
               </div>
               <div className="grid grid-cols-4 gap-1 sm:gap-1.5 p-1 rounded-xl bg-[#08120e] border border-[#1a3327]">
                 <button
@@ -1368,13 +1369,19 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   onClick={() => handlePageFilterChange('personal')}
                   className={`min-h-[38px] sm:min-h-[42px] px-1.5 sm:px-3 py-1.5 sm:py-2 rounded-lg text-[11px] sm:text-xs font-bold transition-colors flex flex-col sm:flex-row items-center justify-center sm:gap-1.5 whitespace-nowrap ${
                     pageFilter === 'personal'
-                      ? 'bg-[#38bdf8] text-[#04120c]'
-                      : 'text-[#7dd3fc] hover:text-white'
+                      ? 'bg-[#fbbf24] text-[#08120e]'
+                      : 'text-[#fbbf24] hover:text-white'
                   }`}
                 >
                   <span className="flex items-center gap-1">
-                    <Bookmark className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 hidden sm:inline" />
-                    <span>My Words</span>
+                    <Star
+                      className={`w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0 ${
+                        pageFilter === 'personal'
+                          ? 'fill-[#08120e] text-[#08120e]'
+                          : 'fill-[#fbbf24] text-[#fbbf24]'
+                      }`}
+                    />
+                    <span>Favourites</span>
                   </span>
                   <span className="font-mono tabular-nums text-[10px] sm:text-[11px] opacity-90">
                     ({personalWords.length})
@@ -1524,7 +1531,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
             </div>
 
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
-              {/* "My Struggling Words (Private)" Card */}
+              {/* "★ Favourite Words" Card */}
               <button
                 type="button"
                 onClick={() => {
@@ -1539,15 +1546,15 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                 className={`min-h-[44px] px-3 py-2 rounded-xl border text-left flex items-center justify-between gap-2 transition-colors ${
                   pageFilter === 'personal' ||
                   selectedCategories.includes(PERSONAL_STRUGGLING_CATEGORY)
-                    ? 'bg-[#0c2a36] border-[#38bdf8] text-white font-bold'
-                    : 'bg-[#09181d] border-[#1b3b48] text-[#7dd3fc] hover:border-[#38bdf8] hover:text-white'
+                    ? 'bg-[#29200e] border-[#fbbf24] text-white font-bold'
+                    : 'bg-[#171208] border-[#fbbf24]/40 text-[#fde68a] hover:border-[#fbbf24] hover:text-white'
                 }`}
               >
                 <span className="flex items-center gap-1.5 min-w-0">
-                  <Bookmark className="w-3.5 h-3.5 text-[#38bdf8] shrink-0" />
-                  <span className="text-xs truncate">My Struggling Words</span>
+                  <Star className="w-3.5 h-3.5 fill-[#fbbf24] text-[#fbbf24] shrink-0" />
+                  <span className="text-xs truncate">Favourite Words</span>
                 </span>
-                <span className="text-[11px] font-mono tabular-nums shrink-0 text-[#38bdf8]">
+                <span className="text-[11px] font-mono tabular-nums shrink-0 text-[#fbbf24]">
                   {personalWords.length}
                 </span>
               </button>
@@ -1630,6 +1637,49 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               )}
             </div>
           </div>
+
+          {/* Dedicated Favourite Words Section Hub Banner when Favourites tab is active */}
+          {pageFilter === 'personal' && (
+            <div className="rounded-xl bg-[#191508] border border-[#fbbf24]/50 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <div className="w-9 h-9 rounded-xl bg-[#fbbf24]/20 border border-[#fbbf24]/50 flex items-center justify-center text-[#fbbf24] shrink-0">
+                  <Star className="w-4 h-4 fill-[#fbbf24]" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-xs sm:text-sm font-extrabold text-white flex items-center gap-2">
+                    <span>My Favourite Words Section</span>
+                    <span className="px-2 py-0.5 rounded-md bg-[#fbbf24]/20 text-[#fbbf24] font-mono text-[11px]">
+                      {personalWords.length} saved
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#c4d9ce] mt-0.5">
+                    Tap the <strong>★ Star</strong> on any word card or list row to mark it as Favourite, or browse all 921 IELTS words &amp; add custom words.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={onOpenPersonalWordsModal}
+                  className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#fbbf24] hover:bg-[#f59e0b] text-[#08120e] text-xs font-extrabold flex items-center gap-1.5 whitespace-nowrap transition-colors"
+                >
+                  <Plus className="w-3.5 h-3.5 stroke-[2.5]" />
+                  <span>Mark / Add Favourite Words</span>
+                </button>
+                {personalWords.length > 0 && subMode !== 'test' && (
+                  <button
+                    type="button"
+                    onClick={() => handleSwitchSubMode('test')}
+                    className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#13291f] hover:bg-[#1a372a] border border-[#fbbf24]/40 text-xs font-bold text-[#fde68a] flex items-center gap-1.5 whitespace-nowrap transition-colors"
+                  >
+                    <Timer className="w-3.5 h-3.5 text-[#fbbf24]" />
+                    <span>Exam on Favourites</span>
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
         </section>
       )}
 
@@ -2115,20 +2165,52 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       </div>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() =>
-                        playWordAudio({
-                          word: ans.wordItem.word,
-                          audioDataUrl: rec?.audioDataUrl,
-                          bundledAudioFile: ans.wordItem.bundledAudioFile,
-                        })
-                      }
-                      className="self-start sm:self-center min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
-                    >
-                      <Volume2 className="w-3.5 h-3.5" />
-                      <span>Listen</span>
-                    </button>
+                    <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          void onTogglePersonalStrugglingWord(ans.wordItem)
+                        }
+                        title={
+                          personalWordIdsSet.has(ans.wordItem.id)
+                            ? 'Remove from Favourite Words'
+                            : 'Mark as Favourite Word'
+                        }
+                        className={`min-h-[38px] px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 transition-colors ${
+                          personalWordIdsSet.has(ans.wordItem.id)
+                            ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                            : 'bg-[#12281e] hover:bg-[#19382a] border-[#234435] text-[#9ab5a7] hover:text-white'
+                        }`}
+                      >
+                        <Star
+                          className={`w-3.5 h-3.5 ${
+                            personalWordIdsSet.has(ans.wordItem.id)
+                              ? 'fill-[#fbbf24] text-[#fbbf24]'
+                              : ''
+                          }`}
+                        />
+                        <span>
+                          {personalWordIdsSet.has(ans.wordItem.id)
+                            ? 'Favourited'
+                            : 'Favourite'}
+                        </span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          playWordAudio({
+                            word: ans.wordItem.word,
+                            audioDataUrl: rec?.audioDataUrl,
+                            bundledAudioFile: ans.wordItem.bundledAudioFile,
+                          })
+                        }
+                        className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Listen</span>
+                      </button>
+                    </div>
                   </div>
                 );
               })}
@@ -2190,18 +2272,35 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
               {!currentWord ? (
                 <div className="py-12 text-center space-y-3">
                   <p className="text-base text-[#9ab5a7]">
-                    No words match this filter yet.
+                    {pageFilter === 'personal'
+                      ? 'Your Favourite Words list is empty. Tap ★ Favourite on any word or add words below!'
+                      : 'No words match this filter yet.'}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setDeckMode('all');
-                      setSelectedCategories([]);
-                    }}
-                    className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold"
-                  >
-                    Reset Filter
-                  </button>
+                  <div className="flex flex-wrap items-center justify-center gap-2">
+                    {pageFilter === 'personal' && (
+                      <button
+                        type="button"
+                        onClick={onOpenPersonalWordsModal}
+                        className="min-h-[44px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
+                      >
+                        <Star className="w-4 h-4 fill-[#08120e]" />
+                        <span>Mark / Add Favourite Words</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (pageFilter === 'personal') setPageFilter('page1');
+                        setDeckMode('all');
+                        setSelectedCategories([]);
+                      }}
+                      className="min-h-[44px] px-4 py-2 rounded-xl bg-[#10b981] text-[#04120c] text-xs font-bold"
+                    >
+                      {pageFilter === 'personal'
+                        ? 'Browse Page 1 Words'
+                        : 'Reset Filter'}
+                    </button>
+                  </div>
                 </div>
               ) : (
                 <>
@@ -2271,26 +2370,26 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         }}
                         title={
                           personalWordIdsSet.has(currentWord.id)
-                            ? 'Remove from your private Struggling Words'
-                            : 'Save this word to your private Struggling Words list'
+                            ? 'Remove from your Favourite Words'
+                            : 'Mark this word as Favourite (adds to Favourite Words section)'
                         }
-                        className={`min-h-[34px] px-2.5 py-1 rounded-lg border text-[11px] font-semibold flex items-center gap-1 whitespace-nowrap transition-colors ${
+                        className={`min-h-[34px] px-2.5 py-1 rounded-lg border text-[11px] font-bold flex items-center gap-1 whitespace-nowrap transition-colors ${
                           personalWordIdsSet.has(currentWord.id)
-                            ? 'bg-[#0c2a36] border-[#38bdf8] text-[#7dd3fc]'
-                            : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#9ab5a7] hover:text-white'
+                            ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                            : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#fde68a] hover:text-white'
                         }`}
                       >
-                        <Bookmark
+                        <Star
                           className={`w-3.5 h-3.5 shrink-0 ${
                             personalWordIdsSet.has(currentWord.id)
-                              ? 'fill-[#38bdf8] text-[#38bdf8]'
-                              : ''
+                              ? 'fill-[#fbbf24] text-[#fbbf24]'
+                              : 'text-[#fbbf24]'
                           }`}
                         />
                         <span>
                           {personalWordIdsSet.has(currentWord.id)
-                            ? 'Saved'
-                            : '+ Save Word'}
+                            ? 'Favourited'
+                            : 'Favourite'}
                         </span>
                       </button>
 
@@ -2676,17 +2775,45 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handlePracticeAgainWord();
-                          }}
-                          className="w-full sm:w-auto min-h-[42px] px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] border border-[#2a5440] text-xs font-bold text-[#10b981] hover:text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors"
-                        >
-                          <RotateCcw className="w-3.5 h-3.5" />
-                          <span>Retry This Word</span>
-                        </button>
+                        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void onTogglePersonalStrugglingWord(currentWord);
+                            }}
+                            className={`flex-1 sm:flex-initial min-h-[42px] px-3 py-2 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 transition-colors ${
+                              personalWordIdsSet.has(currentWord.id)
+                                ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                                : 'bg-[#13291f] hover:bg-[#1c3b2d] border-[#fbbf24]/50 text-[#fde68a]'
+                            }`}
+                          >
+                            <Star
+                              className={`w-3.5 h-3.5 shrink-0 ${
+                                personalWordIdsSet.has(currentWord.id)
+                                  ? 'fill-[#fbbf24] text-[#fbbf24]'
+                                  : 'text-[#fbbf24]'
+                              }`}
+                            />
+                            <span>
+                              {personalWordIdsSet.has(currentWord.id)
+                                ? 'In Favourites'
+                                : 'Add Favourite'}
+                            </span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handlePracticeAgainWord();
+                            }}
+                            className="flex-1 sm:flex-initial min-h-[42px] px-3.5 py-2 rounded-xl bg-[#13291f] hover:bg-[#1c3b2d] border border-[#2a5440] text-xs font-bold text-[#10b981] hover:text-white flex items-center justify-center gap-1.5 shrink-0 transition-colors"
+                          >
+                            <RotateCcw className="w-3.5 h-3.5" />
+                            <span>Retry Word</span>
+                          </button>
+                        </div>
                       </div>
                     )}
 
@@ -2919,7 +3046,7 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                     {studySortMode === 'failedOnly'
                       ? 'No failed words recorded in this category yet! Complete a test or practice to track mistakes.'
                       : pageFilter === 'personal'
-                      ? 'You have not added any personal struggling words yet.'
+                      ? 'You have not marked any Favourite Words yet.'
                       : 'No words in the selected filter.'}
                   </p>
                   {studySortMode === 'failedOnly' ? (
@@ -2935,10 +3062,10 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                       <button
                         type="button"
                         onClick={onOpenPersonalWordsModal}
-                        className="min-h-[40px] px-4 py-2 rounded-xl bg-[#38bdf8] text-[#04120c] text-xs font-extrabold inline-flex items-center gap-1.5"
+                        className="min-h-[40px] px-4 py-2 rounded-xl bg-[#fbbf24] text-[#08120e] text-xs font-extrabold inline-flex items-center gap-1.5"
                       >
-                        <Plus className="w-4 h-4" />
-                        <span>Add Your First Struggling Word</span>
+                        <Star className="w-4 h-4 fill-[#08120e]" />
+                        <span>Mark / Add Your First Favourite Word</span>
                       </button>
                     )
                   )}
@@ -3043,6 +3170,31 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             className="flex items-center gap-1.5 shrink-0"
                             onClick={(e) => e.stopPropagation()}
                           >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onTogglePersonalStrugglingWord(item)
+                              }
+                              title={
+                                personalWordIdsSet.has(item.id)
+                                  ? `Remove "${item.word}" from Favourite Words`
+                                  : `Mark "${item.word}" as Favourite`
+                              }
+                              className={`min-h-[36px] min-w-[36px] px-2 py-1.5 rounded-lg border text-xs font-bold flex items-center justify-center gap-1 transition-colors ${
+                                personalWordIdsSet.has(item.id)
+                                  ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                                  : 'bg-[#13291f] hover:bg-[#1a372a] border-[#234435] text-[#8ba89a] hover:text-[#fbbf24]'
+                              }`}
+                            >
+                              <Star
+                                className={`w-3.5 h-3.5 shrink-0 ${
+                                  personalWordIdsSet.has(item.id)
+                                    ? 'fill-[#fbbf24] text-[#fbbf24]'
+                                    : ''
+                                }`}
+                              />
+                            </button>
+
                             <button
                               type="button"
                               onClick={() => void handlePlayStudyItem(item, 1.0)}
@@ -3486,20 +3638,70 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             </div>
                           </div>
 
-                          <button
-                            type="button"
-                            onClick={() =>
-                              playWordAudio({
-                                word: item.word,
-                                audioDataUrl: rec?.audioDataUrl,
-                                bundledAudioFile: catalogMatch?.bundledAudioFile,
-                              })
-                            }
-                            className="self-start sm:self-center min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
-                          >
-                            <Volume2 className="w-3.5 h-3.5" />
-                            <span>Listen</span>
-                          </button>
+                          <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const targetItem: WordItem = catalogMatch || {
+                                  id: item.wordId || item.word,
+                                  originalId: item.wordId || item.word,
+                                  word: item.word,
+                                  bangla: banglaText,
+                                  category: item.category || 'General IELTS',
+                                  page: (item.page === 2 ? 2 : 1) as 1 | 2,
+                                  example: '',
+                                  hasBundledAudio: false,
+                                };
+                                void onTogglePersonalStrugglingWord(targetItem);
+                              }}
+                              title={
+                                personalWordIdsSet.has(
+                                  catalogMatch?.id || item.wordId
+                                )
+                                  ? 'Remove from Favourite Words'
+                                  : 'Mark as Favourite Word'
+                              }
+                              className={`min-h-[38px] px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 transition-colors ${
+                                personalWordIdsSet.has(
+                                  catalogMatch?.id || item.wordId
+                                )
+                                  ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                                  : 'bg-[#12281e] hover:bg-[#19382a] border-[#234435] text-[#9ab5a7] hover:text-white'
+                              }`}
+                            >
+                              <Star
+                                className={`w-3.5 h-3.5 ${
+                                  personalWordIdsSet.has(
+                                    catalogMatch?.id || item.wordId
+                                  )
+                                    ? 'fill-[#fbbf24] text-[#fbbf24]'
+                                    : ''
+                                }`}
+                              />
+                              <span>
+                                {personalWordIdsSet.has(
+                                  catalogMatch?.id || item.wordId
+                                )
+                                  ? 'Favourited'
+                                  : 'Favourite'}
+                              </span>
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={() =>
+                                playWordAudio({
+                                  word: item.word,
+                                  audioDataUrl: rec?.audioDataUrl,
+                                  bundledAudioFile: catalogMatch?.bundledAudioFile,
+                                })
+                              }
+                              className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" />
+                              <span>Listen</span>
+                            </button>
+                          </div>
                         </div>
                       );
                     })
@@ -3532,20 +3734,46 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                               ({rec?.banglaMeaning || w.bangla})
                             </span>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              playWordAudio({
-                                word: w.word,
-                                audioDataUrl: rec?.audioDataUrl,
-                                bundledAudioFile: w.bundledAudioFile,
-                              })
-                            }
-                            className="self-start sm:self-center min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
-                          >
-                            <Volume2 className="w-3.5 h-3.5" />
-                            <span>Listen</span>
-                          </button>
+                          <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                void onTogglePersonalStrugglingWord(w)
+                              }
+                              className={`min-h-[38px] px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1 transition-colors ${
+                                personalWordIdsSet.has(w.id)
+                                  ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                                  : 'bg-[#12281e] hover:bg-[#19382a] border-[#234435] text-[#9ab5a7] hover:text-white'
+                              }`}
+                            >
+                              <Star
+                                className={`w-3.5 h-3.5 ${
+                                  personalWordIdsSet.has(w.id)
+                                    ? 'fill-[#fbbf24] text-[#fbbf24]'
+                                    : ''
+                                }`}
+                              />
+                              <span>
+                                {personalWordIdsSet.has(w.id)
+                                  ? 'Favourited'
+                                  : 'Favourite'}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                playWordAudio({
+                                  word: w.word,
+                                  audioDataUrl: rec?.audioDataUrl,
+                                  bundledAudioFile: w.bundledAudioFile,
+                                })
+                              }
+                              className="min-h-[38px] px-3 py-1.5 rounded-lg bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 shrink-0"
+                            >
+                              <Volume2 className="w-3.5 h-3.5" />
+                              <span>Listen</span>
+                            </button>
+                          </div>
                         </div>
                       );
                     })}

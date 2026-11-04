@@ -1,4 +1,23 @@
 {
+  "headers": [
+    {
+      "source": "/(.*)\\.apk",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/vnd.android.package-archive"
+        },
+        {
+          "key": "Content-Disposition",
+          "value": "attachment; filename=\"ListenWrite-IELTS.apk\""
+        },
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=0, must-revalidate"
+        }
+      ]
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/sync/(.*)",
@@ -9,7 +28,7 @@
       "destination": "/api/sync.js"
     },
     {
-      "source": "/((?!api/|assets/|dict-fallback/|audio-|manifest\\.webmanifest|sw\\.js|workbox-).*)",
+      "source": "/((?!api/|assets/|dict-fallback/|audio-|ListenWrite-IELTS\\.apk|.*\\.apk|manifest\\.webmanifest|sw\\.js|offline-audio-sw\\.js|workbox-).*)",
       "destination": "/index.html"
     }
   ]

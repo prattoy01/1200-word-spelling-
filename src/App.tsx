@@ -27,6 +27,7 @@ import {
   ShieldCheck,
   Send,
   Bookmark,
+  Star,
   Trophy,
   Edit3,
   Save,
@@ -953,10 +954,10 @@ export default function App() {
           <button
             type="button"
             onClick={() => setIsPersonalWordsModalOpen(true)}
-            className="hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-[#7dd3fc]"
+            className="hover:text-white transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 text-[#fde68a] font-semibold"
           >
-            <Bookmark className="w-3.5 h-3.5 text-[#38bdf8]" />
-            <span>My Words ({personalWords.length})</span>
+            <Star className="w-3.5 h-3.5 fill-[#fbbf24] text-[#fbbf24]" />
+            <span>Favourites ({personalWords.length})</span>
           </button>
           <button
             type="button"
@@ -1404,6 +1405,9 @@ export default function App() {
                       }`}
                     >
                       <div className="flex items-center gap-2 min-w-0">
+                        {personalWords.some((pw) => pw.wordId === item.id) && (
+                          <Star className="w-3.5 h-3.5 fill-[#fbbf24] text-[#fbbf24] shrink-0" />
+                        )}
                         <span className="truncate text-sm">{item.word}</span>
                         {rec && (
                           <span className="text-xs text-[#7ea090] truncate hidden sm:inline">
@@ -1438,10 +1442,41 @@ export default function App() {
 
           {/* Bottom Active Word Inspector & Personal Upload + Contribute to Admin Panel */}
           <section className="rounded-3xl bg-[#0d1b15] border border-[#1f3b2e] p-4 sm:p-7 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between gap-3">
-              <h2 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight truncate">
-                {selectedWord.word}
-              </h2>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <h2 className="text-xl sm:text-3xl font-extrabold text-white tracking-tight truncate">
+                  {selectedWord.word}
+                </h2>
+                <button
+                  type="button"
+                  onClick={() =>
+                    void handleTogglePersonalStrugglingWord(selectedWord)
+                  }
+                  title={
+                    personalWords.some((pw) => pw.wordId === selectedWord.id)
+                      ? 'Remove from Favourite Words'
+                      : 'Mark as Favourite Word'
+                  }
+                  className={`min-h-[36px] px-3 py-1 rounded-xl border text-xs font-bold flex items-center gap-1.5 shrink-0 transition-colors ${
+                    personalWords.some((pw) => pw.wordId === selectedWord.id)
+                      ? 'bg-[#29200e] border-[#fbbf24] text-[#fbbf24]'
+                      : 'bg-[#11241c] hover:bg-[#193529] border-[#244938] text-[#fde68a]'
+                  }`}
+                >
+                  <Star
+                    className={`w-3.5 h-3.5 ${
+                      personalWords.some((pw) => pw.wordId === selectedWord.id)
+                        ? 'fill-[#fbbf24] text-[#fbbf24]'
+                        : 'text-[#fbbf24]'
+                    }`}
+                  />
+                  <span>
+                    {personalWords.some((pw) => pw.wordId === selectedWord.id)
+                      ? 'Favourited'
+                      : 'Favourite'}
+                  </span>
+                </button>
+              </div>
 
               <div className="flex items-center gap-2 shrink-0">
                 <span
@@ -1823,13 +1858,13 @@ export default function App() {
         <button
           type="button"
           onClick={() => setIsPersonalWordsModalOpen(true)}
-          className="min-w-0 flex flex-col items-center justify-center h-full text-[#7dd3fc] transition-colors"
+          className="min-w-0 flex flex-col items-center justify-center h-full text-[#fbbf24] transition-colors"
         >
-          <span className="px-2.5 py-1 rounded-full">
-            <Bookmark className="w-4 h-4" />
+          <span className="px-2.5 py-1 rounded-full bg-[#fbbf24]/15">
+            <Star className="w-4 h-4 fill-[#fbbf24] text-[#fbbf24]" />
           </span>
-          <span className="text-[10px] mt-0.5 truncate max-w-full">
-            My Words{personalWords.length > 0 ? ` (${personalWords.length})` : ''}
+          <span className="text-[10px] mt-0.5 truncate max-w-full font-semibold">
+            Favourites{personalWords.length > 0 ? ` (${personalWords.length})` : ''}
           </span>
         </button>
 

@@ -54,7 +54,7 @@ import {
   getCurrentCloudRelaySnapshot,
 } from '../utils/cloudRelay';
 
-export const PERSONAL_STRUGGLING_CATEGORY = 'My Struggling Words';
+export const PERSONAL_STRUGGLING_CATEGORY = 'Favourite Words';
 
 export interface PersonalWordRecord {
   id: string;

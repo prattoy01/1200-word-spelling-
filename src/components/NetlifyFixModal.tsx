@@ -206,15 +206,15 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
           <div className="rounded-2xl bg-gradient-to-br from-[#0d291e] via-[#112e22] to-[#1a2814] border-2 border-[#10b981] p-5 space-y-4 shadow-xl">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
               <div className="space-y-1.5">
-                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-[#10b981]/20 border border-[#10b981]/50 text-[#10b981] text-[11px] font-extrabold uppercase tracking-wider">
+                <div className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-lg bg-[#10b981]/20 border border-[#10b981]/50 text-[#10b981] text-[11px] font-extrabold uppercase tracking-wider">
                   <Smartphone className="w-3.5 h-3.5" />
-                  <span>Native Signed Android Package (v2.4.0)</span>
+                  <span>Native Signed Android Package (v2.6.0 · v1+v2 Signed)</span>
                 </div>
                 <h3 className="text-xl font-extrabold text-white">
                   Listen &amp; Write IELTS — Android APK
                 </h3>
                 <p className="text-xs text-[#b7cec2] leading-relaxed max-w-xl">
-                  Full Android application (<code className="font-mono text-[#a7f3d0]">app.listenwrite.ielts</code>) signed with Android v1/v2/v3 signatures for Android 5.0 through Android 15. Includes 3x auto-audio Strict Exam, Live Blind Contests, Personal Words, and Microphone Recording.
+                  Full Android application (<code className="font-mono text-[#a7f3d0]">app.listenwrite.ielts</code>) signed with both APK Signature Scheme v1 &amp; v2 and 4-byte zipaligned for Android 5.0 through Android 15.
                 </p>
               </div>
 
@@ -229,7 +229,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                   className="min-h-[48px] px-5 py-3 rounded-xl bg-[#10b981] hover:bg-[#059669] text-[#04120c] font-extrabold text-sm flex items-center justify-center gap-2 shadow-lg transition-colors whitespace-nowrap"
                 >
                   <Download className="w-4 h-4 stroke-[2.5]" />
-                  <span>Download Android APK</span>
+                  <span>Download Android APK (v2.6)</span>
                 </a>
 
                 {isInstallable && (
@@ -239,7 +239,7 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
                     className="min-h-[38px] px-4 py-2 rounded-xl bg-[#13291f] hover:bg-[#1a382b] border border-[#244c3a] text-xs font-bold text-[#fbbf24] flex items-center justify-center gap-1.5 transition-colors"
                   >
                     <Sparkles className="w-3.5 h-3.5" />
-                    <span>Or Install Instant WebApp</span>
+                    <span>Or 1-Tap Install WebApp</span>
                   </button>
                 )}
               </div>
@@ -249,28 +249,28 @@ export const NetlifyFixModal: React.FC<NetlifyFixModalProps> = ({
               <div className="rounded-xl bg-[#071610] border border-[#10b981]/50 px-4 py-2.5 text-xs text-[#a7f3d0] flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-[#10b981] shrink-0" />
                 <span>
-                  Downloading <strong>{ANDROID_APK_FILENAME}</strong>! Open the downloaded file on your Android phone and tap <strong>Install</strong>.
+                  Downloading <strong>{ANDROID_APK_FILENAME}</strong>! If you had an older version installed, <strong>uninstall the old app first</strong>, then tap the downloaded file and tap <strong>Install</strong>.
                 </span>
               </div>
             )}
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-2 border-t border-[#1e4433] text-xs text-[#c4d9ce]">
               <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
-                <div className="font-bold text-[#10b981] mb-0.5">Step 1: Download</div>
+                <div className="font-bold text-[#10b981] mb-0.5">Step 1: Remove Old App</div>
                 <p className="text-[11px] text-[#8ba89a]">
-                  Tap <strong>Download Android APK</strong> above to save <code className="font-mono text-white">{ANDROID_APK_FILENAME}</code>.
+                  If an older version of <strong>Listen &amp; Write</strong> is already on your phone, uninstall it first to avoid signature conflicts.
                 </p>
               </div>
               <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
-                <div className="font-bold text-[#fbbf24] mb-0.5">Step 2: Open APK</div>
+                <div className="font-bold text-[#fbbf24] mb-0.5">Step 2: Download &amp; Open</div>
                 <p className="text-[11px] text-[#8ba89a]">
-                  Tap the downloaded <code className="font-mono text-white">.apk</code> notification or open it from your <strong>Downloads</strong> folder.
+                  Tap <strong>Download Android APK (v2.6)</strong> above, then open <code className="font-mono text-white">{ANDROID_APK_FILENAME}</code> from Downloads.
                 </p>
               </div>
               <div className="rounded-xl bg-[#091610]/90 border border-[#193528] p-3">
-                <div className="font-bold text-white mb-0.5">Step 3: Install &amp; Launch</div>
+                <div className="font-bold text-white mb-0.5">Step 3: Allow &amp; Install</div>
                 <p className="text-[11px] text-[#8ba89a]">
-                  Tap <strong>Install</strong> (if Play Protect asks on first install, tap <strong>More details &rarr; Install anyway</strong>).
+                  Tap <strong>Install</strong> (if Play Protect prompts on first install, tap <strong>More details &rarr; Install anyway</strong>).
                 </p>
               </div>
             </div>

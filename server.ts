@@ -916,6 +916,26 @@ async function startServer() {
     res.json({ ok: true, lines: relayLinesCache });
   });
 
+  // Explicit Android APK download route with proper MIME type so mobile browsers never treat it as HTML/SPA route
+  app.get(['/ListenWrite-IELTS.apk', '/api/download-apk'], (_req, res) => {
+    const publicApk = path.join(__dirname, 'public', 'ListenWrite-IELTS.apk');
+    const distApk = path.join(__dirname, 'dist', 'ListenWrite-IELTS.apk');
+    const apkFile = fs.existsSync(publicApk) ? publicApk : distApk;
+    if (!fs.existsSync(apkFile)) {
+      res.status(404).send('APK not found');
+      return;
+    }
+    const stat = fs.statSync(apkFile);
+    res.setHeader('Content-Type', 'application/vnd.android.package-archive');
+    res.setHeader(
+      'Content-Disposition',
+      'attachment; filename="ListenWrite-IELTS.apk"'
+    );
+    res.setHeader('Content-Length', String(stat.size));
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    fs.createReadStream(apkFile).pipe(res);
+  });
+
   // Vite middleware for development or static serving for production
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({

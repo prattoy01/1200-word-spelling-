@@ -2,12 +2,12 @@ import React, { useState } from 'react';
 import { Smartphone, Download, X, Share } from 'lucide-react';
 import { usePWAInstall } from '../hooks/usePWAInstall';
 
-export const ANDROID_APK_PATH = '/ListenWrite-IELTS.apk';
+export const ANDROID_APK_PATH = '/ListenWrite-IELTS.apk?v=2.6.0';
 export const ANDROID_APK_FILENAME = 'ListenWrite-IELTS.apk';
 
 export function triggerAndroidApkDownload(): void {
   const link = document.createElement('a');
-  link.href = ANDROID_APK_PATH;
+  link.href = `${ANDROID_APK_PATH}&t=${Date.now()}`;
   link.download = ANDROID_APK_FILENAME;
   document.body.appendChild(link);
   link.click();
