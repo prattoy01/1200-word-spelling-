@@ -74,7 +74,10 @@ import {
   syncAudioContributionsNow,
 } from './services/recordingsService';
 import {
+  type ProcessedAudio,
   processAudioBlob,
+  combineAudioBlobsOrDataUrls,
+  splitPhraseIntoWordParts,
   playWordAudio,
   getAllLocalCachedRecordings,
 } from './utils/audioUtils';
@@ -83,6 +86,7 @@ import { PracticeView } from './components/PracticeView';
 import { AdminPanelView } from './components/AdminPanelView';
 import { SignInModal } from './components/SignInModal';
 import { PersonalWordsModal } from './components/PersonalWordsModal';
+import { MultiWordAudioBuilder } from './components/MultiWordAudioBuilder';
 import { ContestPlatformView } from './components/ContestPlatformView';
 import {
   type ContestRecord,
@@ -631,14 +635,13 @@ export default function App() {
     setTimeout(() => setCopiedQuickLink(false), 2000);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
+  const saveProcessedAudioForSelectedWord = async (
+    processed: ProcessedAudio,
+    combinedPartsCount?: number
+  ) => {
     setIsUploading(true);
     setStatusBanner(null);
     try {
-      const processed = await processAudioBlob(file, file.name);
       const { contributedToAdmin, contributionError } = await saveWordRecording({
         wordId: selectedWord.id,
         word: selectedWord.word,
@@ -655,13 +658,18 @@ export default function App() {
       await refreshLocalAndCloudState();
       setIsUploading(false);
 
+      const multiPrefix =
+        combinedPartsCount && combinedPartsCount >= 2
+          ? `Combined ${combinedPartsCount} word clips into "${selectedWord.word}"`
+          : `Saved "${selectedWord.word}"`;
+
       setStatusBanner({
         type: contributionError ? 'warning' : 'success',
         text: contributionError
-          ? `Saved "${selectedWord.word}" as your Personal Audio, but could not send to Admin Panel (${contributionError}). Click "Send to Admin Panel" below to retry.`
+          ? `${multiPrefix} as your Personal Audio, but could not send to Admin Panel (${contributionError}). Click "Send to Admin Panel" below to retry.`
           : contributedToAdmin
-          ? `Saved "${selectedWord.word}" as your Personal Audio AND submitted to the Admin Panel for review!`
-          : `Saved "${selectedWord.word}" as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
+          ? `${multiPrefix} as your Personal Audio AND submitted to the Admin Panel for review!`
+          : `${multiPrefix} as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
       });
 
       void playWordAudio({
@@ -672,10 +680,41 @@ export default function App() {
     } catch (err) {
       setStatusBanner({
         type: 'error',
-        text: err instanceof Error ? err.message : 'Failed to upload recording.',
+        text:
+          err instanceof Error ? err.message : 'Failed to save audio recording.',
       });
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    setIsUploading(true);
+    setStatusBanner(null);
+    try {
+      if (files.length >= 2) {
+        const fileArray = Array.from(files);
+        const combined = await combineAudioBlobsOrDataUrls(
+          fileArray,
+          selectedWord.word,
+          180
+        );
+        await saveProcessedAudioForSelectedWord(combined, fileArray.length);
+      } else {
+        const file = files[0];
+        const processed = await processAudioBlob(file, file.name);
+        await saveProcessedAudioForSelectedWord(processed);
+      }
+    } catch (err) {
+      setStatusBanner({
+        type: 'error',
+        text: err instanceof Error ? err.message : 'Failed to upload recording.',
+      });
+      setIsUploading(false);
+    } finally {
       if (fileInputRef.current) fileInputRef.current.value = '';
     }
   };
@@ -1704,7 +1743,7 @@ export default function App() {
               )}
             </p>
 
-            {/* Action Buttons Row: Preview | Upload Recording | Record Mic */}
+            {/* Action Buttons Row: Preview | Upload Recording (Single or Multiple Files) | Record Mic */}
             <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 pt-1">
               <button
                 type="button"
@@ -1731,12 +1770,13 @@ export default function App() {
                   {isUploading
                     ? 'SAVING AUDIO...'
                     : selectedRecording?.isPersonalOverride
-                    ? 'REPLACE PERSONAL AUDIO'
-                    : 'SET PERSONAL AUDIO'}
+                    ? 'REPLACE PERSONAL AUDIO (1 OR MORE FILES)'
+                    : 'SET PERSONAL AUDIO (1 OR MORE FILES)'}
                 </span>
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   accept="audio/mp3,audio/mpeg,audio/mp4,audio/x-m4a,audio/m4a,audio/ogg,audio/wav,audio/webm,audio/*"
                   onChange={handleFileUpload}
                   className="hidden"
@@ -1760,11 +1800,25 @@ export default function App() {
                 ) : (
                   <>
                     <Mic className="w-4 h-4 text-[#10b981]" />
-                    <span>Record Mic</span>
+                    <span>
+                      {splitPhraseIntoWordParts(selectedWord.word).length >= 2
+                        ? 'Record Full Phrase'
+                        : 'Record Mic'}
+                    </span>
                   </>
                 )}
               </button>
             </div>
+
+            {/* Multi-Word Pronunciation Stitcher (Word-by-Word Upload & Mic Recording for 2–3 word phrases like "paddle steamer") */}
+            <MultiWordAudioBuilder
+              phrase={selectedWord.word}
+              recordingsMap={recordingsMap}
+              isSaving={isUploading}
+              onCombinedAudioReady={(combinedAudio, partsCount) =>
+                saveProcessedAudioForSelectedWord(combinedAudio, partsCount)
+              }
+            />
           </section>
         </main>
       )}

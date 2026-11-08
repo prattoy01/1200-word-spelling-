@@ -263,6 +263,172 @@ export async function processAudioBlob(
   }
 }
 
+/**
+ * Splits a multi-word phrase (e.g. "paddle steamer", "first aid kit") into individual word parts
+ * so users can upload or record pronunciation for each word separately.
+ */
+export function splitPhraseIntoWordParts(phrase: string): string[] {
+  const cleaned = phrase
+    .replace(/\([^)]*\)/g, ' ')
+    .trim();
+  const spaceParts = cleaned
+    .split(/\s+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (spaceParts.length >= 2) {
+    return spaceParts;
+  }
+  const hyphenOrSlashParts = cleaned
+    .split(/[-/]+/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (hyphenOrSlashParts.length >= 2) {
+    return hyphenOrSlashParts;
+  }
+  return spaceParts.length > 0 ? spaceParts : [phrase.trim() || 'word'];
+}
+
+/**
+ * Trims dead leading and trailing silence from a mono PCM Float32Array while keeping a soft margin
+ * so initial/final consonants (like 'p', 't', 's') are never clipped when stitching words together.
+ */
+function trimSilenceAndNormalizePart(
+  samples: Float32Array,
+  sampleRate: number
+): Float32Array {
+  if (samples.length === 0) return samples;
+
+  // 1. Peak normalize this word clip first so silence threshold is consistent
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) {
+    const abs = Math.abs(samples[i]);
+    if (abs > peak) peak = abs;
+  }
+
+  const normalized = new Float32Array(samples.length);
+  const gain = peak > 0.005 ? Math.min(8, 0.92 / peak) : 1;
+  for (let i = 0; i < samples.length; i++) {
+    normalized[i] = Math.max(-1, Math.min(1, samples[i] * gain));
+  }
+
+  // 2. Detect speech start & end above threshold
+  const threshold = 0.015;
+  const padSamples = Math.floor(sampleRate * 0.035); // 35ms natural breath pad
+  let startIdx = 0;
+  while (startIdx < normalized.length && Math.abs(normalized[startIdx]) < threshold) {
+    startIdx++;
+  }
+  let endIdx = normalized.length - 1;
+  while (endIdx > startIdx && Math.abs(normalized[endIdx]) < threshold) {
+    endIdx--;
+  }
+
+  if (startIdx >= endIdx) {
+    return normalized;
+  }
+
+  const paddedStart = Math.max(0, startIdx - padSamples);
+  const paddedEnd = Math.min(normalized.length, endIdx + padSamples + 1);
+  return normalized.slice(paddedStart, paddedEnd);
+}
+
+/**
+ * Combines 2, 3, or more separate word pronunciation clips (e.g. "paddle" + "steamer")
+ * into a single seamless ProcessedAudio WAV recording with natural spoken pauses between words.
+ */
+export async function combineAudioBlobsOrDataUrls(
+  sources: Array<Blob | string>,
+  phraseName: string,
+  pauseMs = 180
+): Promise<ProcessedAudio> {
+  if (sources.length === 0) {
+    throw new Error('Please provide at least one audio clip to combine.');
+  }
+  if (sources.length === 1) {
+    const single = sources[0];
+    const blob = typeof single === 'string' ? dataUrlToBlob(single) : single;
+    return processAudioBlob(blob, `${toWordId(phraseName)}.wav`);
+  }
+
+  const AudioCtx =
+    window.AudioContext ||
+    (window as unknown as { webkitAudioContext: typeof AudioContext })
+      .webkitAudioContext;
+  const audioCtx = new AudioCtx();
+
+  try {
+    const targetRate = 16000;
+    const trimmedParts: Float32Array[] = [];
+
+    for (let idx = 0; idx < sources.length; idx++) {
+      const src = sources[idx];
+      const blob = typeof src === 'string' ? dataUrlToBlob(src) : src;
+      const arrayBuffer = await blob.arrayBuffer();
+      const decoded = await audioCtx.decodeAudioData(arrayBuffer.slice(0));
+      const maxPartSec = Math.min(decoded.duration, 6);
+      const targetLen = Math.max(1, Math.floor(maxPartSec * targetRate));
+
+      const offlineCtx = new OfflineAudioContext(1, targetLen, targetRate);
+      const bufferSource = offlineCtx.createBufferSource();
+      bufferSource.buffer = decoded;
+      bufferSource.connect(offlineCtx.destination);
+      bufferSource.start(0);
+
+      const rendered = await offlineCtx.startRendering();
+      const rawMono = rendered.getChannelData(0);
+      const cleanedMono = trimSilenceAndNormalizePart(rawMono, targetRate);
+      trimmedParts.push(cleanedMono);
+    }
+
+    const pauseSamples = Math.max(
+      0,
+      Math.floor((Math.max(40, Math.min(600, pauseMs)) / 1000) * targetRate)
+    );
+    const totalSamples =
+      trimmedParts.reduce((acc, part) => acc + part.length, 0) +
+      pauseSamples * Math.max(0, trimmedParts.length - 1);
+
+    // Cap total combined duration to 14 seconds so it always syncs cleanly to Cloud SQL & Firestore
+    const maxAllowedSamples = 14 * targetRate;
+    const finalLength = Math.min(totalSamples, maxAllowedSamples);
+    const combinedSamples = new Float32Array(finalLength);
+
+    let writeOffset = 0;
+    for (let i = 0; i < trimmedParts.length; i++) {
+      const part = trimmedParts[i];
+      const copyLen = Math.min(part.length, finalLength - writeOffset);
+      if (copyLen <= 0) break;
+      combinedSamples.set(part.subarray(0, copyLen), writeOffset);
+      writeOffset += copyLen;
+
+      if (i < trimmedParts.length - 1 && writeOffset < finalLength) {
+        writeOffset = Math.min(finalLength, writeOffset + pauseSamples);
+      }
+    }
+
+    let wavBlob = encodeMonoWav(combinedSamples, targetRate, 16);
+    let dataUrl = await blobToDataUrl(wavBlob);
+
+    if (dataUrl.length > MAX_RAW_BASE64_LENGTH) {
+      wavBlob = encodeMonoWav(combinedSamples, 12000, 8);
+      dataUrl = await blobToDataUrl(wavBlob);
+    }
+
+    const durationMs = Math.round((finalLength / targetRate) * 1000);
+    const cleanFileName = `${toWordId(phraseName)}-combined-${trimmedParts.length}words.wav`;
+
+    return {
+      audioDataUrl: dataUrl,
+      mimeType: 'audio/wav',
+      fileName: cleanFileName.slice(0, 150),
+      fileSize: wavBlob.size,
+      durationMs,
+    };
+  } finally {
+    await audioCtx.close().catch(() => {});
+  }
+}
+
 export function measureAudioDuration(srcUrl: string): Promise<number> {
   return new Promise((resolve) => {
     const audio = new Audio();

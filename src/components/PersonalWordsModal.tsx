@@ -30,10 +30,12 @@ import {
 import {
   type ProcessedAudio,
   processAudioBlob,
+  combineAudioBlobsOrDataUrls,
   playWordAudio,
 } from '../utils/audioUtils';
 import { WORDS_CATALOG, type WordItem } from '../data/words';
 import { auth } from '../firebase';
+import { MultiWordAudioBuilder } from './MultiWordAudioBuilder';
 
 interface PersonalWordsModalProps {
   isOpen: boolean;
@@ -140,11 +142,18 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
     setFeedback(null);
     try {
-      const processed = await processAudioBlob(file, file.name);
+      const processed =
+        files.length >= 2
+          ? await combineAudioBlobsOrDataUrls(
+              Array.from(files),
+              wordInput.trim() || 'combined-word',
+              180
+            )
+          : await processAudioBlob(files[0], files[0].name);
       setPendingAudio(processed);
       await playWordAudio({
         word: wordInput.trim() || 'preview',
@@ -762,10 +771,11 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
 
                   <label className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-xs font-semibold text-[#d2e5dc] flex items-center gap-1.5 cursor-pointer transition-colors">
                     <Upload className="w-3.5 h-3.5 text-[#fbbf24]" />
-                    <span>Upload Audio</span>
+                    <span>Upload Audio (1 or Multiple Files)</span>
                     <input
                       ref={fileInputRef}
                       type="file"
+                      multiple
                       accept="audio/*"
                       onChange={handleFileUpload}
                       className="hidden"
@@ -800,6 +810,25 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
                   </span>
                 </button>
               </div>
+
+              {wordInput.trim().length > 0 && (
+                <MultiWordAudioBuilder
+                  phrase={wordInput.trim()}
+                  recordingsMap={recordingsMap}
+                  saveButtonLabel="Combine & Attach to This Custom Word"
+                  onCombinedAudioReady={async (combinedAudio, partsCount) => {
+                    setPendingAudio(combinedAudio);
+                    setFeedback({
+                      type: 'success',
+                      text: `Combined ${partsCount} word clips for "${wordInput.trim()}"! Now click "Save to Favourite Words" above.`,
+                    });
+                    await playWordAudio({
+                      word: wordInput.trim() || 'preview',
+                      audioDataUrl: combinedAudio.audioDataUrl,
+                    });
+                  }}
+                />
+              )}
             </form>
           )}
 
