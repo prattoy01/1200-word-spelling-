@@ -1,4 +1,4 @@
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from './index.ts';
 import {
   contests,
@@ -26,8 +26,42 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
     ] = await Promise.all([
       db.select().from(contests),
       db.select().from(contestSubmissions),
-      db.select().from(audioContributions),
-      includeAudio ? db.select().from(recordings) : Promise.resolve([]),
+      includeAudio
+        ? db.select().from(audioContributions)
+        : db
+            .select({
+              id: audioContributions.id,
+              wordId: audioContributions.wordId,
+              word: audioContributions.word,
+              banglaMeaning: audioContributions.banglaMeaning,
+              mimeType: audioContributions.mimeType,
+              fileName: audioContributions.fileName,
+              fileSize: audioContributions.fileSize,
+              durationMs: audioContributions.durationMs,
+              contributorId: audioContributions.contributorId,
+              contributorName: audioContributions.contributorName,
+              status: audioContributions.status,
+              createdAtMs: audioContributions.createdAtMs,
+              updatedAtMs: audioContributions.updatedAtMs,
+            })
+            .from(audioContributions),
+      includeAudio
+        ? db.select().from(recordings)
+        : db
+            .select({
+              wordId: recordings.wordId,
+              word: recordings.word,
+              banglaMeaning: recordings.banglaMeaning,
+              mimeType: recordings.mimeType,
+              fileName: recordings.fileName,
+              fileSize: recordings.fileSize,
+              durationMs: recordings.durationMs,
+              ownerId: recordings.ownerId,
+              ownerName: recordings.ownerName,
+              status: recordings.status,
+              updatedAtMs: recordings.updatedAtMs,
+            })
+            .from(recordings),
       db.select().from(wordOverrides),
     ]);
 
@@ -104,7 +138,7 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
           wordId: ac.wordId,
           word: ac.word,
           banglaMeaning: ac.banglaMeaning,
-          audioDataUrl: ac.audioDataUrl,
+          audioDataUrl: 'audioDataUrl' in ac ? (ac as any).audioDataUrl : '',
           mimeType: ac.mimeType,
           fileName: ac.fileName,
           fileSize: ac.fileSize,
@@ -128,7 +162,7 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
           wordId: rec.wordId,
           word: rec.word,
           banglaMeaning: rec.banglaMeaning,
-          audioDataUrl: rec.audioDataUrl,
+          audioDataUrl: 'audioDataUrl' in rec ? (rec as any).audioDataUrl : '',
           mimeType: rec.mimeType,
           fileName: rec.fileName,
           fileSize: rec.fileSize,
@@ -537,25 +571,41 @@ export async function markWordOverrideDeletedInSql(
 
 export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
   try {
+    const ownerIds =
+      ownerId === 'shared_favourites'
+        ? ['shared_favourites']
+        : [ownerId, 'shared_favourites'];
     const rows = await db
       .select()
       .from(personalWords)
-      .where(
-        and(
-          eq(personalWords.ownerId, ownerId),
-          eq(personalWords.status, 'active')
-        )
-      );
-    return rows.map((r) => ({
-      id: r.id,
-      wordId: r.wordId,
-      word: r.word,
-      bangla: r.bangla,
-      example: r.example,
-      ownerId: r.ownerId,
-      createdAtMs: Number(r.createdAtMs),
-      updatedAtMs: Number(r.updatedAtMs),
-    }));
+      .where(inArray(personalWords.ownerId, ownerIds));
+
+    // Sort by updatedAtMs ascending so newer status (active vs deleted) wins per wordId
+    rows.sort((a, b) => Number(a.updatedAtMs || 0) - Number(b.updatedAtMs || 0));
+    const latestByWordId = new Map<string, typeof rows[number]>();
+    for (const r of rows) {
+      const existing = latestByWordId.get(r.wordId);
+      if (!existing || Number(r.updatedAtMs || 0) >= Number(existing.updatedAtMs || 0)) {
+        latestByWordId.set(r.wordId, r);
+      }
+    }
+
+    const activeWords = [];
+    for (const r of latestByWordId.values()) {
+      if (r.status === 'active') {
+        activeWords.push({
+          id: `${ownerId}_${r.wordId}`,
+          wordId: r.wordId,
+          word: r.word,
+          bangla: r.bangla,
+          example: r.example,
+          ownerId,
+          createdAtMs: Number(r.createdAtMs),
+          updatedAtMs: Number(r.updatedAtMs),
+        });
+      }
+    }
+    return activeWords;
   } catch (error) {
     throw new Error('Failed to fetch personal words from Cloud SQL.', {
       cause: error,
@@ -610,12 +660,16 @@ export async function markPersonalWordDeletedInSql(
   wordId: string
 ): Promise<void> {
   try {
+    const ownerIds =
+      ownerId === 'shared_favourites'
+        ? ['shared_favourites']
+        : [ownerId, 'shared_favourites'];
     await db
       .update(personalWords)
       .set({ status: 'deleted', updatedAtMs: Date.now() })
       .where(
         and(
-          eq(personalWords.ownerId, ownerId),
+          inArray(personalWords.ownerId, ownerIds),
           eq(personalWords.wordId, wordId)
         )
       );

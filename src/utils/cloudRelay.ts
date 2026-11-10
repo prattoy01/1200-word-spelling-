@@ -8,6 +8,7 @@ import type {
   SessionWordResult,
   AudioContributionRecord,
   CloudRecording,
+  PersonalWordRecord,
 } from '../services/recordingsService';
 import type { GlobalWordOverride } from '../data/words';
 
@@ -21,6 +22,8 @@ export const CONTEST_RELAY_TOPIC = 'lw_sync_hub_12193dcd_v5';
 export const AUDIO_RELAY_TOPIC = 'lw_sync_hub_12193dcd_v5';
 export const CONTEST_RELAY_URL = `https://ntfy.sh/${CONTEST_RELAY_TOPIC}`;
 export const AUDIO_RELAY_URL = CONTEST_RELAY_URL;
+export const CANONICAL_CLOUD_RUN_ORIGIN =
+  'https://ais-pre-vfja3juliugi6tlzdyn4s4-286639760996.asia-southeast1.run.app';
 const EVENT_PREFIX = 'LW_EVT:';
 const AUDIO_CHUNK_SIZE = 3450;
 
@@ -98,6 +101,17 @@ export type CloudRelayEvent =
       op: 'RECORDING_DELETE';
       ts: number;
       wordId: string;
+    }
+  | {
+      op: 'PERSONAL_WORD_UPSERT';
+      ts: number;
+      word: PersonalWordRecord;
+    }
+  | {
+      op: 'PERSONAL_WORD_DELETE';
+      ts: number;
+      ownerId: string;
+      wordId: string;
     };
 
 export interface CloudRelaySnapshot {
@@ -110,6 +124,8 @@ export interface CloudRelaySnapshot {
   deletedContributionIds: Set<string>;
   recordings: Map<string, CloudRecording>;
   deletedRecordingIds: Set<string>;
+  personalWords: Map<string, PersonalWordRecord>;
+  deletedPersonalWordIds: Set<string>;
 }
 
 const relayState: CloudRelaySnapshot = {
@@ -122,6 +138,8 @@ const relayState: CloudRelaySnapshot = {
   deletedContributionIds: new Set(),
   recordings: new Map(),
   deletedRecordingIds: new Set(),
+  personalWords: new Map(),
+  deletedPersonalWordIds: new Set(),
 };
 
 const audioChunksStore = new Map<string, Map<number, string>>();
@@ -451,6 +469,24 @@ function applyRelayEvent(evt: CloudRelayEvent): boolean {
     return true;
   }
 
+  if (evt.op === 'PERSONAL_WORD_UPSERT' && evt.word && evt.word.wordId) {
+    const pw = evt.word;
+    relayState.deletedPersonalWordIds.delete(pw.wordId);
+    const existing = relayState.personalWords.get(pw.wordId);
+    if (!existing || (pw.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+      relayState.personalWords.set(pw.wordId, pw);
+      return true;
+    }
+    return false;
+  }
+
+  if (evt.op === 'PERSONAL_WORD_DELETE' && typeof evt.wordId === 'string') {
+    const wid = evt.wordId;
+    relayState.personalWords.delete(wid);
+    relayState.deletedPersonalWordIds.add(wid);
+    return true;
+  }
+
   return false;
 }
 
@@ -773,6 +809,39 @@ export async function publishWordOverrideDeleteToRelay(
     ts: Date.now(),
     wordId,
   });
+}
+
+export async function publishPersonalWordUpsertToRelay(
+  word: PersonalWordRecord
+): Promise<boolean> {
+  relayState.deletedPersonalWordIds.delete(word.wordId);
+  return publishCloudRelayEvent({
+    op: 'PERSONAL_WORD_UPSERT',
+    ts: Date.now(),
+    word,
+  });
+}
+
+export async function publishPersonalWordDeleteToRelay(
+  ownerId: string,
+  wordId: string
+): Promise<void> {
+  await publishCloudRelayEvent({
+    op: 'PERSONAL_WORD_DELETE',
+    ts: Date.now(),
+    ownerId,
+    wordId,
+  });
+}
+
+/**
+ * Helper to determine if the current browser is NOT already on the canonical Cloud Run origin.
+ * When on Vercel (`1200-word-spelling.vercel.app`), `ais-dev`, or Android APK, we mirror sync calls
+ * to `CANONICAL_CLOUD_RUN_ORIGIN` so all devices share the exact same Cloud SQL backend.
+ */
+export function shouldMirrorToCanonicalCloudRun(): boolean {
+  if (typeof window === 'undefined') return false;
+  return window.location.origin !== CANONICAL_CLOUD_RUN_ORIGIN;
 }
 
 async function pollSingleRelayTopic(topicUrl: string): Promise<boolean> {

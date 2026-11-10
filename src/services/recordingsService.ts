@@ -49,6 +49,10 @@ import {
   publishContributionStatusToRelay,
   publishRecordingUpsertToRelay,
   publishRecordingDeleteToRelay,
+  publishPersonalWordUpsertToRelay,
+  publishPersonalWordDeleteToRelay,
+  CANONICAL_CLOUD_RUN_ORIGIN,
+  shouldMirrorToCanonicalCloudRun,
   pollCloudRelaySnapshot,
   subscribeToCloudRelay,
   getCurrentCloudRelaySnapshot,
@@ -378,10 +382,14 @@ async function fetchSharedServerAudioState(
   if (typeof window === 'undefined') return null;
 
   const now = Date.now();
+  const hasCachedRecordings =
+    cachedServerAudioState &&
+    Object.keys(cachedServerAudioState.recordings || {}).length > 0;
+
   if (
     !forceRefresh &&
-    cachedServerAudioState &&
-    now - cachedServerAudioFetchedAtMs < 10_000
+    hasCachedRecordings &&
+    now - cachedServerAudioFetchedAtMs < 2_500
   ) {
     return cachedServerAudioState;
   }
@@ -392,24 +400,94 @@ async function fetchSharedServerAudioState(
 
   inFlightServerAudioPromise = (async () => {
     try {
-      // If we already have full audio cached in memory, fetch lightweight metadata first
+      // Always fetch full audio if cache is empty or forceRefresh is requested
       const shouldFetchFullAudioInitially =
-        includeAudio && (forceRefresh || !cachedServerAudioState);
+        includeAudio && (forceRefresh || !hasCachedRecordings);
+
+      const fetchFromBase = async (baseUrl: string, withAudio: boolean) => {
+        try {
+          const controller = new AbortController();
+          const timer = window.setTimeout(() => controller.abort(), 5500);
+          const res = await fetch(
+            `${baseUrl}/api/sync/state?includeAudio=${withAudio ? 'true' : 'false'}&_t=${Date.now()}`,
+            { cache: 'no-store', signal: controller.signal }
+          );
+          window.clearTimeout(timer);
+          if (!res.ok) return null;
+          const ct = res.headers.get('content-type') || '';
+          if (!ct.includes('application/json')) return null;
+          const data = await res.json();
+          if (!data || data.ok !== true) return null;
+          return data;
+        } catch {
+          return null;
+        }
+      };
 
       const fetchState = async (withAudio: boolean) => {
-        const controller = new AbortController();
-        const timer = window.setTimeout(() => controller.abort(), 4500);
-        const res = await fetch(
-          `/api/sync/state?includeAudio=${withAudio ? 'true' : 'false'}&_t=${Date.now()}`,
-          { cache: 'no-store', signal: controller.signal }
-        );
-        window.clearTimeout(timer);
-        if (!res.ok) return null;
-        const ct = res.headers.get('content-type') || '';
-        if (!ct.includes('application/json')) return null;
-        const data = await res.json();
-        if (!data || data.ok !== true) return null;
-        return data;
+        if (!shouldMirrorToCanonicalCloudRun()) {
+          return fetchFromBase('', withAudio);
+        }
+        const [localData, canonicalData] = await Promise.all([
+          fetchFromBase('', withAudio),
+          fetchFromBase(CANONICAL_CLOUD_RUN_ORIGIN, withAudio),
+        ]);
+        if (!canonicalData) return localData;
+        if (!localData) return canonicalData;
+
+        // Merge localData and canonicalData so whichever backend has newer recordings/contributions wins
+        const mergedRecs: Record<string, any> = {
+          ...(localData.recordings || {}),
+        };
+        for (const [wid, r] of Object.entries(canonicalData.recordings || {}) as [string, any][]) {
+          const ex = mergedRecs[wid];
+          if (!ex || (r?.updatedAtMs || 0) >= (ex?.updatedAtMs || 0)) {
+            mergedRecs[wid] = {
+              ...ex,
+              ...r,
+              audioDataUrl: r?.audioDataUrl || ex?.audioDataUrl || '',
+            };
+          }
+        }
+        const contribById = new Map<string, any>();
+        for (const c of [...(localData.contributions || []), ...(canonicalData.contributions || [])]) {
+          if (!c?.id) continue;
+          const ex = contribById.get(c.id);
+          if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+            contribById.set(c.id, {
+              ...ex,
+              ...c,
+              audioDataUrl: c.audioDataUrl || ex?.audioDataUrl || '',
+            });
+          }
+        }
+        return {
+          ok: true,
+          contributions: Array.from(contribById.values()),
+          deletedContributionIds: Array.from(
+            new Set([
+              ...(localData.deletedContributionIds || []),
+              ...(canonicalData.deletedContributionIds || []),
+            ])
+          ),
+          recordings: mergedRecs,
+          deletedRecordingIds: Array.from(
+            new Set([
+              ...(localData.deletedRecordingIds || []),
+              ...(canonicalData.deletedRecordingIds || []),
+            ])
+          ),
+          wordOverrides: {
+            ...(localData.wordOverrides || {}),
+            ...(canonicalData.wordOverrides || {}),
+          },
+          deletedWordOverrideIds: Array.from(
+            new Set([
+              ...(localData.deletedWordOverrideIds || []),
+              ...(canonicalData.deletedWordOverrideIds || []),
+            ])
+          ),
+        };
       };
 
       let data = await fetchState(shouldFetchFullAudioInitially);
@@ -443,12 +521,21 @@ async function fetchSharedServerAudioState(
         (cachedServerAudioState?.contributions || []).map((c) => [c.id, c])
       );
 
-      const mergedRecordings: Record<string, CloudRecording> = {};
+      const mergedRecordings: Record<string, CloudRecording> = {
+        ...prevRecordings,
+      };
+      const delRecSet = new Set<string>(
+        Array.isArray(data.deletedRecordingIds) ? data.deletedRecordingIds : []
+      );
+      for (const delId of delRecSet) {
+        delete mergedRecordings[delId];
+      }
       if (data.recordings && typeof data.recordings === 'object') {
         for (const [wid, r] of Object.entries(data.recordings as Record<string, CloudRecording>)) {
+          if (delRecSet.has(wid)) continue;
           const audioDataUrl = r.audioDataUrl || prevRecordings[wid]?.audioDataUrl || '';
-          mergedRecordings[wid] = { ...r, audioDataUrl };
           if (audioDataUrl) {
+            mergedRecordings[wid] = { ...r, audioDataUrl };
             cachedFullAudioSignatures.add(`r:${wid}:${r?.updatedAtMs || 0}`);
           }
         }
@@ -458,8 +545,8 @@ async function fetchSharedServerAudioState(
       if (Array.isArray(data.contributions)) {
         for (const c of data.contributions as AudioContributionRecord[]) {
           const audioDataUrl = c.audioDataUrl || prevContribMap.get(c.id)?.audioDataUrl || '';
-          mergedContributions.push({ ...c, audioDataUrl });
           if (audioDataUrl) {
+            mergedContributions.push({ ...c, audioDataUrl });
             cachedFullAudioSignatures.add(`c:${c.id}:${c.updatedAtMs || 0}:${c.status || ''}`);
           }
         }
@@ -500,13 +587,26 @@ async function pushContributionToSharedServer(
   contribution: AudioContributionRecord & { forcePending?: boolean }
 ): Promise<boolean> {
   if (typeof window === 'undefined') return false;
-  try {
-    const res = await fetch('/api/sync/audio-contributions', {
+  const payload = JSON.stringify({ contribution });
+  const reqs: Promise<Response>[] = [
+    fetch('/api/sync/audio-contributions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contribution }),
-    });
-    return res.ok;
+      body: payload,
+    }),
+  ];
+  if (shouldMirrorToCanonicalCloudRun()) {
+    reqs.push(
+      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/audio-contributions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+    );
+  }
+  try {
+    const results = await Promise.allSettled(reqs);
+    return results.some((r) => r.status === 'fulfilled' && r.value.ok);
   } catch {
     return false;
   }
@@ -516,16 +616,66 @@ async function pushGeneralRecordingToSharedServer(
   recording: CloudRecording
 ): Promise<boolean> {
   if (typeof window === 'undefined') return false;
-  try {
-    const res = await fetch('/api/sync/recordings', {
+  const payload = JSON.stringify({ recording });
+  const reqs: Promise<Response>[] = [
+    fetch('/api/sync/recordings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ recording }),
-    });
-    return res.ok;
+      body: payload,
+    }),
+  ];
+  if (shouldMirrorToCanonicalCloudRun()) {
+    reqs.push(
+      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/recordings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      })
+    );
+  }
+  try {
+    const results = await Promise.allSettled(reqs);
+    return results.some((r) => r.status === 'fulfilled' && r.value.ok);
   } catch {
     return false;
   }
+}
+
+async function batchPushGeneralRecordingsToSharedServer(
+  recordingsList: CloudRecording[]
+): Promise<number> {
+  if (typeof window === 'undefined' || recordingsList.length === 0) return 0;
+  let pushed = 0;
+  const CHUNK_SIZE = 8;
+  for (let i = 0; i < recordingsList.length; i += CHUNK_SIZE) {
+    const chunk = recordingsList.slice(i, i + CHUNK_SIZE);
+    const payload = JSON.stringify({ recordings: chunk });
+    const reqs: Promise<Response>[] = [
+      fetch('/api/sync/recordings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: payload,
+      }),
+    ];
+    if (shouldMirrorToCanonicalCloudRun()) {
+      reqs.push(
+        fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/recordings`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        })
+      );
+    }
+    try {
+      const results = await Promise.allSettled(reqs);
+      if (results.some((r) => r.status === 'fulfilled' && r.value.ok)) {
+        pushed += chunk.length;
+      }
+    } catch {
+      // continue next chunk
+    }
+  }
+  return pushed;
 }
 
 /**
@@ -703,10 +853,12 @@ export function subscribeToPublishedRecordings(
     }
   };
 
-  const pullServerAndRelayRecordings = async () => {
+  let isBackfillingLocalToServer = false;
+
+  const pullServerAndRelayRecordings = async (force = false) => {
     const [state, relaySnap] = await Promise.all([
-      fetchSharedServerAudioState(true),
-      pollCloudRelaySnapshot(false),
+      fetchSharedServerAudioState(true, force),
+      pollCloudRelaySnapshot(force),
     ]);
     let changed = false;
     if (state) {
@@ -741,10 +893,54 @@ export function subscribeToPublishedRecordings(
     if (changed) {
       await buildAndEmitMerged();
     }
+
+    // Auto-backfill any local recordings (e.g. Device B's 79 Custom/General recordings) missing on the shared server
+    if (!isBackfillingLocalToServer) {
+      isBackfillingLocalToServer = true;
+      void (async () => {
+        try {
+          const deletedSet = readDeletedRecordingIds();
+          const localMap = await getAllLocalCachedRecordings();
+          const missingOnServer: CloudRecording[] = [];
+          for (const [wid, item] of Object.entries(localMap)) {
+            if (deletedSet.has(wid)) continue;
+            if (!item?.audioDataUrl || isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
+              continue;
+            }
+            const serverRec = latestServerGeneral[wid];
+            if (!serverRec || (item.updatedAtMs || 0) > (serverRec.updatedAtMs || 0)) {
+              missingOnServer.push({
+                wordId: item.wordId,
+                word: item.word,
+                banglaMeaning: item.banglaMeaning || '',
+                audioDataUrl: item.audioDataUrl,
+                mimeType: item.mimeType || 'audio/mpeg',
+                fileName: item.fileName || `${item.wordId}.mp3`,
+                fileSize: item.fileSize || 1024,
+                durationMs: item.durationMs || 1200,
+                ownerId: item.ownerId || 'admin_general_audio',
+                ownerName: item.ownerName || 'General App Audio',
+                status: 'published',
+                updatedAtMs: item.updatedAtMs || Date.now(),
+                source: 'cloud',
+                isPersonalOverride: false,
+              });
+            }
+          }
+          if (missingOnServer.length > 0) {
+            await batchPushGeneralRecordingsToSharedServer(missingOnServer);
+          }
+        } catch {
+          // ignore background backfill error
+        } finally {
+          isBackfillingLocalToServer = false;
+        }
+      })();
+    }
   };
 
   void buildAndEmitMerged();
-  void pullServerAndRelayRecordings();
+  void pullServerAndRelayRecordings(true);
 
   const unsubRelay = subscribeToCloudRelay((relaySnap) => {
     for (const delWordId of relaySnap.deletedRecordingIds) {
@@ -765,16 +961,23 @@ export function subscribeToPublishedRecordings(
   const pollId =
     typeof window !== 'undefined'
       ? window.setInterval(() => {
-          void pullServerAndRelayRecordings();
-        }, 15000)
+          void pullServerAndRelayRecordings(false);
+        }, 4000)
       : null;
 
   let bc: BroadcastChannel | null = null;
   const onLocalRecordingsEvent = () => {
     void buildAndEmitMerged();
   };
+  const onFocusOrVisible = () => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      void pullServerAndRelayRecordings(true);
+    }
+  };
   if (typeof window !== 'undefined') {
     window.addEventListener('lw-recordings-local-update', onLocalRecordingsEvent);
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
     try {
       if ('BroadcastChannel' in window) {
         bc = new BroadcastChannel(RECORDINGS_BROADCAST_CHANNEL);
@@ -866,6 +1069,8 @@ export function subscribeToPublishedRecordings(
     }
     if (typeof window !== 'undefined') {
       window.removeEventListener('lw-recordings-local-update', onLocalRecordingsEvent);
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
     }
     if (bc) {
       try {
@@ -1130,12 +1335,18 @@ export async function saveWordRecording(params: {
     ownerName,
   });
 
-  // 1. Save as User's Personal Audio Override in IndexedDB
+  const isAdmin = isAdminUser(user);
+  const shouldPublishGeneral =
+    Boolean(params.publishAsGeneralDirectly) ||
+    isAdmin ||
+    Boolean(params.contributeToAdmin);
+
+  // 1. Save in IndexedDB (if Admin, save as General App Audio so status matches across all devices)
   await saveRecordingToLocalCache({
     ...clean,
     updatedAtMs: Date.now(),
     syncedToCloud: true,
-    isPersonalOverride: true,
+    isPersonalOverride: !isAdmin,
     contributedToAdmin: Boolean(params.contributeToAdmin),
   });
 
@@ -1143,8 +1354,8 @@ export async function saveWordRecording(params: {
   let publishedGeneral = false;
   let contributionError: string | undefined;
 
-  // 2. If user opted to Contribute to App, send to Admin Panel queue
-  if (params.contributeToAdmin) {
+  // 2. If user opted to Contribute to App (and isn't Admin auto-publishing), send to Admin Panel queue
+  if (params.contributeToAdmin && !isAdmin) {
     try {
       await submitAudioContribution({
         wordId: clean.wordId,
@@ -1163,8 +1374,8 @@ export async function saveWordRecording(params: {
     }
   }
 
-  // 3. If Admin chose to publish directly as General Audio
-  if (params.publishAsGeneralDirectly) {
+  // 3. Publish immediately to Shared Server, Cloud SQL & Cloud Relay so all devices receive the audio in <1s
+  if (shouldPublishGeneral) {
     try {
       await publishGeneralCloudRecording({
         wordId: clean.wordId,
@@ -1172,9 +1383,10 @@ export async function saveWordRecording(params: {
         banglaMeaning: clean.banglaMeaning,
         audio: params.audio,
         ownerId: clean.ownerId,
-        ownerName: clean.ownerName,
+        ownerName: isAdmin ? `${clean.ownerName} (Approved)` : clean.ownerName,
       });
       publishedGeneral = true;
+      contributed = true;
     } catch (err) {
       console.warn('Could not publish directly to General Audio:', err);
     }
@@ -1911,15 +2123,48 @@ export async function deleteWordRecording(
  */
 export async function syncLocalRecordingsToCloud(): Promise<number> {
   try {
-    const deletedSet = readDeletedContributionIds();
+    const deletedContribSet = readDeletedContributionIds();
     const localContribs = readLocalContributionsCache().filter(
-      (c) => c && c.status === 'pending' && !deletedSet.has(c.id)
+      (c) => c && c.status === 'pending' && !deletedContribSet.has(c.id)
     );
     let count = 0;
-    for (const c of localContribs.slice(0, 3)) {
+    for (const c of localContribs.slice(0, 10)) {
       await pushContributionToSharedServer(c);
       count++;
     }
+
+    // Also push any local recordings in IndexedDB to Shared Server + Cloud SQL
+    const deletedRecSet = readDeletedRecordingIds();
+    const localMap = await getAllLocalCachedRecordings();
+    const allLocalRecs: CloudRecording[] = [];
+    for (const [wid, item] of Object.entries(localMap)) {
+      if (deletedRecSet.has(wid)) continue;
+      if (!item?.audioDataUrl || isSyntheticRestoredPlaceholder(item.word, item.audioDataUrl)) {
+        continue;
+      }
+      allLocalRecs.push({
+        wordId: item.wordId,
+        word: item.word,
+        banglaMeaning: item.banglaMeaning || '',
+        audioDataUrl: item.audioDataUrl,
+        mimeType: item.mimeType || 'audio/mpeg',
+        fileName: item.fileName || `${item.wordId}.mp3`,
+        fileSize: item.fileSize || 1024,
+        durationMs: item.durationMs || 1200,
+        ownerId: item.ownerId || 'admin_general_audio',
+        ownerName: item.ownerName || 'General App Audio',
+        status: 'published',
+        updatedAtMs: item.updatedAtMs || Date.now(),
+        source: 'cloud',
+        isPersonalOverride: false,
+      });
+    }
+    if (allLocalRecs.length > 0) {
+      const pushedRecs = await batchPushGeneralRecordingsToSharedServer(allLocalRecs);
+      count += pushedRecs;
+    }
+    await fetchSharedServerAudioState(true, true);
+    notifyRecordingsListeners();
     return count;
   } catch {
     return 0;
@@ -2384,16 +2629,26 @@ export async function addOrUpdatePersonalWord(params: {
     });
   }
 
-  // 3. Push to Shared Backend Server so other devices signed into this account receive it immediately
-  try {
-    await fetch('/api/sync/personal-words', {
+  // 3. Push to Shared Backend Server + Canonical Cloud Run + Real-Time SSE Cloud Relay (<200ms)
+  const postPayload = JSON.stringify({ word: record });
+  const pushPromises: Promise<unknown>[] = [
+    fetch('/api/sync/personal-words', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ word: record }),
-    });
-  } catch {
-    // ignore offline
+      body: postPayload,
+    }).catch(() => {}),
+    publishPersonalWordUpsertToRelay(record).catch(() => false),
+  ];
+  if (shouldMirrorToCanonicalCloudRun()) {
+    pushPromises.push(
+      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/personal-words`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: postPayload,
+      }).catch(() => {})
+    );
   }
+  await Promise.all(pushPromises);
 
   // 4. Persist directly to Cloud Firestore scoped to this user's `ownerId` in background
   const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
@@ -2411,7 +2666,7 @@ export async function addOrUpdatePersonalWord(params: {
 }
 
 /**
- * Removes a personal struggling word from the current user's list across local cache, Shared Server, & Cloud Firestore.
+ * Removes a personal struggling word from the current user's list across local cache, Shared Server, Cloud Relay & Cloud Firestore.
  */
 export async function removePersonalWord(wordId: string): Promise<void> {
   const ownerId = getPrivatePersonalOwnerId();
@@ -2428,21 +2683,24 @@ export async function removePersonalWord(wordId: string): Promise<void> {
   );
   writeLocalPersonalWordsCache(ownerId, remaining, true);
 
-  try {
-    await fetch(
-      `/api/sync/personal-words/${encodeURIComponent(ownerId)}/${encodeURIComponent(safeWordId)}`,
-      { method: 'DELETE' }
+  const delPath = `/api/sync/personal-words/${encodeURIComponent(ownerId)}/${encodeURIComponent(safeWordId)}`;
+  const delPromises: Promise<unknown>[] = [
+    fetch(delPath, { method: 'DELETE' }).catch(() => {}),
+    publishPersonalWordDeleteToRelay(ownerId, safeWordId).catch(() => {}),
+  ];
+  if (shouldMirrorToCanonicalCloudRun()) {
+    delPromises.push(
+      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}${delPath}`, { method: 'DELETE' }).catch(() => {})
     );
-  } catch {
-    // ignore
   }
+  await Promise.all(delPromises);
 
   void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId)).catch(() => {});
 }
 
 /**
- * Actively synchronizes the user's personal struggling words between local cache, Shared Server, and Cloud Firestore:
- * - Pulls all words saved on other devices for this user's `ownerId`.
+ * Actively synchronizes the user's personal struggling words between local cache, Cloud Relay SSE, Shared Server, and Cloud Firestore:
+ * - Pulls all words saved on other devices for this user's `ownerId` and `shared_favourites`.
  * - Pushes any locally saved struggling words that haven't been uploaded yet.
  */
 export async function syncPersonalWordsNow(
@@ -2452,41 +2710,73 @@ export async function syncPersonalWordsNow(
   migrateAnonymousDeviceWordsToAccount(ownerId);
 
   const deletedSet = readDeletedPersonalWordIds(ownerId);
+  const relaySnap = getCurrentCloudRelaySnapshot();
+  for (const delId of relaySnap.deletedPersonalWordIds) {
+    deletedSet.add(delId);
+  }
+
   const localList = readLocalPersonalWordsCache(ownerId).filter(
     (w) => !deletedSet.has(w.wordId)
   );
   const mergedByWordId = new Map<string, PersonalWordRecord>();
   const serverWordIds = new Set<string>();
 
-  // Step 1: Pull from Shared Backend Server
-  try {
-    const controller = new AbortController();
-    const timer = window.setTimeout(() => controller.abort(), 3000);
-    const res = await fetch(
-      `/api/sync/personal-words/${encodeURIComponent(ownerId)}?_t=${Date.now()}`,
-      { cache: 'no-store', signal: controller.signal }
-    );
-    window.clearTimeout(timer);
-    const ct = res.headers.get('content-type') || '';
-    if (res.ok && ct.includes('application/json')) {
-      const data = await res.json();
-      const serverWords: PersonalWordRecord[] = Array.isArray(data?.words)
-        ? data.words
-        : [];
-      for (const sw of serverWords) {
-        if (!sw || !sw.wordId || !sw.word) continue;
-        if (deletedSet.has(sw.wordId)) continue;
-        serverWordIds.add(sw.wordId);
-        mergedByWordId.set(sw.wordId, sw);
-      }
+  // Step 1: Merge any real-time SSE Cloud Relay personal words
+  for (const [wid, rw] of relaySnap.personalWords.entries()) {
+    if (!deletedSet.has(wid) && rw?.word) {
+      mergedByWordId.set(wid, {
+        ...rw,
+        id: `${ownerId}_${wid}`,
+        ownerId,
+      });
     }
-  } catch {
-    // ignore offline
   }
 
-  const cloudWordIds = new Set<string>();
+  // Step 2: Pull from Shared Backend Server (+ Canonical Cloud Run if cross-origin)
+  const pullFromBase = async (baseUrl: string) => {
+    try {
+      const controller = new AbortController();
+      const timer = window.setTimeout(() => controller.abort(), 3500);
+      const res = await fetch(
+        `${baseUrl}/api/sync/personal-words/${encodeURIComponent(ownerId)}?_t=${Date.now()}`,
+        { cache: 'no-store', signal: controller.signal }
+      );
+      window.clearTimeout(timer);
+      const ct = res.headers.get('content-type') || '';
+      if (res.ok && ct.includes('application/json')) {
+        const data = await res.json();
+        const serverWords: PersonalWordRecord[] = Array.isArray(data?.words)
+          ? data.words
+          : [];
+        for (const sw of serverWords) {
+          if (!sw || !sw.wordId || !sw.word) continue;
+          if (deletedSet.has(sw.wordId)) continue;
+          serverWordIds.add(sw.wordId);
+          const existing = mergedByWordId.get(sw.wordId);
+          if (!existing || (sw.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+            mergedByWordId.set(sw.wordId, {
+              ...sw,
+              id: `${ownerId}_${sw.wordId}`,
+              ownerId,
+            });
+          }
+        }
+      }
+    } catch {
+      // ignore offline
+    }
+  };
 
-  // Step 2: Merge local words and push any missing words to Shared Server & Firestore
+  if (shouldMirrorToCanonicalCloudRun()) {
+    await Promise.all([
+      pullFromBase(''),
+      pullFromBase(CANONICAL_CLOUD_RUN_ORIGIN),
+    ]);
+  } else {
+    await pullFromBase('');
+  }
+
+  // Step 3: Merge local words and push any missing words to Shared Server & Cloud Relay
   const toPushToServer: PersonalWordRecord[] = [];
   for (const loc of localList) {
     if (!deletedSet.has(loc.wordId)) {
@@ -2506,17 +2796,6 @@ export async function syncPersonalWordsNow(
       if (!serverWordIds.has(safeWordId)) {
         toPushToServer.push(updatedLoc);
       }
-      if (!cloudWordIds.has(safeWordId)) {
-        void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
-          wordId: safeWordId,
-          word: loc.word.trim().slice(0, 120),
-          bangla: (loc.bangla || '').trim().slice(0, 200),
-          example: (loc.example || '').trim().slice(0, 300),
-          ownerId,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }).catch(() => {});
-      }
     }
   }
 
@@ -2527,15 +2806,24 @@ export async function syncPersonalWordsNow(
   }
 
   if (toPushToServer.length > 0) {
-    try {
-      await fetch('/api/sync/personal-words', {
+    const bodyStr = JSON.stringify({ words: toPushToServer });
+    const pushReqs: Promise<unknown>[] = [
+      fetch('/api/sync/personal-words', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ words: toPushToServer }),
-      });
-    } catch {
-      // ignore
+        body: bodyStr,
+      }).catch(() => {}),
+    ];
+    if (shouldMirrorToCanonicalCloudRun()) {
+      pushReqs.push(
+        fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/personal-words`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: bodyStr,
+        }).catch(() => {})
+      );
     }
+    await Promise.all(pushReqs);
   }
 
   const finalWords = Array.from(mergedByWordId.values()).sort(
@@ -2546,8 +2834,8 @@ export async function syncPersonalWordsNow(
 }
 
 /**
- * Subscribes to the current user's private struggling words (`/personalWords` where `ownerId == currentOwnerId`)
- * and synchronizes across all devices logged into the same account.
+ * Subscribes to the current user's Favourite Words (`/personalWords`)
+ * and synchronizes in real time (<1s) across all devices via SSE Cloud Relay + Shared Server polling.
  */
 export function subscribeToPersonalWords(
   userId: string | undefined | null,
@@ -2567,10 +2855,69 @@ export function subscribeToPersonalWords(
   // Immediately emit local cached personal words so UI is instant
   emitLocal();
 
-  // Trigger an initial two-way sync to push any local unsynced words to Cloud Firestore
-  void syncPersonalWordsNow(userId).then((synced) => {
-    onUpdate(synced);
+  const runCloudSync = () => {
+    void syncPersonalWordsNow(userId).then((synced) => {
+      onUpdate(synced);
+    });
+  };
+
+  // Initial two-way sync
+  runCloudSync();
+
+  // Real-time SSE Cloud Relay subscription (<200ms cross-device favourite words sync)
+  const unsubRelay = subscribeToCloudRelay((relaySnap) => {
+    const deletedSet = readDeletedPersonalWordIds(ownerId);
+    let changed = false;
+    for (const delId of relaySnap.deletedPersonalWordIds) {
+      if (!deletedSet.has(delId)) {
+        deletedSet.add(delId);
+        changed = true;
+      }
+    }
+    if (changed) {
+      writeDeletedPersonalWordIds(ownerId, deletedSet);
+    }
+
+    const currentList = readLocalPersonalWordsCache(ownerId).filter(
+      (w) => !deletedSet.has(w.wordId)
+    );
+    const byId = new Map<string, PersonalWordRecord>(
+      currentList.map((w) => [w.wordId, w])
+    );
+
+    for (const [wid, rw] of relaySnap.personalWords.entries()) {
+      if (deletedSet.has(wid) || !rw?.word) continue;
+      const ex = byId.get(wid);
+      if (!ex || (rw.updatedAtMs || 0) > (ex.updatedAtMs || 0)) {
+        byId.set(wid, {
+          ...rw,
+          id: `${ownerId}_${wid}`,
+          ownerId,
+        });
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      const updated = Array.from(byId.values()).sort(
+        (a, b) => b.updatedAtMs - a.updatedAtMs
+      );
+      writeLocalPersonalWordsCache(ownerId, updated, false);
+      onUpdate(updated);
+    }
   });
+
+  // Fast 4-second periodic sync + focus/visibility triggers
+  const pollId =
+    typeof window !== 'undefined'
+      ? window.setInterval(runCloudSync, 4000)
+      : null;
+
+  const onFocusOrVisible = () => {
+    if (typeof document === 'undefined' || document.visibilityState === 'visible') {
+      runCloudSync();
+    }
+  };
 
   const q = query(
     collection(db, PERSONAL_WORDS_PATH),
@@ -2612,7 +2959,6 @@ export function subscribeToPersonalWords(
               mergedByWordId.set(item.wordId, item);
             });
 
-            // Preserve & auto-upload any locally added personal words not yet in Cloud Firestore
             for (const loc of localList) {
               if (!cloudWordIds.has(loc.wordId) && !deletedSet.has(loc.wordId)) {
                 const safeWordId =
@@ -2627,15 +2973,6 @@ export function subscribeToPersonalWords(
                   wordId: safeWordId,
                   ownerId,
                 });
-                void setDoc(doc(db, PERSONAL_WORDS_PATH, docId), {
-                  wordId: safeWordId,
-                  word: loc.word.trim().slice(0, 120),
-                  bangla: (loc.bangla || '').trim().slice(0, 200),
-                  example: (loc.example || '').trim().slice(0, 300),
-                  ownerId,
-                  createdAt: serverTimestamp(),
-                  updatedAt: serverTimestamp(),
-                }).catch(() => {});
               }
             }
 
@@ -2647,10 +2984,6 @@ export function subscribeToPersonalWords(
           },
           (error) => {
             markFirestoreQuotaExhausted(error);
-            console.warn(
-              'Personal words operating from local private cache:',
-              error
-            );
             emitLocal();
           }
         )
@@ -2667,6 +3000,8 @@ export function subscribeToPersonalWords(
   if (typeof window !== 'undefined') {
     window.addEventListener('storage', onStorageChange);
     window.addEventListener('lw-personal-words-local-update', onLocalCustomUpdate);
+    window.addEventListener('focus', onFocusOrVisible);
+    document.addEventListener('visibilitychange', onFocusOrVisible);
     try {
       if ('BroadcastChannel' in window) {
         bc = new BroadcastChannel(PERSONAL_WORDS_BROADCAST_CHANNEL);
@@ -2679,12 +3014,18 @@ export function subscribeToPersonalWords(
 
   return () => {
     unsubSnapshot();
+    unsubRelay();
+    if (pollId !== null && typeof window !== 'undefined') {
+      window.clearInterval(pollId);
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('storage', onStorageChange);
       window.removeEventListener(
         'lw-personal-words-local-update',
         onLocalCustomUpdate
       );
+      window.removeEventListener('focus', onFocusOrVisible);
+      document.removeEventListener('visibilitychange', onFocusOrVisible);
     }
     if (bc) {
       try {

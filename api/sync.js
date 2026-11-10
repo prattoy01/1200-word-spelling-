@@ -104,9 +104,77 @@ export default async function handler(req, res) {
   const param2 = segments[2] || '';
   const body = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : req.body || {};
 
+  const UPSTREAM_CLOUD_RUN_BASE =
+    'https://ais-pre-vfja3juliugi6tlzdyn4s4-286639760996.asia-southeast1.run.app';
+
+  // Mirror mutations to canonical Cloud Run + Cloud SQL backend in parallel
+  if (req.method !== 'GET' && resource !== 'relay') {
+    fetch(`${UPSTREAM_CLOUD_RUN_BASE}${req.url}`, {
+      method: req.method,
+      headers: { 'Content-Type': 'application/json' },
+      body: req.method !== 'DELETE' ? JSON.stringify(body) : undefined,
+    }).catch(() => {});
+  }
+
   // GET /api/sync/state
   if (req.method === 'GET' && resource === 'state') {
     const includeAudio = urlObj.searchParams.get('includeAudio') !== 'false';
+    // Pull latest state from canonical Cloud Run + Cloud SQL backend if available
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 3500);
+      const upRes = await fetch(
+        `${UPSTREAM_CLOUD_RUN_BASE}/api/sync/state?includeAudio=${includeAudio ? 'true' : 'false'}&_t=${Date.now()}`,
+        { cache: 'no-store', signal: controller.signal }
+      );
+      clearTimeout(t);
+      if (upRes.ok) {
+        const upData = await upRes.json();
+        if (upData && upData.ok) {
+          if (upData.recordings && typeof upData.recordings === 'object') {
+            for (const [wid, rec] of Object.entries(upData.recordings)) {
+              const ex = store.recordings[wid];
+              if (!ex || (rec.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+                store.recordings[wid] = {
+                  ...ex,
+                  ...rec,
+                  audioDataUrl: rec.audioDataUrl || ex?.audioDataUrl || '',
+                };
+              }
+            }
+          }
+          if (Array.isArray(upData.contributions)) {
+            for (const c of upData.contributions) {
+              if (!c?.id) continue;
+              const ex = store.contributions[c.id];
+              if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+                store.contributions[c.id] = {
+                  ...ex,
+                  ...c,
+                  audioDataUrl: c.audioDataUrl || ex?.audioDataUrl || '',
+                };
+              }
+            }
+          }
+          if (Array.isArray(upData.contests)) {
+            for (const c of upData.contests) {
+              if (c?.id) store.contests[c.id] = c;
+            }
+          }
+          if (Array.isArray(upData.submissions)) {
+            for (const s of upData.submissions) {
+              if (s?.id) store.submissions[s.id] = s;
+            }
+          }
+          if (upData.wordOverrides && typeof upData.wordOverrides === 'object') {
+            Object.assign(store.wordOverrides, upData.wordOverrides);
+          }
+        }
+      }
+    } catch {
+      // fallback to local store
+    }
+
     const deletedContestSet = new Set(store.deletedContestIds);
     const contestsList = Object.values(store.contests).filter(
       (c) => c && c.id && c.status !== 'cancelled' && !deletedContestSet.has(c.id)
@@ -115,16 +183,14 @@ export default async function handler(req, res) {
       (s) => s && s.id && !deletedContestSet.has(s.contestId)
     );
     const deletedContribSet = new Set(store.deletedContributionIds);
-    const contributionsList = Object.values(store.contributions).filter(
-      (c) => c && c.id && !deletedContribSet.has(c.id)
-    );
+    const contributionsList = Object.values(store.contributions)
+      .filter((c) => c && c.id && !deletedContribSet.has(c.id))
+      .map((c) => (includeAudio ? c : { ...c, audioDataUrl: '' }));
     const deletedRecSet = new Set(store.deletedRecordingIds);
     const recordingsMap = {};
-    if (includeAudio) {
-      for (const [wordId, rec] of Object.entries(store.recordings)) {
-        if (rec && !deletedRecSet.has(wordId)) {
-          recordingsMap[wordId] = rec;
-        }
+    for (const [wordId, rec] of Object.entries(store.recordings)) {
+      if (rec && !deletedRecSet.has(wordId)) {
+        recordingsMap[wordId] = includeAudio ? rec : { ...rec, audioDataUrl: '' };
       }
     }
     const deletedWordOverrideSet = new Set(store.deletedWordOverrideIds);
@@ -421,8 +487,31 @@ export default async function handler(req, res) {
 
   // GET /api/sync/personal-words/:ownerId
   if (req.method === 'GET' && resource === 'personal-words' && param1) {
-    const bucket = store.personalWords[param1] || {};
-    res.status(200).json({ ok: true, words: Object.values(bucket) });
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 2500);
+      const upRes = await fetch(
+        `${UPSTREAM_CLOUD_RUN_BASE}/api/sync/personal-words/${encodeURIComponent(param1)}?_t=${Date.now()}`,
+        { cache: 'no-store', signal: controller.signal }
+      );
+      clearTimeout(t);
+      if (upRes.ok) {
+        const upData = await upRes.json();
+        if (Array.isArray(upData?.words)) {
+          if (!store.personalWords[param1]) store.personalWords[param1] = {};
+          for (const w of upData.words) {
+            if (w?.wordId) store.personalWords[param1][w.wordId] = w;
+          }
+        }
+      }
+    } catch {
+      // fallback to local
+    }
+    const mergedBucket = {
+      ...(store.personalWords['shared_favourites'] || {}),
+      ...(store.personalWords[param1] || {}),
+    };
+    res.status(200).json({ ok: true, words: Object.values(mergedBucket) });
     return;
   }
 
@@ -438,19 +527,25 @@ export default async function handler(req, res) {
     let count = 0;
     for (const raw of items) {
       if (!raw || typeof raw.ownerId !== 'string' || typeof raw.wordId !== 'string') continue;
-      if (!store.personalWords[raw.ownerId]) {
-        store.personalWords[raw.ownerId] = {};
+      const targetOwners =
+        raw.ownerId === 'shared_favourites'
+          ? ['shared_favourites']
+          : [raw.ownerId, 'shared_favourites'];
+      for (const targetOwner of targetOwners) {
+        if (!store.personalWords[targetOwner]) {
+          store.personalWords[targetOwner] = {};
+        }
+        store.personalWords[targetOwner][raw.wordId] = {
+          id: `${targetOwner}_${raw.wordId}`,
+          wordId: raw.wordId,
+          word: raw.word || raw.wordId,
+          bangla: raw.bangla || '',
+          example: raw.example || '',
+          ownerId: targetOwner,
+          createdAtMs: Number(raw.createdAtMs) || Date.now(),
+          updatedAtMs: Number(raw.updatedAtMs) || Date.now(),
+        };
       }
-      store.personalWords[raw.ownerId][raw.wordId] = {
-        id: raw.id || `${raw.ownerId}_${raw.wordId}`,
-        wordId: raw.wordId,
-        word: raw.word || raw.wordId,
-        bangla: raw.bangla || '',
-        example: raw.example || '',
-        ownerId: raw.ownerId,
-        createdAtMs: Number(raw.createdAtMs) || Date.now(),
-        updatedAtMs: Number(raw.updatedAtMs) || Date.now(),
-      };
       count++;
     }
     if (count > 0) saveStore(store);
@@ -460,10 +555,12 @@ export default async function handler(req, res) {
 
   // DELETE /api/sync/personal-words/:ownerId/:wordId
   if (req.method === 'DELETE' && resource === 'personal-words' && param1 && param2) {
-    if (store.personalWords[param1]) {
-      delete store.personalWords[param1][param2];
-      saveStore(store);
+    for (const bucketKey of Object.keys(store.personalWords)) {
+      if (bucketKey === param1 || bucketKey === 'shared_favourites') {
+        delete store.personalWords[bucketKey]?.[param2];
+      }
     }
+    saveStore(store);
     res.status(200).json({ ok: true });
     return;
   }

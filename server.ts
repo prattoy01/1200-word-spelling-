@@ -160,59 +160,79 @@ async function backfillDiskStoreToCloudSqlOnce() {
 
 async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
   const now = Date.now();
-  if (includeAudio && now - lastSqlPullWithAudioAtMs < 8000) return;
-  if (!includeAudio && now - lastSqlPullAtMs < 6000) return;
+  const hasRecordingsInMemory = Object.keys(store.recordings).length > 0;
+  if (includeAudio && hasRecordingsInMemory && now - lastSqlPullWithAudioAtMs < 3500) return;
+  if (!includeAudio && hasRecordingsInMemory && now - lastSqlPullAtMs < 2500) return;
 
   if (inFlightSqlSync) {
     await Promise.race([
       inFlightSqlSync,
-      new Promise<void>((r) => setTimeout(r, 1200)),
+      new Promise<void>((r) => setTimeout(r, 6500)),
     ]);
     return;
   }
 
   inFlightSqlSync = (async () => {
     try {
-      const sqlData = await fetchAllCloudSqlSyncData(includeAudio);
+      let sqlData = await fetchAllCloudSqlSyncData(includeAudio);
       lastSqlPullAtMs = Date.now();
       if (includeAudio) {
         lastSqlPullWithAudioAtMs = Date.now();
+      } else {
+        // Check if any recording or contribution in Cloud SQL is missing its audioDataUrl in memory
+        const missingRecordingAudio = Object.entries(sqlData.recordings).some(
+          ([wid, rec]: [string, any]) =>
+            !store.recordings[wid]?.audioDataUrl ||
+            (rec.updatedAtMs || 0) > (store.recordings[wid]?.updatedAtMs || 0)
+        );
+        const missingContribAudio = sqlData.contributions.some(
+          (ac: any) =>
+            !store.contributions[ac.id]?.audioDataUrl ||
+            (ac.updatedAtMs || 0) > (store.contributions[ac.id]?.updatedAtMs || 0)
+        );
+        if (missingRecordingAudio || missingContribAudio) {
+          sqlData = await fetchAllCloudSqlSyncData(true);
+          lastSqlPullWithAudioAtMs = Date.now();
+        }
       }
 
-    for (const delId of sqlData.deletedContestIds) {
-      delete store.contests[delId];
-      if (!store.deletedContestIds.includes(delId)) {
-        store.deletedContestIds.push(delId);
+      for (const delId of sqlData.deletedContestIds) {
+        delete store.contests[delId];
+        if (!store.deletedContestIds.includes(delId)) {
+          store.deletedContestIds.push(delId);
+        }
       }
-    }
-    for (const c of sqlData.contests) {
-      const ex = store.contests[c.id];
-      if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-        store.contests[c.id] = c;
+      for (const c of sqlData.contests) {
+        const ex = store.contests[c.id];
+        if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+          store.contests[c.id] = c;
+        }
       }
-    }
 
-    for (const s of sqlData.submissions) {
-      const ex = store.submissions[s.id];
-      if (!ex || (s.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-        store.submissions[s.id] = s;
+      for (const s of sqlData.submissions) {
+        const ex = store.submissions[s.id];
+        if (!ex || (s.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+          store.submissions[s.id] = s;
+        }
       }
-    }
 
-    for (const delId of sqlData.deletedContributionIds) {
-      delete store.contributions[delId];
-      if (!store.deletedContributionIds.includes(delId)) {
-        store.deletedContributionIds.push(delId);
+      for (const delId of sqlData.deletedContributionIds) {
+        delete store.contributions[delId];
+        if (!store.deletedContributionIds.includes(delId)) {
+          store.deletedContributionIds.push(delId);
+        }
       }
-    }
-    for (const ac of sqlData.contributions) {
-      const ex = store.contributions[ac.id];
-      if (!ex || (ac.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-        store.contributions[ac.id] = ac;
+      for (const ac of sqlData.contributions) {
+        const ex = store.contributions[ac.id];
+        if (!ex || (ac.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+          store.contributions[ac.id] = {
+            ...ex,
+            ...ac,
+            audioDataUrl: ac.audioDataUrl || ex?.audioDataUrl || '',
+          };
+        }
       }
-    }
 
-    if (includeAudio) {
       for (const delWordId of sqlData.deletedRecordingIds) {
         delete store.recordings[delWordId];
         if (!store.deletedRecordingIds.includes(delWordId)) {
@@ -222,23 +242,26 @@ async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
       for (const [wid, rec] of Object.entries(sqlData.recordings)) {
         const ex = store.recordings[wid];
         if (!ex || (rec.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-          store.recordings[wid] = rec;
+          store.recordings[wid] = {
+            ...ex,
+            ...rec,
+            audioDataUrl: rec.audioDataUrl || ex?.audioDataUrl || '',
+          };
         }
       }
-    }
 
-    for (const delWordId of sqlData.deletedWordOverrideIds) {
-      delete store.wordOverrides[delWordId];
-      if (!store.deletedWordOverrideIds.includes(delWordId)) {
-        store.deletedWordOverrideIds.push(delWordId);
+      for (const delWordId of sqlData.deletedWordOverrideIds) {
+        delete store.wordOverrides[delWordId];
+        if (!store.deletedWordOverrideIds.includes(delWordId)) {
+          store.deletedWordOverrideIds.push(delWordId);
+        }
       }
-    }
-    for (const [wid, ov] of Object.entries(sqlData.wordOverrides)) {
-      const ex = store.wordOverrides[wid];
-      if (!ex || (ov.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-        store.wordOverrides[wid] = ov;
+      for (const [wid, ov] of Object.entries(sqlData.wordOverrides)) {
+        const ex = store.wordOverrides[wid];
+        if (!ex || (ov.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+          store.wordOverrides[wid] = ov;
+        }
       }
-    }
     } catch (error) {
       console.warn('Cloud SQL sync fallback to local disk store:', error);
     } finally {
@@ -248,7 +271,7 @@ async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
 
   await Promise.race([
     inFlightSqlSync,
-    new Promise<void>((r) => setTimeout(r, 1200)),
+    new Promise<void>((r) => setTimeout(r, 6500)),
   ]);
 }
 
@@ -319,16 +342,18 @@ async function startServer() {
       (s: any) => s && s.id && !deletedContestSet.has(s.contestId)
     );
     const deletedContribSet = new Set(store.deletedContributionIds);
-    const contributionsList = Object.values(store.contributions).filter(
-      (c: any) => c && c.id && !deletedContribSet.has(c.id)
-    );
+    const contributionsList = Object.values(store.contributions)
+      .filter((c: any) => c && c.id && !deletedContribSet.has(c.id))
+      .map((c: any) =>
+        includeAudio ? c : { ...c, audioDataUrl: '' }
+      );
     const deletedRecSet = new Set(store.deletedRecordingIds);
     const recordingsMap: Record<string, any> = {};
-    if (includeAudio) {
-      for (const [wordId, rec] of Object.entries(store.recordings)) {
-        if (rec && !deletedRecSet.has(wordId)) {
-          recordingsMap[wordId] = rec;
-        }
+    for (const [wordId, rec] of Object.entries(store.recordings)) {
+      if (rec && !deletedRecSet.has(wordId)) {
+        recordingsMap[wordId] = includeAudio
+          ? rec
+          : { ...rec, audioDataUrl: '' };
       }
     }
 
@@ -775,19 +800,21 @@ async function startServer() {
     const ownerId = req.params.ownerId;
     try {
       const sqlWords = await getPersonalWordsByOwnerFromSql(ownerId);
-      if (!store.personalWords[ownerId]) {
-        store.personalWords[ownerId] = {};
-      }
+      const nextBucket: Record<string, any> = {};
       for (const w of sqlWords) {
-        store.personalWords[ownerId][w.wordId] = w;
+        nextBucket[w.wordId] = w;
       }
+      store.personalWords[ownerId] = nextBucket;
     } catch (error) {
       console.warn('Cloud SQL personal words fetch warning:', error);
     }
-    const bucket = store.personalWords[ownerId] || {};
+    const mergedBucket: Record<string, any> = {
+      ...(store.personalWords['shared_favourites'] || {}),
+      ...(store.personalWords[ownerId] || {}),
+    };
     res.json({
       ok: true,
-      words: Object.values(bucket),
+      words: Object.values(mergedBucket),
     });
   });
 
@@ -810,21 +837,29 @@ async function startServer() {
         typeof raw.wordId !== 'string'
       )
         continue;
-      if (!store.personalWords[raw.ownerId]) {
-        store.personalWords[raw.ownerId] = {};
+      const nowMs = Date.now();
+      const targetOwners =
+        raw.ownerId === 'shared_favourites'
+          ? ['shared_favourites']
+          : [raw.ownerId, 'shared_favourites'];
+
+      for (const targetOwner of targetOwners) {
+        if (!store.personalWords[targetOwner]) {
+          store.personalWords[targetOwner] = {};
+        }
+        const next = {
+          id: `${targetOwner}_${raw.wordId}`,
+          wordId: raw.wordId,
+          word: raw.word || raw.wordId,
+          bangla: raw.bangla || '',
+          example: raw.example || '',
+          ownerId: targetOwner,
+          createdAtMs: Number(raw.createdAtMs) || nowMs,
+          updatedAtMs: Number(raw.updatedAtMs) || nowMs,
+        };
+        store.personalWords[targetOwner][raw.wordId] = next;
+        toSql.push(next);
       }
-      const next = {
-        id: raw.id || `${raw.ownerId}_${raw.wordId}`,
-        wordId: raw.wordId,
-        word: raw.word || raw.wordId,
-        bangla: raw.bangla || '',
-        example: raw.example || '',
-        ownerId: raw.ownerId,
-        createdAtMs: Number(raw.createdAtMs) || Date.now(),
-        updatedAtMs: Number(raw.updatedAtMs) || Date.now(),
-      };
-      store.personalWords[raw.ownerId][raw.wordId] = next;
-      toSql.push(next);
       count++;
     }
 
@@ -845,10 +880,12 @@ async function startServer() {
     async (req, res) => {
       const { ownerId, wordId } = req.params;
       if (ownerId && wordId) {
-        if (store.personalWords[ownerId]) {
-          delete store.personalWords[ownerId][wordId];
-          scheduleSaveStore();
+        for (const bucketKey of Object.keys(store.personalWords)) {
+          if (bucketKey === ownerId || bucketKey === 'shared_favourites') {
+            delete store.personalWords[bucketKey]?.[wordId];
+          }
         }
+        scheduleSaveStore();
         try {
           await markPersonalWordDeletedInSql(ownerId, wordId);
         } catch (error) {
@@ -954,6 +991,7 @@ async function startServer() {
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running on http://0.0.0.0:${PORT}`);
     void backfillDiskStoreToCloudSqlOnce();
+    void syncDiskStoreWithCloudSqlOnRequest(true);
   });
 }
 

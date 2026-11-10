@@ -32,6 +32,7 @@ import {
   Edit3,
   Save,
   RotateCcw,
+  RefreshCw,
 } from 'lucide-react';
 import {
   auth,
@@ -276,26 +277,24 @@ export default function App() {
 
   const isAdmin = isAdminUser(user);
 
-  // 1. Track Auth state across Chrome profiles
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
+
+  // 1. Track Auth state across Chrome profiles & auto-sync recordings + favourite words on load
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setAuthReady(true);
-      if (currentUser) {
-        setContributorNameInput(currentUser.displayName || '');
-        try {
-          await syncLocalRecordingsToCloud();
-        } catch (err) {
-          console.error('Auto-sync error:', err);
-        }
-        try {
-          const syncedWords = await syncPersonalWordsNow();
-          setPersonalWords(syncedWords);
-        } catch {
-          // ignore offline/quota fallback
-        }
-      } else {
-        setContributorNameInput('');
+      setContributorNameInput(currentUser?.displayName || '');
+      try {
+        await syncLocalRecordingsToCloud();
+      } catch (err) {
+        console.error('Auto-sync error:', err);
+      }
+      try {
+        const syncedWords = await syncPersonalWordsNow(currentUser?.uid);
+        setPersonalWords(syncedWords);
+      } catch {
+        // ignore offline/quota fallback
       }
       void refreshLocalAndCloudState();
     });
@@ -642,18 +641,19 @@ export default function App() {
     setIsUploading(true);
     setStatusBanner(null);
     try {
-      const { contributedToAdmin, contributionError } = await saveWordRecording({
-        wordId: selectedWord.id,
-        word: selectedWord.word,
-        banglaMeaning: banglaInput.trim() || selectedWord.bangla,
-        audio: processed,
-        contributeToAdmin: contributeOnSave,
-        contributorName:
-          contributorNameInput.trim() ||
-          user?.displayName ||
-          user?.email?.split('@')[0] ||
-          'Community Member',
-      });
+      const { contributedToAdmin, publishedGeneral, contributionError } =
+        await saveWordRecording({
+          wordId: selectedWord.id,
+          word: selectedWord.word,
+          banglaMeaning: banglaInput.trim() || selectedWord.bangla,
+          audio: processed,
+          contributeToAdmin: contributeOnSave,
+          contributorName:
+            contributorNameInput.trim() ||
+            user?.displayName ||
+            user?.email?.split('@')[0] ||
+            'Community Member',
+        });
 
       await refreshLocalAndCloudState();
       setIsUploading(false);
@@ -667,6 +667,8 @@ export default function App() {
         type: contributionError ? 'warning' : 'success',
         text: contributionError
           ? `${multiPrefix} as your Personal Audio, but could not send to Admin Panel (${contributionError}). Click "Send to Admin Panel" below to retry.`
+          : publishedGeneral
+          ? `${multiPrefix} and synced to Cloud for all your devices!`
           : contributedToAdmin
           ? `${multiPrefix} as your Personal Audio AND submitted to the Admin Panel for review!`
           : `${multiPrefix} as your Personal Audio! Your app will always use this audio for you and won't be overwritten by general updates.`,
@@ -1277,14 +1279,47 @@ export default function App() {
                   Upload or record any word for <strong>yourself</strong> (your personal audio will never be overwritten by general updates), and optionally <strong>contribute it to the Admin Panel</strong> to help update the General Audio for other users!
                 </p>
               </div>
-              <button
-                type="button"
-                onClick={() => setIsSyncModalOpen(true)}
-                className="self-start sm:self-center min-h-[40px] px-3 py-2 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0"
-              >
-                <Smartphone className="w-3.5 h-3.5" />
-                <span>Web &harr; Mobile Sync</span>
-              </button>
+              <div className="flex flex-wrap items-center gap-2 self-start sm:self-center shrink-0">
+                <button
+                  type="button"
+                  disabled={isManualSyncing}
+                  onClick={async () => {
+                    setIsManualSyncing(true);
+                    setStatusBanner(null);
+                    try {
+                      const [pushedCount, syncedFavs] = await Promise.all([
+                        syncLocalRecordingsToCloud(),
+                        syncPersonalWordsNow(user?.uid),
+                      ]);
+                      setPersonalWords(syncedFavs);
+                      await refreshLocalAndCloudState();
+                      setStatusBanner({
+                        type: 'success',
+                        text: `Cloud Sync complete! Synced ${pushedCount} local audio recording(s) and ${syncedFavs.length} Favourite word(s) across all devices.`,
+                      });
+                    } catch {
+                      setStatusBanner({
+                        type: 'error',
+                        text: 'Could not complete cloud sync. Please check your internet connection.',
+                      });
+                    } finally {
+                      setIsManualSyncing(false);
+                    }
+                  }}
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#10b981] hover:bg-[#059669] disabled:opacity-60 text-xs font-bold text-[#05130d] flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isManualSyncing ? 'animate-spin' : ''}`} />
+                  <span>{isManualSyncing ? 'Syncing...' : 'Sync Now'}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsSyncModalOpen(true)}
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#12281e] hover:bg-[#19382a] border border-[#234b39] text-xs font-semibold text-[#10b981] flex items-center gap-1.5 transition-colors whitespace-nowrap"
+                >
+                  <Smartphone className="w-3.5 h-3.5" />
+                  <span>Web &harr; Mobile Sync</span>
+                </button>
+              </div>
             </div>
 
             {/* 3-Column KPI Counter Strip: 782 BUNDLED | CUSTOM / GENERAL | MISSING */}
