@@ -487,6 +487,11 @@ export default async function handler(req, res) {
 
   // GET /api/sync/personal-words/:ownerId
   if (req.method === 'GET' && resource === 'personal-words' && param1) {
+    delete store.personalWords['shared_favourites'];
+    if (param1.startsWith('priv_') || param1 === 'shared_favourites') {
+      res.status(200).json({ ok: true, words: [] });
+      return;
+    }
     try {
       const controller = new AbortController();
       const t = setTimeout(() => controller.abort(), 2500);
@@ -500,23 +505,26 @@ export default async function handler(req, res) {
         if (Array.isArray(upData?.words)) {
           if (!store.personalWords[param1]) store.personalWords[param1] = {};
           for (const w of upData.words) {
-            if (w?.wordId) store.personalWords[param1][w.wordId] = w;
+            if (w?.wordId && w?.ownerId === param1) {
+              store.personalWords[param1][w.wordId] = w;
+            }
           }
         }
       }
     } catch {
       // fallback to local
     }
-    const mergedBucket = {
-      ...(store.personalWords['shared_favourites'] || {}),
-      ...(store.personalWords[param1] || {}),
-    };
-    res.status(200).json({ ok: true, words: Object.values(mergedBucket) });
+    const bucket = store.personalWords[param1] || {};
+    res.status(200).json({
+      ok: true,
+      words: Object.values(bucket).filter((w) => w && w.ownerId === param1),
+    });
     return;
   }
 
   // POST /api/sync/personal-words
   if (req.method === 'POST' && resource === 'personal-words') {
+    delete store.personalWords['shared_favourites'];
     const items = Array.isArray(body?.words)
       ? body.words
       : body?.word
@@ -526,26 +534,27 @@ export default async function handler(req, res) {
       : [];
     let count = 0;
     for (const raw of items) {
-      if (!raw || typeof raw.ownerId !== 'string' || typeof raw.wordId !== 'string') continue;
-      const targetOwners =
+      if (
+        !raw ||
+        typeof raw.ownerId !== 'string' ||
+        typeof raw.wordId !== 'string' ||
+        raw.ownerId.startsWith('priv_') ||
         raw.ownerId === 'shared_favourites'
-          ? ['shared_favourites']
-          : [raw.ownerId, 'shared_favourites'];
-      for (const targetOwner of targetOwners) {
-        if (!store.personalWords[targetOwner]) {
-          store.personalWords[targetOwner] = {};
-        }
-        store.personalWords[targetOwner][raw.wordId] = {
-          id: `${targetOwner}_${raw.wordId}`,
-          wordId: raw.wordId,
-          word: raw.word || raw.wordId,
-          bangla: raw.bangla || '',
-          example: raw.example || '',
-          ownerId: targetOwner,
-          createdAtMs: Number(raw.createdAtMs) || Date.now(),
-          updatedAtMs: Number(raw.updatedAtMs) || Date.now(),
-        };
+      )
+        continue;
+      if (!store.personalWords[raw.ownerId]) {
+        store.personalWords[raw.ownerId] = {};
       }
+      store.personalWords[raw.ownerId][raw.wordId] = {
+        id: `${raw.ownerId}_${raw.wordId}`,
+        wordId: raw.wordId,
+        word: raw.word || raw.wordId,
+        bangla: raw.bangla || '',
+        example: raw.example || '',
+        ownerId: raw.ownerId,
+        createdAtMs: Number(raw.createdAtMs) || Date.now(),
+        updatedAtMs: Number(raw.updatedAtMs) || Date.now(),
+      };
       count++;
     }
     if (count > 0) saveStore(store);
@@ -555,11 +564,10 @@ export default async function handler(req, res) {
 
   // DELETE /api/sync/personal-words/:ownerId/:wordId
   if (req.method === 'DELETE' && resource === 'personal-words' && param1 && param2) {
-    for (const bucketKey of Object.keys(store.personalWords)) {
-      if (bucketKey === param1 || bucketKey === 'shared_favourites') {
-        delete store.personalWords[bucketKey]?.[param2];
-      }
+    if (store.personalWords[param1]) {
+      delete store.personalWords[param1][param2];
     }
+    delete store.personalWords['shared_favourites'];
     saveStore(store);
     res.status(200).json({ ok: true });
     return;

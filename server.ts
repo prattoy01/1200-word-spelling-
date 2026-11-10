@@ -143,6 +143,70 @@ async function backfillDiskStoreToCloudSqlOnce() {
   if (hasBackfilledSqlFromDisk) return;
   hasBackfilledSqlFromDisk = true;
   try {
+    // Clean up any legacy shared_favourites or anonymous priv_ buckets in memory
+    for (const k of Object.keys(store.personalWords)) {
+      if (k === 'shared_favourites' || k.startsWith('priv_')) {
+        delete store.personalWords[k];
+      }
+    }
+
+    // Also pull any recordings/contributions/contests/personalWords from live Vercel deployment if missing locally
+    try {
+      const vRes = await fetch(
+        'https://1200-word-spelling.vercel.app/api/sync/state?includeAudio=true',
+        { cache: 'no-store' }
+      );
+      if (vRes.ok) {
+        const vData = await vRes.json();
+        if (vData?.recordings && typeof vData.recordings === 'object') {
+          for (const [wid, rec] of Object.entries(vData.recordings) as [string, any][]) {
+            if (rec?.audioDataUrl && (!store.recordings[wid] || (rec.updatedAtMs || 0) > (store.recordings[wid]?.updatedAtMs || 0))) {
+              store.recordings[wid] = rec;
+            }
+          }
+        }
+        if (Array.isArray(vData?.contributions)) {
+          for (const c of vData.contributions) {
+            if (c?.id && c?.audioDataUrl && !store.contributions[c.id]) {
+              store.contributions[c.id] = c;
+            }
+          }
+        }
+        if (vData?.wordOverrides && typeof vData.wordOverrides === 'object') {
+          Object.assign(store.wordOverrides, vData.wordOverrides);
+        }
+      }
+      const adminUid = 'user_prattoy_photos01_gmail_com';
+      const pRes = await fetch(
+        `https://1200-word-spelling.vercel.app/api/sync/personal-words/${adminUid}`,
+        { cache: 'no-store' }
+      );
+      if (pRes.ok) {
+        const pData = await pRes.json();
+        if (Array.isArray(pData?.words) && pData.words.length > 0) {
+          if (!store.personalWords[adminUid]) store.personalWords[adminUid] = {};
+          const toSqlPw: any[] = [];
+          for (const w of pData.words) {
+            if (w?.wordId && w?.word) {
+              const cleanW = {
+                ...w,
+                id: `${adminUid}_${w.wordId}`,
+                ownerId: adminUid,
+              };
+              store.personalWords[adminUid][w.wordId] = cleanW;
+              toSqlPw.push(cleanW);
+            }
+          }
+          if (toSqlPw.length > 0) {
+            await upsertPersonalWordsToSql(toSqlPw);
+          }
+        }
+      }
+      scheduleSaveStore();
+    } catch {
+      // ignore if offline
+    }
+
     const diskContests = Object.values(store.contests);
     const diskSubs = Object.values(store.submissions);
     const diskContribs = Object.values(store.contributions);
@@ -795,30 +859,34 @@ async function startServer() {
     res.json({ ok: true, deletedWordId: wordId });
   });
 
-  // Get personal struggling words for an account ownerId from Cloud SQL + memory store
+  // Get personal struggling words for a signed-in account ownerId from Cloud SQL + memory store
   app.get('/api/sync/personal-words/:ownerId', async (req, res) => {
     const ownerId = req.params.ownerId;
+    // Never return server personal words for unsigned-in (priv_) or shared buckets
+    if (!ownerId || ownerId.startsWith('priv_') || ownerId === 'shared_favourites') {
+      res.json({ ok: true, words: [] });
+      return;
+    }
     try {
       const sqlWords = await getPersonalWordsByOwnerFromSql(ownerId);
       const nextBucket: Record<string, any> = {};
       for (const w of sqlWords) {
-        nextBucket[w.wordId] = w;
+        if (w.ownerId === ownerId) {
+          nextBucket[w.wordId] = w;
+        }
       }
       store.personalWords[ownerId] = nextBucket;
     } catch (error) {
       console.warn('Cloud SQL personal words fetch warning:', error);
     }
-    const mergedBucket: Record<string, any> = {
-      ...(store.personalWords['shared_favourites'] || {}),
-      ...(store.personalWords[ownerId] || {}),
-    };
+    const bucket = store.personalWords[ownerId] || {};
     res.json({
       ok: true,
-      words: Object.values(mergedBucket),
+      words: Object.values(bucket).filter((w: any) => w && w.ownerId === ownerId),
     });
   });
 
-  // Upsert personal struggling words for an account ownerId in Cloud SQL + memory store
+  // Upsert personal struggling words for a signed-in account ownerId in Cloud SQL + memory store
   app.post('/api/sync/personal-words', async (req, res) => {
     const items = Array.isArray(req.body?.words)
       ? req.body.words
@@ -834,32 +902,27 @@ async function startServer() {
       if (
         !raw ||
         typeof raw.ownerId !== 'string' ||
-        typeof raw.wordId !== 'string'
+        typeof raw.wordId !== 'string' ||
+        raw.ownerId.startsWith('priv_') ||
+        raw.ownerId === 'shared_favourites'
       )
         continue;
       const nowMs = Date.now();
-      const targetOwners =
-        raw.ownerId === 'shared_favourites'
-          ? ['shared_favourites']
-          : [raw.ownerId, 'shared_favourites'];
-
-      for (const targetOwner of targetOwners) {
-        if (!store.personalWords[targetOwner]) {
-          store.personalWords[targetOwner] = {};
-        }
-        const next = {
-          id: `${targetOwner}_${raw.wordId}`,
-          wordId: raw.wordId,
-          word: raw.word || raw.wordId,
-          bangla: raw.bangla || '',
-          example: raw.example || '',
-          ownerId: targetOwner,
-          createdAtMs: Number(raw.createdAtMs) || nowMs,
-          updatedAtMs: Number(raw.updatedAtMs) || nowMs,
-        };
-        store.personalWords[targetOwner][raw.wordId] = next;
-        toSql.push(next);
+      if (!store.personalWords[raw.ownerId]) {
+        store.personalWords[raw.ownerId] = {};
       }
+      const next = {
+        id: `${raw.ownerId}_${raw.wordId}`,
+        wordId: raw.wordId,
+        word: raw.word || raw.wordId,
+        bangla: raw.bangla || '',
+        example: raw.example || '',
+        ownerId: raw.ownerId,
+        createdAtMs: Number(raw.createdAtMs) || nowMs,
+        updatedAtMs: Number(raw.updatedAtMs) || nowMs,
+      };
+      store.personalWords[raw.ownerId][raw.wordId] = next;
+      toSql.push(next);
       count++;
     }
 
@@ -880,11 +943,10 @@ async function startServer() {
     async (req, res) => {
       const { ownerId, wordId } = req.params;
       if (ownerId && wordId) {
-        for (const bucketKey of Object.keys(store.personalWords)) {
-          if (bucketKey === ownerId || bucketKey === 'shared_favourites') {
-            delete store.personalWords[bucketKey]?.[wordId];
-          }
+        if (store.personalWords[ownerId]) {
+          delete store.personalWords[ownerId][wordId];
         }
+        delete store.personalWords['shared_favourites'];
         scheduleSaveStore();
         try {
           await markPersonalWordDeletedInSql(ownerId, wordId);

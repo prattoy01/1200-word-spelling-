@@ -310,17 +310,24 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
                 <h2 className="text-base sm:text-lg font-extrabold text-white truncate">
                   My Favourite Words ({personalWords.length})
                 </h2>
-                <span className="px-2 py-0.5 rounded-md bg-[#fbbf24]/15 border border-[#fbbf24]/30 text-[10px] font-bold text-[#fde68a] flex items-center gap-1 shrink-0">
-                  <Lock className="w-2.5 h-2.5" />
-                  <span>Saved to Account</span>
-                </span>
+                {auth.currentUser ? (
+                  <span className="px-2 py-0.5 rounded-md bg-[#fbbf24]/15 border border-[#fbbf24]/30 text-[10px] font-bold text-[#fde68a] flex items-center gap-1 shrink-0">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Saved to Account</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-md bg-[#132a20] border border-[#224837] text-[10px] font-semibold text-[#8ba89a] flex items-center gap-1 shrink-0">
+                    <Lock className="w-2.5 h-2.5" />
+                    <span>Sign In to Sync Across Devices</span>
+                  </span>
+                )}
               </div>
               <p className="text-xs text-[#8ba89a] mt-0.5 truncate">
                 {auth.currentUser
-                  ? `Synced for ${
+                  ? `Private to ${
                       auth.currentUser.email || auth.currentUser.displayName
                     }`
-                  : 'Mark any word with ★ or add custom words to practice anytime.'}
+                  : 'Not signed in — words starred here stay on this browser until you sign in.'}
               </p>
             </div>
           </div>

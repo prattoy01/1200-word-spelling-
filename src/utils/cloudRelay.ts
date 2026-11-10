@@ -24,6 +24,7 @@ export const CONTEST_RELAY_URL = `https://ntfy.sh/${CONTEST_RELAY_TOPIC}`;
 export const AUDIO_RELAY_URL = CONTEST_RELAY_URL;
 export const CANONICAL_CLOUD_RUN_ORIGIN =
   'https://ais-pre-vfja3juliugi6tlzdyn4s4-286639760996.asia-southeast1.run.app';
+export const VERCEL_PRODUCTION_ORIGIN = 'https://1200-word-spelling.vercel.app';
 const EVENT_PREFIX = 'LW_EVT:';
 const AUDIO_CHUNK_SIZE = 3450;
 
@@ -469,21 +470,34 @@ function applyRelayEvent(evt: CloudRelayEvent): boolean {
     return true;
   }
 
-  if (evt.op === 'PERSONAL_WORD_UPSERT' && evt.word && evt.word.wordId) {
+  if (
+    evt.op === 'PERSONAL_WORD_UPSERT' &&
+    evt.word &&
+    evt.word.wordId &&
+    evt.word.ownerId &&
+    !evt.word.ownerId.startsWith('priv_') &&
+    evt.word.ownerId !== 'shared_favourites'
+  ) {
     const pw = evt.word;
-    relayState.deletedPersonalWordIds.delete(pw.wordId);
-    const existing = relayState.personalWords.get(pw.wordId);
+    const key = `${pw.ownerId}::${pw.wordId}`;
+    relayState.deletedPersonalWordIds.delete(key);
+    const existing = relayState.personalWords.get(key);
     if (!existing || (pw.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
-      relayState.personalWords.set(pw.wordId, pw);
+      relayState.personalWords.set(key, pw);
       return true;
     }
     return false;
   }
 
-  if (evt.op === 'PERSONAL_WORD_DELETE' && typeof evt.wordId === 'string') {
-    const wid = evt.wordId;
-    relayState.personalWords.delete(wid);
-    relayState.deletedPersonalWordIds.add(wid);
+  if (
+    evt.op === 'PERSONAL_WORD_DELETE' &&
+    typeof evt.wordId === 'string' &&
+    typeof evt.ownerId === 'string' &&
+    !evt.ownerId.startsWith('priv_')
+  ) {
+    const key = `${evt.ownerId}::${evt.wordId}`;
+    relayState.personalWords.delete(key);
+    relayState.deletedPersonalWordIds.add(key);
     return true;
   }
 
@@ -814,7 +828,11 @@ export async function publishWordOverrideDeleteToRelay(
 export async function publishPersonalWordUpsertToRelay(
   word: PersonalWordRecord
 ): Promise<boolean> {
-  relayState.deletedPersonalWordIds.delete(word.wordId);
+  if (!word.ownerId || word.ownerId.startsWith('priv_') || word.ownerId === 'shared_favourites') {
+    return false;
+  }
+  const key = `${word.ownerId}::${word.wordId}`;
+  relayState.deletedPersonalWordIds.delete(key);
   return publishCloudRelayEvent({
     op: 'PERSONAL_WORD_UPSERT',
     ts: Date.now(),
@@ -826,6 +844,9 @@ export async function publishPersonalWordDeleteToRelay(
   ownerId: string,
   wordId: string
 ): Promise<void> {
+  if (!ownerId || ownerId.startsWith('priv_') || ownerId === 'shared_favourites') {
+    return;
+  }
   await publishCloudRelayEvent({
     op: 'PERSONAL_WORD_DELETE',
     ts: Date.now(),
@@ -835,10 +856,17 @@ export async function publishPersonalWordDeleteToRelay(
 }
 
 /**
- * Helper to determine if the current browser is NOT already on the canonical Cloud Run origin.
- * When on Vercel (`1200-word-spelling.vercel.app`), `ais-dev`, or Android APK, we mirror sync calls
- * to `CANONICAL_CLOUD_RUN_ORIGIN` so all devices share the exact same Cloud SQL backend.
+ * Returns external sync origins (Cloud Run + Vercel) that differ from the current browser's origin
+ * so all deployments share the exact same audio recordings and account-scoped data.
  */
+export function getMirrorSyncOrigins(): string[] {
+  if (typeof window === 'undefined') return [];
+  const cur = window.location.origin;
+  return [CANONICAL_CLOUD_RUN_ORIGIN, VERCEL_PRODUCTION_ORIGIN].filter(
+    (o) => o !== cur
+  );
+}
+
 export function shouldMirrorToCanonicalCloudRun(): boolean {
   if (typeof window === 'undefined') return false;
   return window.location.origin !== CANONICAL_CLOUD_RUN_ORIGIN;

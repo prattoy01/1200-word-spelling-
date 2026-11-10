@@ -53,6 +53,7 @@ import {
   publishPersonalWordDeleteToRelay,
   CANONICAL_CLOUD_RUN_ORIGIN,
   shouldMirrorToCanonicalCloudRun,
+  getMirrorSyncOrigins,
   pollCloudRelaySnapshot,
   subscribeToCloudRelay,
   getCurrentCloudRelaySnapshot,
@@ -425,68 +426,65 @@ async function fetchSharedServerAudioState(
       };
 
       const fetchState = async (withAudio: boolean) => {
-        if (!shouldMirrorToCanonicalCloudRun()) {
-          return fetchFromBase('', withAudio);
-        }
-        const [localData, canonicalData] = await Promise.all([
-          fetchFromBase('', withAudio),
-          fetchFromBase(CANONICAL_CLOUD_RUN_ORIGIN, withAudio),
-        ]);
-        if (!canonicalData) return localData;
-        if (!localData) return canonicalData;
+        const origins = ['', ...getMirrorSyncOrigins()];
+        const responses = await Promise.all(
+          origins.map((base) => fetchFromBase(base, withAudio))
+        );
+        const valid = responses.filter(Boolean);
+        if (valid.length === 0) return null;
+        if (valid.length === 1) return valid[0];
 
-        // Merge localData and canonicalData so whichever backend has newer recordings/contributions wins
-        const mergedRecs: Record<string, any> = {
-          ...(localData.recordings || {}),
-        };
-        for (const [wid, r] of Object.entries(canonicalData.recordings || {}) as [string, any][]) {
-          const ex = mergedRecs[wid];
-          if (!ex || (r?.updatedAtMs || 0) >= (ex?.updatedAtMs || 0)) {
-            mergedRecs[wid] = {
-              ...ex,
-              ...r,
-              audioDataUrl: r?.audioDataUrl || ex?.audioDataUrl || '',
-            };
-          }
-        }
+        const mergedRecs: Record<string, any> = {};
         const contribById = new Map<string, any>();
-        for (const c of [...(localData.contributions || []), ...(canonicalData.contributions || [])]) {
-          if (!c?.id) continue;
-          const ex = contribById.get(c.id);
-          if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
-            contribById.set(c.id, {
-              ...ex,
-              ...c,
-              audioDataUrl: c.audioDataUrl || ex?.audioDataUrl || '',
-            });
-          }
+        const delContribs = new Set<string>();
+        const delRecs = new Set<string>();
+        const mergedOverrides: Record<string, any> = {};
+        const delOverrides = new Set<string>();
+
+        for (const d of valid) {
+          for (const id of d.deletedContributionIds || []) delContribs.add(id);
+          for (const id of d.deletedRecordingIds || []) delRecs.add(id);
+          for (const id of d.deletedWordOverrideIds || []) delOverrides.add(id);
         }
+
+        for (const d of valid) {
+          for (const [wid, r] of Object.entries(d.recordings || {}) as [string, any][]) {
+            if (delRecs.has(wid)) continue;
+            const ex = mergedRecs[wid];
+            if (!ex || (r?.updatedAtMs || 0) >= (ex?.updatedAtMs || 0)) {
+              mergedRecs[wid] = {
+                ...ex,
+                ...r,
+                audioDataUrl: r?.audioDataUrl || ex?.audioDataUrl || '',
+              };
+            } else if (!ex.audioDataUrl && r?.audioDataUrl) {
+              mergedRecs[wid].audioDataUrl = r.audioDataUrl;
+            }
+          }
+          for (const c of d.contributions || []) {
+            if (!c?.id || delContribs.has(c.id)) continue;
+            const ex = contribById.get(c.id);
+            if (!ex || (c.updatedAtMs || 0) >= (ex.updatedAtMs || 0)) {
+              contribById.set(c.id, {
+                ...ex,
+                ...c,
+                audioDataUrl: c.audioDataUrl || ex?.audioDataUrl || '',
+              });
+            } else if (!ex.audioDataUrl && c?.audioDataUrl) {
+              ex.audioDataUrl = c.audioDataUrl;
+            }
+          }
+          Object.assign(mergedOverrides, d.wordOverrides || {});
+        }
+
         return {
           ok: true,
           contributions: Array.from(contribById.values()),
-          deletedContributionIds: Array.from(
-            new Set([
-              ...(localData.deletedContributionIds || []),
-              ...(canonicalData.deletedContributionIds || []),
-            ])
-          ),
+          deletedContributionIds: Array.from(delContribs),
           recordings: mergedRecs,
-          deletedRecordingIds: Array.from(
-            new Set([
-              ...(localData.deletedRecordingIds || []),
-              ...(canonicalData.deletedRecordingIds || []),
-            ])
-          ),
-          wordOverrides: {
-            ...(localData.wordOverrides || {}),
-            ...(canonicalData.wordOverrides || {}),
-          },
-          deletedWordOverrideIds: Array.from(
-            new Set([
-              ...(localData.deletedWordOverrideIds || []),
-              ...(canonicalData.deletedWordOverrideIds || []),
-            ])
-          ),
+          deletedRecordingIds: Array.from(delRecs),
+          wordOverrides: mergedOverrides,
+          deletedWordOverrideIds: Array.from(delOverrides),
         };
       };
 
@@ -2367,10 +2365,18 @@ export function subscribeToUserPracticeSessions(
 // ============================================================================
 
 const PERSONAL_WORDS_PATH = 'personalWords';
-const DEVICE_PRIVATE_OWNER_KEY = 'lw_private_device_owner_id_v1';
-const LOCAL_PERSONAL_WORDS_PREFIX = 'lw_personal_struggling_words_v1_';
-const LOCAL_DELETED_PERSONAL_WORDS_PREFIX = 'lw_deleted_personal_words_v1_';
-const PERSONAL_WORDS_BROADCAST_CHANNEL = 'lw_personal_words_sync_v1';
+const DEVICE_PRIVATE_OWNER_KEY = 'lw_private_device_owner_id_v2';
+const LOCAL_PERSONAL_WORDS_PREFIX = 'lw_account_favourite_words_v2_';
+const LOCAL_DELETED_PERSONAL_WORDS_PREFIX = 'lw_deleted_personal_words_v2_';
+const PERSONAL_WORDS_BROADCAST_CHANNEL = 'lw_personal_words_sync_v2';
+
+function isSignedInAccountOwnerId(ownerId: string | undefined | null): boolean {
+  if (!ownerId) return false;
+  if (ownerId.startsWith('priv_') || ownerId === 'local_private_user' || ownerId === 'shared_favourites') {
+    return false;
+  }
+  return Boolean(auth.currentUser);
+}
 
 function notifyPersonalWordsListeners(ownerId: string): void {
   if (typeof window === 'undefined') return;
@@ -2629,38 +2635,33 @@ export async function addOrUpdatePersonalWord(params: {
     });
   }
 
-  // 3. Push to Shared Backend Server + Canonical Cloud Run + Real-Time SSE Cloud Relay (<200ms)
-  const postPayload = JSON.stringify({ word: record });
-  const pushPromises: Promise<unknown>[] = [
-    fetch('/api/sync/personal-words', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: postPayload,
-    }).catch(() => {}),
-    publishPersonalWordUpsertToRelay(record).catch(() => false),
-  ];
-  if (shouldMirrorToCanonicalCloudRun()) {
-    pushPromises.push(
-      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/personal-words`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: postPayload,
-      }).catch(() => {})
-    );
-  }
-  await Promise.all(pushPromises);
+  // 3. Only sync to Cloud Server, SSE Relay & Firestore if the user is SIGNED IN!
+  if (isSignedInAccountOwnerId(ownerId)) {
+    const postPayload = JSON.stringify({ word: record });
+    const origins = ['', ...getMirrorSyncOrigins()];
+    const pushPromises: Promise<unknown>[] = [
+      ...origins.map((base) =>
+        fetch(`${base}/api/sync/personal-words`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: postPayload,
+        }).catch(() => {})
+      ),
+      publishPersonalWordUpsertToRelay(record).catch(() => false),
+    ];
+    await Promise.all(pushPromises);
 
-  // 4. Persist directly to Cloud Firestore scoped to this user's `ownerId` in background
-  const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
-  void setDoc(docRef, {
-    wordId: safeWordId,
-    word: cleanWord,
-    bangla: safeBangla,
-    example: safeExample,
-    ownerId,
-    createdAt: serverTimestamp(),
-    updatedAt: serverTimestamp(),
-  }).catch(() => {});
+    const docRef = doc(db, PERSONAL_WORDS_PATH, docId);
+    void setDoc(docRef, {
+      wordId: safeWordId,
+      word: cleanWord,
+      bangla: safeBangla,
+      example: safeExample,
+      ownerId,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    }).catch(() => {});
+  }
 
   return record;
 }
@@ -2683,25 +2684,24 @@ export async function removePersonalWord(wordId: string): Promise<void> {
   );
   writeLocalPersonalWordsCache(ownerId, remaining, true);
 
-  const delPath = `/api/sync/personal-words/${encodeURIComponent(ownerId)}/${encodeURIComponent(safeWordId)}`;
-  const delPromises: Promise<unknown>[] = [
-    fetch(delPath, { method: 'DELETE' }).catch(() => {}),
-    publishPersonalWordDeleteToRelay(ownerId, safeWordId).catch(() => {}),
-  ];
-  if (shouldMirrorToCanonicalCloudRun()) {
-    delPromises.push(
-      fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}${delPath}`, { method: 'DELETE' }).catch(() => {})
-    );
-  }
-  await Promise.all(delPromises);
+  if (isSignedInAccountOwnerId(ownerId)) {
+    const delPath = `/api/sync/personal-words/${encodeURIComponent(ownerId)}/${encodeURIComponent(safeWordId)}`;
+    const origins = ['', ...getMirrorSyncOrigins()];
+    const delPromises: Promise<unknown>[] = [
+      ...origins.map((base) =>
+        fetch(`${base}${delPath}`, { method: 'DELETE' }).catch(() => {})
+      ),
+      publishPersonalWordDeleteToRelay(ownerId, safeWordId).catch(() => {}),
+    ];
+    await Promise.all(delPromises);
 
-  void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId)).catch(() => {});
+    void deleteDoc(doc(db, PERSONAL_WORDS_PATH, docId)).catch(() => {});
+  }
 }
 
 /**
- * Actively synchronizes the user's personal struggling words between local cache, Cloud Relay SSE, Shared Server, and Cloud Firestore:
- * - Pulls all words saved on other devices for this user's `ownerId` and `shared_favourites`.
- * - Pushes any locally saved struggling words that haven't been uploaded yet.
+ * Actively synchronizes the signed-in user's personal struggling words between local cache, Cloud Relay SSE, Shared Server, and Cloud Firestore.
+ * IMPORTANT: If the user is NOT signed in (`!isSignedInAccountOwnerId(ownerId)`), returns ONLY local anonymous words for this browser session (never pulls from cloud!).
  */
 export async function syncPersonalWordsNow(
   explicitUserId?: string | null
@@ -2710,19 +2710,30 @@ export async function syncPersonalWordsNow(
   migrateAnonymousDeviceWordsToAccount(ownerId);
 
   const deletedSet = readDeletedPersonalWordIds(ownerId);
-  const relaySnap = getCurrentCloudRelaySnapshot();
-  for (const delId of relaySnap.deletedPersonalWordIds) {
-    deletedSet.add(delId);
+  const localList = readLocalPersonalWordsCache(ownerId).filter(
+    (w) => !deletedSet.has(w.wordId) && w.ownerId === ownerId
+  );
+
+  // STRICT PRIVACY: If user is NOT signed in, NEVER fetch or push cloud personal words!
+  if (!isSignedInAccountOwnerId(ownerId)) {
+    return localList;
   }
 
-  const localList = readLocalPersonalWordsCache(ownerId).filter(
-    (w) => !deletedSet.has(w.wordId)
-  );
+  const relaySnap = getCurrentCloudRelaySnapshot();
+  for (const delKey of relaySnap.deletedPersonalWordIds) {
+    if (delKey.startsWith(`${ownerId}::`)) {
+      const delWordId = delKey.slice(ownerId.length + 2);
+      if (delWordId) deletedSet.add(delWordId);
+    }
+  }
+
   const mergedByWordId = new Map<string, PersonalWordRecord>();
   const serverWordIds = new Set<string>();
 
-  // Step 1: Merge any real-time SSE Cloud Relay personal words
-  for (const [wid, rw] of relaySnap.personalWords.entries()) {
+  // Step 1: Merge any real-time SSE Cloud Relay personal words strictly belonging to `ownerId`
+  for (const [key, rw] of relaySnap.personalWords.entries()) {
+    if (!key.startsWith(`${ownerId}::`) || rw?.ownerId !== ownerId) continue;
+    const wid = rw.wordId;
     if (!deletedSet.has(wid) && rw?.word) {
       mergedByWordId.set(wid, {
         ...rw,
@@ -2732,7 +2743,7 @@ export async function syncPersonalWordsNow(
     }
   }
 
-  // Step 2: Pull from Shared Backend Server (+ Canonical Cloud Run if cross-origin)
+  // Step 2: Pull from Shared Backend Server (+ Mirror Origins) strictly for `ownerId`
   const pullFromBase = async (baseUrl: string) => {
     try {
       const controller = new AbortController();
@@ -2750,6 +2761,7 @@ export async function syncPersonalWordsNow(
           : [];
         for (const sw of serverWords) {
           if (!sw || !sw.wordId || !sw.word) continue;
+          if (sw.ownerId && sw.ownerId !== ownerId) continue;
           if (deletedSet.has(sw.wordId)) continue;
           serverWordIds.add(sw.wordId);
           const existing = mergedByWordId.get(sw.wordId);
@@ -2767,14 +2779,8 @@ export async function syncPersonalWordsNow(
     }
   };
 
-  if (shouldMirrorToCanonicalCloudRun()) {
-    await Promise.all([
-      pullFromBase(''),
-      pullFromBase(CANONICAL_CLOUD_RUN_ORIGIN),
-    ]);
-  } else {
-    await pullFromBase('');
-  }
+  const origins = ['', ...getMirrorSyncOrigins()];
+  await Promise.all(origins.map((base) => pullFromBase(base)));
 
   // Step 3: Merge local words and push any missing words to Shared Server & Cloud Relay
   const toPushToServer: PersonalWordRecord[] = [];
@@ -2807,23 +2813,15 @@ export async function syncPersonalWordsNow(
 
   if (toPushToServer.length > 0) {
     const bodyStr = JSON.stringify({ words: toPushToServer });
-    const pushReqs: Promise<unknown>[] = [
-      fetch('/api/sync/personal-words', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: bodyStr,
-      }).catch(() => {}),
-    ];
-    if (shouldMirrorToCanonicalCloudRun()) {
-      pushReqs.push(
-        fetch(`${CANONICAL_CLOUD_RUN_ORIGIN}/api/sync/personal-words`, {
+    await Promise.all(
+      origins.map((base) =>
+        fetch(`${base}/api/sync/personal-words`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: bodyStr,
         }).catch(() => {})
-      );
-    }
-    await Promise.all(pushReqs);
+      )
+    );
   }
 
   const finalWords = Array.from(mergedByWordId.values()).sort(
@@ -2835,7 +2833,7 @@ export async function syncPersonalWordsNow(
 
 /**
  * Subscribes to the current user's Favourite Words (`/personalWords`)
- * and synchronizes in real time (<1s) across all devices via SSE Cloud Relay + Shared Server polling.
+ * and synchronizes in real time (<1s) across all devices where the SAME account is signed in.
  */
 export function subscribeToPersonalWords(
   userId: string | undefined | null,
@@ -2847,7 +2845,7 @@ export function subscribeToPersonalWords(
   const emitLocal = () => {
     const deletedSet = readDeletedPersonalWordIds(ownerId);
     const list = readLocalPersonalWordsCache(ownerId).filter(
-      (w) => !deletedSet.has(w.wordId)
+      (w) => !deletedSet.has(w.wordId) && w.ownerId === ownerId
     );
     onUpdate(list);
   };
@@ -2855,23 +2853,67 @@ export function subscribeToPersonalWords(
   // Immediately emit local cached personal words so UI is instant
   emitLocal();
 
+  // If the user is NOT signed in, only listen for local browser changes (never pull other users' cloud words!)
+  if (!isSignedInAccountOwnerId(ownerId)) {
+    let bc: BroadcastChannel | null = null;
+    const onStorageChange = (e: StorageEvent) => {
+      if (!e.key || e.key.startsWith(LOCAL_PERSONAL_WORDS_PREFIX)) {
+        emitLocal();
+      }
+    };
+    const onLocalCustomUpdate = () => emitLocal();
+
+    if (typeof window !== 'undefined') {
+      window.addEventListener('storage', onStorageChange);
+      window.addEventListener('lw-personal-words-local-update', onLocalCustomUpdate);
+      try {
+        if ('BroadcastChannel' in window) {
+          bc = new BroadcastChannel(PERSONAL_WORDS_BROADCAST_CHANNEL);
+          bc.onmessage = () => emitLocal();
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    return () => {
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('storage', onStorageChange);
+        window.removeEventListener(
+          'lw-personal-words-local-update',
+          onLocalCustomUpdate
+        );
+      }
+      if (bc) {
+        try {
+          bc.close();
+        } catch {
+          // ignore
+        }
+      }
+    };
+  }
+
   const runCloudSync = () => {
     void syncPersonalWordsNow(userId).then((synced) => {
       onUpdate(synced);
     });
   };
 
-  // Initial two-way sync
+  // Initial two-way sync for signed-in account
   runCloudSync();
 
-  // Real-time SSE Cloud Relay subscription (<200ms cross-device favourite words sync)
+  // Real-time SSE Cloud Relay subscription (<200ms cross-device favourite words sync, strictly scoped to `ownerId`)
   const unsubRelay = subscribeToCloudRelay((relaySnap) => {
     const deletedSet = readDeletedPersonalWordIds(ownerId);
     let changed = false;
-    for (const delId of relaySnap.deletedPersonalWordIds) {
-      if (!deletedSet.has(delId)) {
-        deletedSet.add(delId);
-        changed = true;
+    for (const delKey of relaySnap.deletedPersonalWordIds) {
+      if (delKey.startsWith(`${ownerId}::`)) {
+        const delId = delKey.slice(ownerId.length + 2);
+        if (delId && !deletedSet.has(delId)) {
+          deletedSet.add(delId);
+          changed = true;
+        }
       }
     }
     if (changed) {
@@ -2879,13 +2921,15 @@ export function subscribeToPersonalWords(
     }
 
     const currentList = readLocalPersonalWordsCache(ownerId).filter(
-      (w) => !deletedSet.has(w.wordId)
+      (w) => !deletedSet.has(w.wordId) && w.ownerId === ownerId
     );
     const byId = new Map<string, PersonalWordRecord>(
       currentList.map((w) => [w.wordId, w])
     );
 
-    for (const [wid, rw] of relaySnap.personalWords.entries()) {
+    for (const [key, rw] of relaySnap.personalWords.entries()) {
+      if (!key.startsWith(`${ownerId}::`) || rw?.ownerId !== ownerId) continue;
+      const wid = rw.wordId;
       if (deletedSet.has(wid) || !rw?.word) continue;
       const ex = byId.get(wid);
       if (!ex || (rw.updatedAtMs || 0) > (ex.updatedAtMs || 0)) {

@@ -1,4 +1,4 @@
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and } from 'drizzle-orm';
 import { db } from './index.ts';
 import {
   contests,
@@ -571,41 +571,29 @@ export async function markWordOverrideDeletedInSql(
 
 export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
   try {
-    const ownerIds =
-      ownerId === 'shared_favourites'
-        ? ['shared_favourites']
-        : [ownerId, 'shared_favourites'];
+    if (!ownerId || ownerId.startsWith('priv_') || ownerId === 'shared_favourites') {
+      return [];
+    }
     const rows = await db
       .select()
       .from(personalWords)
-      .where(inArray(personalWords.ownerId, ownerIds));
+      .where(
+        and(
+          eq(personalWords.ownerId, ownerId),
+          eq(personalWords.status, 'active')
+        )
+      );
 
-    // Sort by updatedAtMs ascending so newer status (active vs deleted) wins per wordId
-    rows.sort((a, b) => Number(a.updatedAtMs || 0) - Number(b.updatedAtMs || 0));
-    const latestByWordId = new Map<string, typeof rows[number]>();
-    for (const r of rows) {
-      const existing = latestByWordId.get(r.wordId);
-      if (!existing || Number(r.updatedAtMs || 0) >= Number(existing.updatedAtMs || 0)) {
-        latestByWordId.set(r.wordId, r);
-      }
-    }
-
-    const activeWords = [];
-    for (const r of latestByWordId.values()) {
-      if (r.status === 'active') {
-        activeWords.push({
-          id: `${ownerId}_${r.wordId}`,
-          wordId: r.wordId,
-          word: r.word,
-          bangla: r.bangla,
-          example: r.example,
-          ownerId,
-          createdAtMs: Number(r.createdAtMs),
-          updatedAtMs: Number(r.updatedAtMs),
-        });
-      }
-    }
-    return activeWords;
+    return rows.map((r) => ({
+      id: r.id,
+      wordId: r.wordId,
+      word: r.word,
+      bangla: r.bangla,
+      example: r.example,
+      ownerId: r.ownerId,
+      createdAtMs: Number(r.createdAtMs),
+      updatedAtMs: Number(r.updatedAtMs),
+    }));
   } catch (error) {
     throw new Error('Failed to fetch personal words from Cloud SQL.', {
       cause: error,
@@ -619,7 +607,9 @@ export async function upsertPersonalWordsToSql(items: any[]): Promise<void> {
       if (
         !raw ||
         typeof raw.ownerId !== 'string' ||
-        typeof raw.wordId !== 'string'
+        typeof raw.wordId !== 'string' ||
+        raw.ownerId.startsWith('priv_') ||
+        raw.ownerId === 'shared_favourites'
       )
         continue;
       const nowMs = Date.now();
@@ -660,16 +650,12 @@ export async function markPersonalWordDeletedInSql(
   wordId: string
 ): Promise<void> {
   try {
-    const ownerIds =
-      ownerId === 'shared_favourites'
-        ? ['shared_favourites']
-        : [ownerId, 'shared_favourites'];
     await db
       .update(personalWords)
       .set({ status: 'deleted', updatedAtMs: Date.now() })
       .where(
         and(
-          inArray(personalWords.ownerId, ownerIds),
+          eq(personalWords.ownerId, ownerId),
           eq(personalWords.wordId, wordId)
         )
       );
