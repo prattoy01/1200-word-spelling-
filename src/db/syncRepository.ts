@@ -1,5 +1,5 @@
 import { eq, and } from 'drizzle-orm';
-import { db } from './index.ts';
+import { db, isTransientPgError } from './index.ts';
 import {
   contests,
   contestSubmissions,
@@ -8,6 +8,18 @@ import {
   wordOverrides,
   personalWords,
 } from './schema.ts';
+
+async function withSqlRetry<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (isTransientPgError(err)) {
+      await new Promise((r) => setTimeout(r, 200));
+      return await fn();
+    }
+    throw err;
+  }
+}
 
 function statusRank(st?: string): number {
   if (st === 'completed') return 3;
@@ -23,7 +35,8 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
       allContribs,
       allRecordings,
       allWordOverrides,
-    ] = await Promise.all([
+    ] = await withSqlRetry(() =>
+      Promise.all([
       db.select().from(contests),
       db.select().from(contestSubmissions),
       includeAudio
@@ -63,7 +76,8 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
             })
             .from(recordings),
       db.select().from(wordOverrides),
-    ]);
+    ])
+    );
 
     const deletedContestIds: string[] = [];
     const activeContests = [];
@@ -574,15 +588,17 @@ export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
     if (!ownerId || ownerId.startsWith('priv_') || ownerId === 'shared_favourites') {
       return [];
     }
-    const rows = await db
-      .select()
-      .from(personalWords)
-      .where(
-        and(
-          eq(personalWords.ownerId, ownerId),
-          eq(personalWords.status, 'active')
+    const rows = await withSqlRetry(() =>
+      db
+        .select()
+        .from(personalWords)
+        .where(
+          and(
+            eq(personalWords.ownerId, ownerId),
+            eq(personalWords.status, 'active')
+          )
         )
-      );
+    );
 
     return rows.map((r) => ({
       id: r.id,
