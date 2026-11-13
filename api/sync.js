@@ -2,6 +2,12 @@ import fs from 'fs';
 import path from 'path';
 
 const TMP_STORE_FILE = path.join('/tmp', 'lw-cloud-sync-store.json');
+const BUNDLED_STORE_FILE = path.join(process.cwd(), '.data', 'cloud-sync-store.json');
+
+const FIRESTORE_PROJECT_ID = 'protean-sandbox-t01dl';
+const FIRESTORE_DB_ID = 'ai-studio-12193dcd-ed1d-43e5-a21f-43c9ec769a10';
+const FIRESTORE_API_KEY = 'AIzaSyD15L73Lg7McExy2hgfmhrwgO54BpZ6RX8';
+const FIRESTORE_REST_BASE = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/${FIRESTORE_DB_ID}/documents`;
 
 function createEmptyStore() {
   return {
@@ -23,45 +29,52 @@ function loadStore() {
   if (globalThis.__lwSharedCloudStore) {
     return globalThis.__lwSharedCloudStore;
   }
-  try {
-    if (fs.existsSync(TMP_STORE_FILE)) {
-      const raw = fs.readFileSync(TMP_STORE_FILE, 'utf8');
-      const parsed = JSON.parse(raw);
-      const loaded = {
-        contests: parsed?.contests && typeof parsed.contests === 'object' ? parsed.contests : {},
-        deletedContestIds: Array.isArray(parsed?.deletedContestIds) ? parsed.deletedContestIds : [],
-        submissions:
-          parsed?.submissions && typeof parsed.submissions === 'object' ? parsed.submissions : {},
-        contributions:
-          parsed?.contributions && typeof parsed.contributions === 'object'
-            ? parsed.contributions
-            : {},
-        deletedContributionIds: Array.isArray(parsed?.deletedContributionIds)
-          ? parsed.deletedContributionIds
-          : [],
-        recordings:
-          parsed?.recordings && typeof parsed.recordings === 'object' ? parsed.recordings : {},
-        deletedRecordingIds: Array.isArray(parsed?.deletedRecordingIds)
-          ? parsed.deletedRecordingIds
-          : [],
-        wordOverrides:
-          parsed?.wordOverrides && typeof parsed.wordOverrides === 'object'
-            ? parsed.wordOverrides
-            : {},
-        deletedWordOverrideIds: Array.isArray(parsed?.deletedWordOverrideIds)
-          ? parsed.deletedWordOverrideIds
-          : [],
-        personalWords:
-          parsed?.personalWords && typeof parsed.personalWords === 'object'
-            ? parsed.personalWords
-            : {},
-        updatedAtMs: Number(parsed?.updatedAtMs) || Date.now(),
-      };
-      globalThis.__lwSharedCloudStore = loaded;
-      return loaded;
+  const candidateFiles = [TMP_STORE_FILE, BUNDLED_STORE_FILE];
+  for (const filePath of candidateFiles) {
+    try {
+      if (fs.existsSync(filePath)) {
+        const raw = fs.readFileSync(filePath, 'utf8');
+        const parsed = JSON.parse(raw);
+        const loaded = {
+          contests: parsed?.contests && typeof parsed.contests === 'object' ? parsed.contests : {},
+          deletedContestIds: Array.isArray(parsed?.deletedContestIds)
+            ? parsed.deletedContestIds
+            : [],
+          submissions:
+            parsed?.submissions && typeof parsed.submissions === 'object' ? parsed.submissions : {},
+          contributions:
+            parsed?.contributions && typeof parsed.contributions === 'object'
+              ? parsed.contributions
+              : {},
+          deletedContributionIds: Array.isArray(parsed?.deletedContributionIds)
+            ? parsed.deletedContributionIds
+            : [],
+          recordings:
+            parsed?.recordings && typeof parsed.recordings === 'object' ? parsed.recordings : {},
+          deletedRecordingIds: Array.isArray(parsed?.deletedRecordingIds)
+            ? parsed.deletedRecordingIds
+            : [],
+          wordOverrides:
+            parsed?.wordOverrides && typeof parsed.wordOverrides === 'object'
+              ? parsed.wordOverrides
+              : {},
+          deletedWordOverrideIds: Array.isArray(parsed?.deletedWordOverrideIds)
+            ? parsed.deletedWordOverrideIds
+            : [],
+          personalWords:
+            parsed?.personalWords && typeof parsed.personalWords === 'object'
+              ? parsed.personalWords
+              : {},
+          updatedAtMs: Number(parsed?.updatedAtMs) || Date.now(),
+        };
+        if (Object.keys(loaded.recordings).length > 0 || Object.keys(loaded.personalWords).length > 0) {
+          globalThis.__lwSharedCloudStore = loaded;
+          return loaded;
+        }
+      }
+    } catch {
+      // ignore
     }
-  } catch {
-    // ignore
   }
   const initial = createEmptyStore();
   globalThis.__lwSharedCloudStore = initial;
@@ -172,7 +185,96 @@ export default async function handler(req, res) {
         }
       }
     } catch {
-      // fallback to local store
+      // fallback to Firestore REST + local store
+    }
+
+    // If store.recordings is empty (e.g. cold Vercel instance), pull from Firestore REST
+    if (Object.keys(store.recordings).length === 0) {
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 3000);
+        const fsRes = await fetch(
+          `${FIRESTORE_REST_BASE}:runQuery?key=${FIRESTORE_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              structuredQuery: {
+                ...(includeAudio
+                  ? {}
+                  : {
+                      select: {
+                        fields: [
+                          { fieldPath: 'wordId' },
+                          { fieldPath: 'word' },
+                          { fieldPath: 'banglaMeaning' },
+                          { fieldPath: 'mimeType' },
+                          { fieldPath: 'fileName' },
+                          { fieldPath: 'fileSize' },
+                          { fieldPath: 'durationMs' },
+                          { fieldPath: 'ownerId' },
+                          { fieldPath: 'ownerName' },
+                          { fieldPath: 'status' },
+                          { fieldPath: 'updatedAt' },
+                        ],
+                      },
+                    }),
+                from: [{ collectionId: 'recordings' }],
+                where: {
+                  fieldFilter: {
+                    field: { fieldPath: 'status' },
+                    op: 'EQUAL',
+                    value: { stringValue: 'published' },
+                  },
+                },
+              },
+            }),
+            signal: controller.signal,
+          }
+        );
+        clearTimeout(t);
+        if (fsRes.ok) {
+          const rows = await fsRes.json();
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const docObj = row?.document;
+              if (!docObj?.fields) continue;
+              const f = docObj.fields;
+              const wid =
+                f.wordId?.stringValue ||
+                String(docObj.name || '').split('/').pop() ||
+                '';
+              if (!wid) continue;
+              const updatedAtMs = f.updatedAt?.timestampValue
+                ? new Date(f.updatedAt.timestampValue).getTime()
+                : Date.now();
+              store.recordings[wid] = {
+                wordId: wid,
+                word: f.word?.stringValue || wid,
+                banglaMeaning: f.banglaMeaning?.stringValue || '',
+                audioDataUrl: f.audioDataUrl?.stringValue || '',
+                mimeType: f.mimeType?.stringValue || 'audio/mpeg',
+                fileName: f.fileName?.stringValue || `${wid}.mp3`,
+                fileSize: Number(
+                  f.fileSize?.integerValue || f.fileSize?.doubleValue || 1024
+                ),
+                durationMs: Number(
+                  f.durationMs?.integerValue ||
+                    f.durationMs?.doubleValue ||
+                    1200
+                ),
+                ownerId: f.ownerId?.stringValue || 'admin_general_audio',
+                ownerName: f.ownerName?.stringValue || 'General App Audio',
+                status: 'published',
+                updatedAtMs,
+              };
+            }
+            saveStore(store);
+          }
+        }
+      } catch {
+        // ignore
+      }
     }
 
     const deletedContestSet = new Set(store.deletedContestIds);
@@ -440,11 +542,73 @@ export default async function handler(req, res) {
       : [];
     const deletedRecSet = new Set(store.deletedRecordingIds);
     const recordingsMap = {};
+    const missingFromStore = [];
     for (const wid of requestedIds) {
       if (!wid || deletedRecSet.has(wid)) continue;
       const rec = store.recordings[wid];
       if (rec && rec.audioDataUrl) {
         recordingsMap[wid] = rec;
+      } else {
+        missingFromStore.push(wid);
+      }
+    }
+    if (missingFromStore.length > 0) {
+      try {
+        const docPrefix = `projects/${FIRESTORE_PROJECT_ID}/databases/${FIRESTORE_DB_ID}/documents/recordings/`;
+        const fsRes = await fetch(
+          `${FIRESTORE_REST_BASE}:batchGet?key=${FIRESTORE_API_KEY}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              documents: missingFromStore.map((id) => `${docPrefix}${id}`),
+            }),
+          }
+        );
+        if (fsRes.ok) {
+          const rows = await fsRes.json();
+          if (Array.isArray(rows)) {
+            for (const row of rows) {
+              const docObj = row?.found;
+              if (!docObj?.fields) continue;
+              const f = docObj.fields;
+              const wid =
+                f.wordId?.stringValue ||
+                String(docObj.name || '').split('/').pop() ||
+                '';
+              const audioDataUrl = f.audioDataUrl?.stringValue || '';
+              if (!wid || !audioDataUrl) continue;
+              const updatedAtMs = f.updatedAt?.timestampValue
+                ? new Date(f.updatedAt.timestampValue).getTime()
+                : Date.now();
+              const rec = {
+                wordId: wid,
+                word: f.word?.stringValue || wid,
+                banglaMeaning: f.banglaMeaning?.stringValue || '',
+                audioDataUrl,
+                mimeType: f.mimeType?.stringValue || 'audio/mpeg',
+                fileName: f.fileName?.stringValue || `${wid}.mp3`,
+                fileSize: Number(
+                  f.fileSize?.integerValue || f.fileSize?.doubleValue || 1024
+                ),
+                durationMs: Number(
+                  f.durationMs?.integerValue ||
+                    f.durationMs?.doubleValue ||
+                    1200
+                ),
+                ownerId: f.ownerId?.stringValue || 'admin_general_audio',
+                ownerName: f.ownerName?.stringValue || 'General App Audio',
+                status: 'published',
+                updatedAtMs,
+              };
+              store.recordings[wid] = rec;
+              recordingsMap[wid] = rec;
+            }
+            saveStore(store);
+          }
+        }
+      } catch {
+        // ignore
       }
     }
     res.status(200).json({ ok: true, recordings: recordingsMap });
@@ -530,7 +694,65 @@ export default async function handler(req, res) {
         }
       }
     } catch {
-      // fallback to local
+      // fallback to Firestore REST + local
+    }
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 2000);
+      const fsRes = await fetch(
+        `${FIRESTORE_REST_BASE}:runQuery?key=${FIRESTORE_API_KEY}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            structuredQuery: {
+              from: [{ collectionId: 'personalWords' }],
+              where: {
+                fieldFilter: {
+                  field: { fieldPath: 'ownerId' },
+                  op: 'EQUAL',
+                  value: { stringValue: param1 },
+                },
+              },
+            },
+          }),
+          signal: controller.signal,
+        }
+      );
+      clearTimeout(t);
+      if (fsRes.ok) {
+        const rows = await fsRes.json();
+        if (Array.isArray(rows)) {
+          if (!store.personalWords[param1]) store.personalWords[param1] = {};
+          for (const row of rows) {
+            const docObj = row?.document;
+            if (!docObj?.fields) continue;
+            const f = docObj.fields;
+            const wid = f.wordId?.stringValue || '';
+            const word = f.word?.stringValue || '';
+            if (!wid || !word) continue;
+            const createdAtMs = f.createdAt?.timestampValue
+              ? new Date(f.createdAt.timestampValue).getTime()
+              : Date.now();
+            const updatedAtMs = f.updatedAt?.timestampValue
+              ? new Date(f.updatedAt.timestampValue).getTime()
+              : createdAtMs;
+            store.personalWords[param1][wid] = {
+              id: `${param1}_${wid}`,
+              wordId: wid,
+              word,
+              bangla: f.bangla?.stringValue || '',
+              example: f.example?.stringValue || '',
+              ownerId: param1,
+              createdAtMs,
+              updatedAtMs,
+            };
+          }
+          saveStore(store);
+        }
+      }
+    } catch {
+      // ignore
     }
     const bucket = store.personalWords[param1] || {};
     res.status(200).json({

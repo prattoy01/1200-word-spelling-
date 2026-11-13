@@ -26,6 +26,7 @@ import {
   isFirestoreQuotaExhausted,
   markFirestoreQuotaExhausted,
 } from '../firebase';
+import firebaseConfig from '../../firebase-applet-config.json';
 import {
   type ProcessedAudio,
   saveRecordingToLocalCache,
@@ -506,6 +507,234 @@ async function ensureSignaturesSeededFromIndexedDb(): Promise<
   return cachedServerAudioState?.recordings || {};
 }
 
+const FIRESTORE_REST_BASE_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents`;
+
+async function fetchFirestoreRecordingsMetaRest(
+  timeoutMs = 3000
+): Promise<Record<string, CloudRecording>> {
+  if (typeof window === 'undefined' || isFirestoreQuotaExhausted()) return {};
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(
+      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${firebaseConfig.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredQuery: {
+            select: {
+              fields: [
+                { fieldPath: 'wordId' },
+                { fieldPath: 'word' },
+                { fieldPath: 'banglaMeaning' },
+                { fieldPath: 'mimeType' },
+                { fieldPath: 'fileName' },
+                { fieldPath: 'fileSize' },
+                { fieldPath: 'durationMs' },
+                { fieldPath: 'ownerId' },
+                { fieldPath: 'ownerName' },
+                { fieldPath: 'status' },
+                { fieldPath: 'updatedAt' },
+              ],
+            },
+            from: [{ collectionId: RECORDINGS_PATH }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'status' },
+                op: 'EQUAL',
+                value: { stringValue: 'published' },
+              },
+            },
+          },
+        }),
+        signal: controller.signal,
+      }
+    );
+    window.clearTimeout(timer);
+    if (!res.ok) return {};
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return {};
+    const out: Record<string, CloudRecording> = {};
+    for (const row of rows) {
+      const docObj = row?.document;
+      if (!docObj?.fields) continue;
+      const f = docObj.fields;
+      const wid =
+        f.wordId?.stringValue || String(docObj.name || '').split('/').pop() || '';
+      if (!wid) continue;
+      const updatedAtMs = f.updatedAt?.timestampValue
+        ? new Date(f.updatedAt.timestampValue).getTime()
+        : Date.now();
+      out[wid] = {
+        wordId: wid,
+        word: f.word?.stringValue || wid,
+        banglaMeaning: f.banglaMeaning?.stringValue || '',
+        audioDataUrl: '',
+        mimeType: f.mimeType?.stringValue || 'audio/mpeg',
+        fileName: f.fileName?.stringValue || `${wid}.mp3`,
+        fileSize: Number(f.fileSize?.integerValue || f.fileSize?.doubleValue || 1024),
+        durationMs: Number(
+          f.durationMs?.integerValue || f.durationMs?.doubleValue || 1200
+        ),
+        ownerId: f.ownerId?.stringValue || 'admin_general_audio',
+        ownerName: f.ownerName?.stringValue || 'General App Audio',
+        status: 'published',
+        updatedAtMs,
+        source: 'cloud',
+        isPersonalOverride: false,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchFirestoreRecordingsBatchRest(
+  wordIds: string[],
+  timeoutMs = 4500
+): Promise<Record<string, CloudRecording>> {
+  if (
+    typeof window === 'undefined' ||
+    wordIds.length === 0 ||
+    isFirestoreQuotaExhausted()
+  ) {
+    return {};
+  }
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const docPrefix = `projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${RECORDINGS_PATH}/`;
+    const res = await fetch(
+      `${FIRESTORE_REST_BASE_URL}:batchGet?key=${firebaseConfig.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documents: wordIds.map((id) => `${docPrefix}${id}`),
+        }),
+        signal: controller.signal,
+      }
+    );
+    window.clearTimeout(timer);
+    if (!res.ok) return {};
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return {};
+    const out: Record<string, CloudRecording> = {};
+    for (const row of rows) {
+      const docObj = row?.found;
+      if (!docObj?.fields) continue;
+      const f = docObj.fields;
+      const wid =
+        f.wordId?.stringValue || String(docObj.name || '').split('/').pop() || '';
+      const word = f.word?.stringValue || wid;
+      const audioDataUrl = f.audioDataUrl?.stringValue || '';
+      if (
+        !wid ||
+        !audioDataUrl ||
+        isSyntheticRestoredPlaceholder(word, audioDataUrl)
+      ) {
+        continue;
+      }
+      const updatedAtMs = f.updatedAt?.timestampValue
+        ? new Date(f.updatedAt.timestampValue).getTime()
+        : Date.now();
+      out[wid] = {
+        wordId: wid,
+        word,
+        banglaMeaning: f.banglaMeaning?.stringValue || '',
+        audioDataUrl,
+        mimeType: f.mimeType?.stringValue || 'audio/mpeg',
+        fileName: f.fileName?.stringValue || `${wid}.mp3`,
+        fileSize: Number(f.fileSize?.integerValue || f.fileSize?.doubleValue || 1024),
+        durationMs: Number(
+          f.durationMs?.integerValue || f.durationMs?.doubleValue || 1200
+        ),
+        ownerId: f.ownerId?.stringValue || 'admin_general_audio',
+        ownerName: f.ownerName?.stringValue || 'General App Audio',
+        status: 'published',
+        updatedAtMs,
+        source: 'cloud',
+        isPersonalOverride: false,
+      };
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function fetchFirestorePersonalWordsRest(
+  ownerId: string,
+  timeoutMs = 2500
+): Promise<PersonalWordRecord[]> {
+  if (
+    typeof window === 'undefined' ||
+    !ownerId ||
+    ownerId.startsWith('priv_') ||
+    isFirestoreQuotaExhausted()
+  ) {
+    return [];
+  }
+  try {
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+    const res = await fetch(
+      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${firebaseConfig.apiKey}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          structuredQuery: {
+            from: [{ collectionId: 'personalWords' }],
+            where: {
+              fieldFilter: {
+                field: { fieldPath: 'ownerId' },
+                op: 'EQUAL',
+                value: { stringValue: ownerId },
+              },
+            },
+          },
+        }),
+        signal: controller.signal,
+      }
+    );
+    window.clearTimeout(timer);
+    if (!res.ok) return [];
+    const rows = await res.json();
+    if (!Array.isArray(rows)) return [];
+    const out: PersonalWordRecord[] = [];
+    for (const row of rows) {
+      const docObj = row?.document;
+      if (!docObj?.fields) continue;
+      const f = docObj.fields;
+      const wid = f.wordId?.stringValue || '';
+      const word = f.word?.stringValue || '';
+      if (!wid || !word) continue;
+      const createdAtMs = f.createdAt?.timestampValue
+        ? new Date(f.createdAt.timestampValue).getTime()
+        : Date.now();
+      const updatedAtMs = f.updatedAt?.timestampValue
+        ? new Date(f.updatedAt.timestampValue).getTime()
+        : createdAtMs;
+      out.push({
+        id: `${ownerId}_${wid}`,
+        wordId: wid,
+        word,
+        bangla: f.bangla?.stringValue || '',
+        example: f.example?.stringValue || '',
+        ownerId,
+        createdAtMs,
+        updatedAtMs,
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 async function fetchSharedServerAudioState(
   includeAudio = true,
   forceRefresh = false
@@ -592,9 +821,13 @@ async function fetchSharedServerAudioState(
         }
       };
 
-      // Step 1: Fetch lightweight metadata (~39 KB) from SAME ORIGIN first (fast <200ms)
+      // Step 1: Fetch lightweight metadata from SAME ORIGIN and Firestore REST in parallel!
       let primaryBase = '';
-      let data = await fetchFromBase('', false, 3500);
+      const [sameOriginData, firestoreMetaMap] = await Promise.all([
+        fetchFromBase('', false, 3500),
+        fetchFirestoreRecordingsMetaRest(3000),
+      ]);
+      let data = sameOriginData;
       if (!data) {
         for (const mBase of getMirrorSyncOrigins()) {
           const mirrorData = await fetchFromBase(mBase, false, 2500);
@@ -604,6 +837,17 @@ async function fetchSharedServerAudioState(
             break;
           }
         }
+      }
+      if (!data && Object.keys(firestoreMetaMap).length > 0) {
+        data = {
+          ok: true,
+          recordings: firestoreMetaMap,
+          deletedRecordingIds: [],
+          contributions: [],
+          deletedContributionIds: [],
+          wordOverrides: {},
+          deletedWordOverrideIds: [],
+        };
       }
       if (!data) {
         const cachedCount = Object.keys(cachedServerAudioState?.recordings || {}).length;
@@ -615,6 +859,13 @@ async function fetchSharedServerAudioState(
         return cachedServerAudioState;
       }
 
+      // Merge Firestore REST metadata into data.recordings so cold serverless instances never hide recordings
+      const combinedMetaRecordings: Record<string, CloudRecording> = {
+        ...firestoreMetaMap,
+        ...((data.recordings || {}) as Record<string, CloudRecording>),
+      };
+      data.recordings = combinedMetaRecordings;
+
       const prevRecordings = cachedServerAudioState?.recordings || {};
       const prevContribMap = new Map(
         (cachedServerAudioState?.contributions || []).map((c) => [c.id, c])
@@ -623,9 +874,9 @@ async function fetchSharedServerAudioState(
       const delRecSet = new Set<string>(
         Array.isArray(data.deletedRecordingIds) ? data.deletedRecordingIds : []
       );
-      const serverRecEntries = Object.entries(
-        (data.recordings || {}) as Record<string, CloudRecording>
-      ).filter(([wid]) => !delRecSet.has(wid));
+      const serverRecEntries = Object.entries(combinedMetaRecordings).filter(
+        ([wid]) => !delRecSet.has(wid)
+      );
 
       // Compute which audio recordings this browser is missing or has an older version of
       const missingWordIds: string[] = [];
@@ -703,49 +954,63 @@ async function fetchSharedServerAudioState(
         }
 
         let loadedSoFar = alreadyCachedCount;
-        let batchSupported = true;
 
-        const batchResults = await Promise.all(
+        const applyFetchedRecordingsMap = (
+          recsMap: Record<string, CloudRecording>
+        ) => {
+          for (const [wid, rec] of Object.entries(recsMap)) {
+            if (rec && rec.audioDataUrl && !delRecSet.has(wid)) {
+              const wasMissing = !mergedRecordings[wid]?.audioDataUrl;
+              mergedRecordings[wid] = {
+                ...rec,
+                status: 'published',
+                source: 'cloud',
+                isPersonalOverride: false,
+              };
+              cachedFullAudioSignatures.add(
+                `r:${wid}:${rec.updatedAtMs || 0}`
+              );
+              if (wasMissing) loadedSoFar++;
+              if (!localMap[wid]?.isPersonalOverride) {
+                void saveRecordingToLocalCache({
+                  wordId: rec.wordId,
+                  word: rec.word,
+                  banglaMeaning: rec.banglaMeaning || '',
+                  audioDataUrl: rec.audioDataUrl,
+                  mimeType: rec.mimeType || 'audio/mpeg',
+                  fileName: rec.fileName || `${rec.wordId}.mp3`,
+                  fileSize: rec.fileSize || 1024,
+                  durationMs: rec.durationMs || 1200,
+                  ownerId: rec.ownerId || 'admin_general_audio',
+                  ownerName: rec.ownerName || 'General App Audio',
+                  updatedAtMs: rec.updatedAtMs || Date.now(),
+                  syncedToCloud: true,
+                  isPersonalOverride: false,
+                });
+              }
+            }
+          }
+        };
+
+        await Promise.all(
           chunks.map(async (chunkIds) => {
             const batchRecs = await fetchBatchRecordings(
               primaryBase,
               chunkIds,
-              5500
+              4500
             );
-            if (!batchRecs) {
-              batchSupported = false;
-              return;
+            if (batchRecs) {
+              applyFetchedRecordingsMap(batchRecs);
             }
-            for (const [wid, rec] of Object.entries(batchRecs)) {
-              if (rec && rec.audioDataUrl) {
-                mergedRecordings[wid] = {
-                  ...rec,
-                  status: 'published',
-                  source: 'cloud',
-                  isPersonalOverride: false,
-                };
-                cachedFullAudioSignatures.add(
-                  `r:${wid}:${rec.updatedAtMs || 0}`
-                );
-                loadedSoFar++;
-                if (!localMap[wid]?.isPersonalOverride) {
-                  void saveRecordingToLocalCache({
-                    wordId: rec.wordId,
-                    word: rec.word,
-                    banglaMeaning: rec.banglaMeaning || '',
-                    audioDataUrl: rec.audioDataUrl,
-                    mimeType: rec.mimeType || 'audio/mpeg',
-                    fileName: rec.fileName || `${rec.wordId}.mp3`,
-                    fileSize: rec.fileSize || 1024,
-                    durationMs: rec.durationMs || 1200,
-                    ownerId: rec.ownerId || 'admin_general_audio',
-                    ownerName: rec.ownerName || 'General App Audio',
-                    updatedAtMs: rec.updatedAtMs || Date.now(),
-                    syncedToCloud: true,
-                    isPersonalOverride: false,
-                  });
-                }
-              }
+            const stillMissingInChunk = chunkIds.filter(
+              (wid) => !mergedRecordings[wid]?.audioDataUrl
+            );
+            if (stillMissingInChunk.length > 0) {
+              const fsBatch = await fetchFirestoreRecordingsBatchRest(
+                stillMissingInChunk,
+                4500
+              );
+              applyFetchedRecordingsMap(fsBatch);
             }
             emitSyncStatus({
               audioTotal: totalAudioCount,
@@ -758,24 +1023,6 @@ async function fetchSharedServerAudioState(
             notifyRecordingsListeners();
           })
         );
-        void batchResults;
-
-        if (!batchSupported) {
-          const fullData = await fetchFromBase(primaryBase, true, 6500);
-          if (fullData?.recordings) {
-            for (const [wid, r] of Object.entries(
-              fullData.recordings as Record<string, CloudRecording>
-            )) {
-              if (!delRecSet.has(wid) && r?.audioDataUrl) {
-                mergedRecordings[wid] = { ...r, status: 'published', source: 'cloud' };
-                cachedFullAudioSignatures.add(`r:${wid}:${r.updatedAtMs || 0}`);
-              }
-            }
-          }
-          if (fullData?.contributions) {
-            data = fullData;
-          }
-        }
       }
 
       // If contributions need audio (e.g. Admin Panel opened on new device), fetch full state quickly
@@ -3123,8 +3370,18 @@ export async function syncPersonalWordsNow(
         return false;
       };
 
-      // Step 2: Pull SAME-ORIGIN first (~17-150ms) — never block on slow mirrors!
-      const primaryOk = await pullFromBase('', 2500);
+      // Step 2: Pull SAME-ORIGIN and Firestore REST in parallel (~89-150ms) — never lose words on cold serverless starts!
+      const [primaryOk, firestoreWords] = await Promise.all([
+        pullFromBase('', 2500),
+        fetchFirestorePersonalWordsRest(ownerId, 2500),
+      ]);
+      for (const fw of firestoreWords) {
+        if (!fw?.wordId || !fw?.word || deletedSet.has(fw.wordId)) continue;
+        const existing = mergedByWordId.get(fw.wordId);
+        if (!existing || (fw.updatedAtMs || 0) >= (existing.updatedAtMs || 0)) {
+          mergedByWordId.set(fw.wordId, fw);
+        }
+      }
       if (!primaryOk) {
         const mirrors = getMirrorSyncOrigins();
         if (mirrors.length > 0) {

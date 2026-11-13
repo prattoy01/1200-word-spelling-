@@ -156,10 +156,12 @@ async function backfillDiskStoreToCloudSqlOnce() {
         'https://1200-word-spelling.vercel.app/api/sync/state?includeAudio=true',
         { cache: 'no-store' }
       );
+      const vRecordingsMap: Record<string, any> = {};
       if (vRes.ok) {
         const vData = await vRes.json();
         if (vData?.recordings && typeof vData.recordings === 'object') {
           for (const [wid, rec] of Object.entries(vData.recordings) as [string, any][]) {
+            vRecordingsMap[wid] = rec;
             if (rec?.audioDataUrl && (!store.recordings[wid] || (rec.updatedAtMs || 0) > (store.recordings[wid]?.updatedAtMs || 0))) {
               store.recordings[wid] = rec;
             }
@@ -176,11 +178,29 @@ async function backfillDiskStoreToCloudSqlOnce() {
           Object.assign(store.wordOverrides, vData.wordOverrides);
         }
       }
+      // Push any local recordings missing on Vercel back to Vercel
+      for (const [wid, rec] of Object.entries(store.recordings) as [string, any][]) {
+        if (rec?.audioDataUrl && !vRecordingsMap[wid]?.audioDataUrl) {
+          fetch('https://1200-word-spelling.vercel.app/api/sync/recordings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              wordId: wid,
+              word: rec.word || wid,
+              audioDataUrl: rec.audioDataUrl,
+              contributorName: rec.contributorName || 'Admin',
+              updatedAtMs: rec.updatedAtMs || Date.now(),
+            }),
+          }).catch(() => {});
+        }
+      }
+
       const adminUid = 'user_prattoy_photos01_gmail_com';
       const pRes = await fetch(
         `https://1200-word-spelling.vercel.app/api/sync/personal-words/${adminUid}`,
         { cache: 'no-store' }
       );
+      const vercelPwIds = new Set<string>();
       if (pRes.ok) {
         const pData = await pRes.json();
         if (Array.isArray(pData?.words) && pData.words.length > 0) {
@@ -188,6 +208,7 @@ async function backfillDiskStoreToCloudSqlOnce() {
           const toSqlPw: any[] = [];
           for (const w of pData.words) {
             if (w?.wordId && w?.word) {
+              vercelPwIds.add(w.wordId);
               const cleanW = {
                 ...w,
                 id: `${adminUid}_${w.wordId}`,
@@ -201,6 +222,15 @@ async function backfillDiskStoreToCloudSqlOnce() {
             await upsertPersonalWordsToSql(toSqlPw);
           }
         }
+      }
+      // Push any local admin personalWords missing on Vercel back to Vercel
+      const localAdminPw = Object.values(store.personalWords[adminUid] || {});
+      if (localAdminPw.length > vercelPwIds.size) {
+        fetch('https://1200-word-spelling.vercel.app/api/sync/personal-words', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ownerId: adminUid, words: localAdminPw }),
+        }).catch(() => {});
       }
       scheduleSaveStore();
     } catch {
