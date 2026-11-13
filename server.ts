@@ -248,7 +248,10 @@ async function backfillDiskStoreToCloudSqlOnce() {
     if (diskRecordings.length > 0) await upsertRecordingsToSql(diskRecordings);
     if (diskOverrides.length > 0) await upsertWordOverridesToSql(diskOverrides);
   } catch (err) {
-    console.warn('Background Cloud SQL backfill skipped:', err);
+    console.warn(
+      'Background Cloud SQL backfill skipped:',
+      err instanceof Error ? err.message : String(err)
+    );
   }
 }
 
@@ -357,7 +360,10 @@ async function syncDiskStoreWithCloudSqlOnRequest(includeAudio: boolean) {
         }
       }
     } catch (error) {
-      console.warn('Cloud SQL sync fallback to local disk store:', error);
+      console.warn(
+        'Cloud SQL sync fallback to local disk store:',
+        error instanceof Error ? error.message : String(error)
+      );
     } finally {
       inFlightSqlSync = null;
     }
@@ -579,7 +585,10 @@ async function startServer() {
       try {
         await upsertContestsToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL contest upsert warning:', error);
+        console.warn(
+          'Cloud SQL contest upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -605,7 +614,10 @@ async function startServer() {
       try {
         await markContestDeletedInSql(contestId);
       } catch (error) {
-        console.warn('Cloud SQL contest delete warning:', error);
+        console.warn(
+          'Cloud SQL contest delete skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, deletedId: contestId });
@@ -672,7 +684,10 @@ async function startServer() {
       try {
         await upsertSubmissionsToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL submission upsert warning:', error);
+        console.warn(
+          'Cloud SQL submission upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -740,7 +755,10 @@ async function startServer() {
       try {
         await upsertContributionsToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL contribution upsert warning:', error);
+        console.warn(
+          'Cloud SQL contribution upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -771,7 +789,10 @@ async function startServer() {
         banglaMeaning: req.body?.banglaMeaning,
       });
     } catch (error) {
-      console.warn('Cloud SQL contribution status update warning:', error);
+      console.warn(
+        'Cloud SQL contribution status update skipped:',
+        error instanceof Error ? error.message : String(error)
+      );
     }
     res.json({ ok: true, item: store.contributions[id] || null });
   });
@@ -788,7 +809,10 @@ async function startServer() {
       try {
         await markContributionDeletedInSql(id);
       } catch (error) {
-        console.warn('Cloud SQL contribution delete warning:', error);
+        console.warn(
+          'Cloud SQL contribution delete skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, deletedId: id });
@@ -841,7 +865,10 @@ async function startServer() {
       try {
         await upsertRecordingsToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL recording upsert warning:', error);
+        console.warn(
+          'Cloud SQL recording upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -882,7 +909,10 @@ async function startServer() {
       try {
         await markRecordingDeletedInSql(wordId);
       } catch (error) {
-        console.warn('Cloud SQL recording delete warning:', error);
+        console.warn(
+          'Cloud SQL recording delete skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, deletedWordId: wordId });
@@ -939,7 +969,10 @@ async function startServer() {
       try {
         await upsertWordOverridesToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL word override upsert warning:', error);
+        console.warn(
+          'Cloud SQL word override upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -965,7 +998,10 @@ async function startServer() {
       try {
         await markWordOverrideDeletedInSql(wordId);
       } catch (error) {
-        console.warn('Cloud SQL word override delete warning:', error);
+        console.warn(
+          'Cloud SQL word override delete skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, deletedWordId: wordId });
@@ -981,15 +1017,22 @@ async function startServer() {
     }
     try {
       const sqlWords = await getPersonalWordsByOwnerFromSql(ownerId);
-      const nextBucket: Record<string, any> = {};
-      for (const w of sqlWords) {
-        if (w.ownerId === ownerId) {
-          nextBucket[w.wordId] = w;
+      if (sqlWords.length > 0) {
+        const nextBucket: Record<string, any> = {
+          ...(store.personalWords[ownerId] || {}),
+        };
+        for (const w of sqlWords) {
+          if (w.ownerId === ownerId) {
+            nextBucket[w.wordId] = w;
+          }
         }
+        store.personalWords[ownerId] = nextBucket;
       }
-      store.personalWords[ownerId] = nextBucket;
     } catch (error) {
-      console.warn('Cloud SQL personal words fetch warning:', error);
+      console.warn(
+        'Cloud SQL personal words fetch skipped:',
+        error instanceof Error ? error.message : String(error)
+      );
     }
     const bucket = store.personalWords[ownerId] || {};
     res.json({
@@ -1043,7 +1086,10 @@ async function startServer() {
       try {
         await upsertPersonalWordsToSql(toSql);
       } catch (error) {
-        console.warn('Cloud SQL personal words upsert warning:', error);
+        console.warn(
+          'Cloud SQL personal words upsert skipped:',
+          error instanceof Error ? error.message : String(error)
+        );
       }
     }
     res.json({ ok: true, count });
@@ -1063,7 +1109,10 @@ async function startServer() {
         try {
           await markPersonalWordDeletedInSql(ownerId, wordId);
         } catch (error) {
-          console.warn('Cloud SQL personal word delete warning:', error);
+          console.warn(
+            'Cloud SQL personal word delete skipped:',
+            error instanceof Error ? error.message : String(error)
+          );
         }
       }
       res.json({ ok: true });

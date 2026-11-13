@@ -1,5 +1,10 @@
 import { eq, and } from 'drizzle-orm';
-import { db, isTransientPgError } from './index.ts';
+import {
+  db,
+  isCloudSqlAvailable,
+  isTransientPgError,
+  markCloudSqlUnavailable,
+} from './index.ts';
 import {
   contests,
   contestSubmissions,
@@ -9,25 +14,30 @@ import {
   personalWords,
 } from './schema.ts';
 
-async function withSqlRetry<T>(fn: () => Promise<T>): Promise<T> {
-  try {
-    return await fn();
-  } catch (err) {
-    if (isTransientPgError(err)) {
-      await new Promise((r) => setTimeout(r, 200));
-      return await fn();
-    }
-    throw err;
-  }
-}
-
 function statusRank(st?: string): number {
   if (st === 'completed') return 3;
   if (st === 'in_progress') return 2;
   return 1;
 }
 
+function createEmptySyncResult() {
+  return {
+    contests: [] as any[],
+    deletedContestIds: [] as string[],
+    submissions: [] as any[],
+    contributions: [] as any[],
+    deletedContributionIds: [] as string[],
+    recordings: {} as Record<string, any>,
+    deletedRecordingIds: [] as string[],
+    wordOverrides: {} as Record<string, any>,
+    deletedWordOverrideIds: [] as string[],
+  };
+}
+
 export async function fetchAllCloudSqlSyncData(includeAudio = true) {
+  if (!isCloudSqlAvailable()) {
+    return createEmptySyncResult();
+  }
   try {
     const [
       allContests,
@@ -35,8 +45,7 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
       allContribs,
       allRecordings,
       allWordOverrides,
-    ] = await withSqlRetry(() =>
-      Promise.all([
+    ] = await Promise.all([
       db.select().from(contests),
       db.select().from(contestSubmissions),
       includeAudio
@@ -76,8 +85,7 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
             })
             .from(recordings),
       db.select().from(wordOverrides),
-    ])
-    );
+    ]);
 
     const deletedContestIds: string[] = [];
     const activeContests = [];
@@ -217,6 +225,10 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
       deletedWordOverrideIds,
     };
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return createEmptySyncResult();
+    }
     throw new Error('Failed to load sync state from Cloud SQL.', {
       cause: error,
     });
@@ -224,6 +236,7 @@ export async function fetchAllCloudSqlSyncData(includeAudio = true) {
 }
 
 export async function upsertContestsToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (!raw || typeof raw.id !== 'string') continue;
@@ -268,6 +281,10 @@ export async function upsertContestsToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert contests in Cloud SQL.', {
       cause: error,
     });
@@ -275,6 +292,7 @@ export async function upsertContestsToSql(items: any[]): Promise<void> {
 }
 
 export async function markContestDeletedInSql(contestId: string): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     const nowMs = Date.now();
     await db
@@ -304,6 +322,10 @@ export async function markContestDeletedInSql(contestId: string): Promise<void> 
         },
       });
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to mark contest deleted in Cloud SQL.', {
       cause: error,
     });
@@ -311,6 +333,7 @@ export async function markContestDeletedInSql(contestId: string): Promise<void> 
 }
 
 export async function upsertSubmissionsToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (!raw || typeof raw.id !== 'string' || typeof raw.contestId !== 'string')
@@ -372,6 +395,10 @@ export async function upsertSubmissionsToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert contest submissions in Cloud SQL.', {
       cause: error,
     });
@@ -379,6 +406,7 @@ export async function upsertSubmissionsToSql(items: any[]): Promise<void> {
 }
 
 export async function upsertContributionsToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (!raw || typeof raw.wordId !== 'string' || !raw.audioDataUrl) continue;
@@ -422,6 +450,10 @@ export async function upsertContributionsToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert audio contributions in Cloud SQL.', {
       cause: error,
     });
@@ -432,6 +464,7 @@ export async function updateContributionStatusInSql(
   id: string,
   updates: { status?: string; word?: string; banglaMeaning?: string }
 ): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     const existingRows = await db
       .select()
@@ -453,6 +486,10 @@ export async function updateContributionStatusInSql(
       })
       .where(eq(audioContributions.id, id));
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to update audio contribution in Cloud SQL.', {
       cause: error,
     });
@@ -460,12 +497,17 @@ export async function updateContributionStatusInSql(
 }
 
 export async function markContributionDeletedInSql(id: string): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     await db
       .update(audioContributions)
       .set({ status: 'deleted', updatedAtMs: Date.now() })
       .where(eq(audioContributions.id, id));
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to delete audio contribution in Cloud SQL.', {
       cause: error,
     });
@@ -473,6 +515,7 @@ export async function markContributionDeletedInSql(id: string): Promise<void> {
 }
 
 export async function upsertRecordingsToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (!raw || typeof raw.wordId !== 'string' || !raw.audioDataUrl) continue;
@@ -511,6 +554,10 @@ export async function upsertRecordingsToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert recordings in Cloud SQL.', {
       cause: error,
     });
@@ -518,12 +565,17 @@ export async function upsertRecordingsToSql(items: any[]): Promise<void> {
 }
 
 export async function markRecordingDeletedInSql(wordId: string): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     await db
       .update(recordings)
       .set({ status: 'deleted', updatedAtMs: Date.now() })
       .where(eq(recordings.wordId, wordId));
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to delete recording in Cloud SQL.', {
       cause: error,
     });
@@ -531,6 +583,7 @@ export async function markRecordingDeletedInSql(wordId: string): Promise<void> {
 }
 
 export async function upsertWordOverridesToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (
@@ -562,6 +615,10 @@ export async function upsertWordOverridesToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert word overrides in Cloud SQL.', {
       cause: error,
     });
@@ -571,12 +628,17 @@ export async function upsertWordOverridesToSql(items: any[]): Promise<void> {
 export async function markWordOverrideDeletedInSql(
   wordId: string
 ): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     await db
       .update(wordOverrides)
       .set({ status: 'deleted', updatedAtMs: Date.now() })
       .where(eq(wordOverrides.wordId, wordId));
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to delete word override in Cloud SQL.', {
       cause: error,
     });
@@ -584,21 +646,20 @@ export async function markWordOverrideDeletedInSql(
 }
 
 export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
+  if (!isCloudSqlAvailable()) return [];
   try {
     if (!ownerId || ownerId.startsWith('priv_') || ownerId === 'shared_favourites') {
       return [];
     }
-    const rows = await withSqlRetry(() =>
-      db
-        .select()
-        .from(personalWords)
-        .where(
-          and(
-            eq(personalWords.ownerId, ownerId),
-            eq(personalWords.status, 'active')
-          )
+    const rows = await db
+      .select()
+      .from(personalWords)
+      .where(
+        and(
+          eq(personalWords.ownerId, ownerId),
+          eq(personalWords.status, 'active')
         )
-    );
+      );
 
     return rows.map((r) => ({
       id: r.id,
@@ -611,6 +672,10 @@ export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
       updatedAtMs: Number(r.updatedAtMs),
     }));
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return [];
+    }
     throw new Error('Failed to fetch personal words from Cloud SQL.', {
       cause: error,
     });
@@ -618,6 +683,7 @@ export async function getPersonalWordsByOwnerFromSql(ownerId: string) {
 }
 
 export async function upsertPersonalWordsToSql(items: any[]): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     for (const raw of items) {
       if (
@@ -655,6 +721,10 @@ export async function upsertPersonalWordsToSql(items: any[]): Promise<void> {
         });
     }
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to upsert personal words in Cloud SQL.', {
       cause: error,
     });
@@ -665,6 +735,7 @@ export async function markPersonalWordDeletedInSql(
   ownerId: string,
   wordId: string
 ): Promise<void> {
+  if (!isCloudSqlAvailable()) return;
   try {
     await db
       .update(personalWords)
@@ -676,6 +747,10 @@ export async function markPersonalWordDeletedInSql(
         )
       );
   } catch (error) {
+    if (isTransientPgError(error)) {
+      markCloudSqlUnavailable(60000);
+      return;
+    }
     throw new Error('Failed to delete personal word in Cloud SQL.', {
       cause: error,
     });
