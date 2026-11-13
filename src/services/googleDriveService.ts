@@ -83,6 +83,16 @@ async function handleDriveApiResponse(res: Response, action: string): Promise<Re
   }
   if (!res.ok) {
     const errText = await res.text().catch(() => '');
+    if (
+      res.status === 403 &&
+      (errText.includes('insufficientPermissions') ||
+        errText.includes('Insufficient Permission'))
+    ) {
+      disconnectAdminGoogleDrive();
+      throw new Error(
+        'Google Drive file permission was not checked in the Google popup. Please click "Connect Admin Google Drive" again and check the box for Google Drive file access.'
+      );
+    }
     throw new Error(
       `Google Drive ${action} failed (${res.status}): ${errText.slice(0, 180) || res.statusText}`
     );

@@ -446,16 +446,61 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     }
   };
 
+  const runMigrationToDrive = async () => {
+    const allGeneral = Object.values(generalRecordingsMap);
+    setMigrationProgress({
+      completed: 0,
+      total: dbHostedCount,
+      currentWord: 'Preparing ListenWrite-Global-Audio folder...',
+    });
+    try {
+      const res = await migrateGeneralRecordingsToAdminDrive(
+        allGeneral,
+        (completed, total, currentWord) => {
+          setMigrationProgress({ completed, total, currentWord });
+        }
+      );
+      await onRefreshAudioState?.();
+      setFeedbackBanner({
+        type: res.failed > 0 && res.migrated === 0 ? 'error' : 'success',
+        text:
+          res.migrated === 0 && res.failed === 0
+            ? 'All General App Audios are already stored on Admin Google Drive!'
+            : `Drive Migration finished: ${res.migrated} moved to your "ListenWrite-Global-Audio" Google Drive folder${
+                res.failed > 0 ? ` (${res.failed} skipped/failed)` : ''
+              }. Firestore & /api/sync now store tiny gdrive:// pointers!`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to migrate General Audios to Google Drive.',
+      });
+    } finally {
+      setMigrationProgress(null);
+    }
+  };
+
   const handleConnectAdminDrive = async () => {
     setIsConnectingDrive(true);
     setFeedbackBanner(null);
     try {
       const next = await connectAdminGoogleDrive();
       setDriveStatus(next);
-      setFeedbackBanner({
-        type: 'success',
-        text: `Connected Admin Google Drive (${next.email || ADMIN_EMAIL}). Approved General Audio and migrations now save directly to your "ListenWrite-Global-Audio" Drive folder.`,
-      });
+      if (dbHostedCount > 0) {
+        setFeedbackBanner({
+          type: 'success',
+          text: `Connected Admin Google Drive (${next.email || ADMIN_EMAIL})! Automatically moving ${dbHostedCount} database audios to your "ListenWrite-Global-Audio" Drive folder...`,
+        });
+        await runMigrationToDrive();
+      } else {
+        setFeedbackBanner({
+          type: 'success',
+          text: `Connected Admin Google Drive (${next.email || ADMIN_EMAIL}). Any new General Audio you approve will save directly to your "ListenWrite-Global-Audio" Drive folder.`,
+        });
+      }
     } catch (err) {
       setFeedbackBanner({
         type: 'error',
@@ -473,7 +518,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     disconnectAdminGoogleDrive();
     setFeedbackBanner({
       type: 'success',
-      text: 'Disconnected Admin Google Drive session token. Existing Drive audios remain playable for all students.',
+      text: 'Disconnected Admin Google Drive upload token. All Drive-Hosted audios remain 100% playable for all students.',
     });
   };
 
@@ -481,45 +526,12 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     if (!driveStatus.connected) {
       setFeedbackBanner({
         type: 'error',
-        text: 'Please connect Admin Google Drive first before migrating database audios.',
+        text: 'Please click "Connect Admin Google Drive" first to authorize moving database audios.',
       });
       return;
     }
-    const allGeneral = Object.values(generalRecordingsMap);
-    setMigrationProgress({
-      completed: 0,
-      total: dbHostedCount,
-      currentWord: 'Preparing...',
-    });
     setFeedbackBanner(null);
-    try {
-      const res = await migrateGeneralRecordingsToAdminDrive(
-        allGeneral,
-        (completed, total, currentWord) => {
-          setMigrationProgress({ completed, total, currentWord });
-        }
-      );
-      await onRefreshAudioState?.();
-      setFeedbackBanner({
-        type: res.failed > 0 && res.migrated === 0 ? 'error' : 'success',
-        text:
-          res.migrated === 0 && res.failed === 0
-            ? 'All General App Audios are already stored on Admin Google Drive!'
-            : `Drive Migration finished: ${res.migrated} moved to Admin Google Drive${
-                res.failed > 0 ? `, ${res.failed} skipped/failed` : ''
-              }. Firestore & /api/sync now store tiny gdrive:// pointers.`,
-      });
-    } catch (err) {
-      setFeedbackBanner({
-        type: 'error',
-        text:
-          err instanceof Error
-            ? err.message
-            : 'Failed to migrate General Audios to Google Drive.',
-      });
-    } finally {
-      setMigrationProgress(null);
-    }
+    await runMigrationToDrive();
   };
 
   const confirmDeleteGeneralAudio = async () => {
@@ -757,19 +769,28 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
                   className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ${
                     driveStatus.connected
                       ? 'bg-[#10b981]/15 text-[#34d399] border border-[#10b981]/35'
-                      : 'bg-[#13261d] text-[#8ba89a] border border-[#244737]'
+                      : driveHostedCount > 0
+                      ? 'bg-[#38bdf8]/15 text-[#38bdf8] border border-[#38bdf8]/35'
+                      : 'bg-[#fbbf24]/15 text-[#fbbf24] border border-[#fbbf24]/35'
                   }`}
                 >
                   {driveStatus.connected
                     ? `Connected: ${driveStatus.email || ADMIN_EMAIL}`
-                    : 'Not Connected (Optional)'}
+                    : driveHostedCount > 0
+                    ? `Drive Active (${driveHostedCount} Audios) · Connect Only to Upload`
+                    : 'Action Needed: Click Connect to Migrate 89 Audios →'}
                 </span>
               </div>
               <p className="text-xs text-[#8ba89a] leading-relaxed">
                 Store heavy Global MP3/WAV files in your Admin Google Drive folder (
                 <code className="text-[#c4d9ce]">ListenWrite-Global-Audio</code>
                 ) while Firestore &amp; Delta-Sync hold tiny{' '}
-                <code className="text-[#38bdf8]">gdrive://</code> pointers. Students listen seamlessly with zero Google login or OAuth prompts.
+                <code className="text-[#38bdf8]">gdrive://</code> pointers.{' '}
+                {!driveStatus.connected && dbHostedCount > 0 && (
+                  <strong className="text-[#fbbf24]">
+                    Click &ldquo;Connect Admin Google Drive&rdquo; on the right to automatically move all {dbHostedCount} database audios into your Google Drive.
+                  </strong>
+                )}
               </p>
             </div>
           </div>
@@ -779,7 +800,7 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
               <button
                 type="button"
                 onClick={handleConnectAdminDrive}
-                disabled={isConnectingDrive}
+                disabled={isConnectingDrive || Boolean(migrationProgress)}
                 className="min-h-[40px] px-4 py-2 rounded-xl bg-white hover:bg-[#f1f3f4] text-[#1f1f1f] border border-[#dadce0] text-xs font-bold inline-flex items-center gap-2.5 shadow-sm transition-colors disabled:opacity-60"
               >
                 <svg

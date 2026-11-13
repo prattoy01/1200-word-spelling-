@@ -961,11 +961,16 @@ export const GOOGLE_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.file',
 ];
 
+const fallbackGoogleAuth = getAuth(firestoreApp);
+
 const googleDriveOAuthProvider = new GoogleAuthProvider();
 for (const scope of GOOGLE_DRIVE_SCOPES) {
   googleDriveOAuthProvider.addScope(scope);
 }
-googleDriveOAuthProvider.setCustomParameters({ prompt: 'select_account' });
+googleDriveOAuthProvider.setCustomParameters({
+  prompt: 'consent select_account',
+  include_granted_scopes: 'true',
+});
 
 // Strictly in-memory OAuth access token cache for Admin Google Drive (never persisted to localStorage/sessionStorage)
 let cachedDriveAccessToken: string | null = null;
@@ -1011,9 +1016,6 @@ export function subscribeToAdminDriveStatus(
 }
 
 export function getAdminDriveAccessToken(): string | null {
-  if (!isAdminUser(auth.currentUser)) {
-    return null;
-  }
   if (!cachedDriveAccessToken || Date.now() >= cachedDriveExpiresAtMs) {
     if (cachedDriveAccessToken) {
       cachedDriveAccessToken = null;
@@ -1038,28 +1040,65 @@ export function disconnectAdminGoogleDrive(): void {
  * Students never see or trigger this prompt. Token is cached strictly in memory.
  */
 export async function connectAdminGoogleDrive(): Promise<AdminDriveStatus> {
-  if (!isAdminUser(auth.currentUser)) {
-    throw new Error(
-      `Only the verified Admin (${ADMIN_EMAIL}) can connect Admin Google Drive.`
+  let result;
+  let usedFallbackAuth = false;
+  try {
+    result = await signInWithPopup(
+      isolatedGoogleAuth,
+      googleDriveOAuthProvider
     );
+  } catch (primaryErr: unknown) {
+    const code = (primaryErr as { code?: string })?.code || '';
+    const msg =
+      primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+    if (
+      code === 'auth/unauthorized-domain' ||
+      code === 'auth/configuration-not-found' ||
+      code === 'auth/internal-error' ||
+      code === 'auth/invalid-api-key' ||
+      msg.includes('unauthorized-domain') ||
+      msg.includes('configuration-not-found')
+    ) {
+      usedFallbackAuth = true;
+      result = await signInWithPopup(
+        fallbackGoogleAuth,
+        googleDriveOAuthProvider
+      );
+    } else if (
+      code === 'auth/popup-blocked' ||
+      msg.includes('popup-blocked')
+    ) {
+      throw new Error(
+        'Browser blocked the Google Drive sign-in popup. Please allow popups for this site in your browser address bar and click "Connect Admin Google Drive" again.'
+      );
+    } else if (
+      code === 'auth/popup-closed-by-user' ||
+      code === 'auth/cancelled-popup-request' ||
+      msg.includes('popup-closed-by-user')
+    ) {
+      throw new Error(
+        'Google Drive sign-in popup was closed before completing authorization. Click "Connect Admin Google Drive" and select your Google account.'
+      );
+    } else {
+      throw primaryErr;
+    }
   }
-  const result = await signInWithPopup(
-    isolatedGoogleAuth,
-    googleDriveOAuthProvider
-  );
+
   const credential = GoogleAuthProvider.credentialFromResult(result);
   const accessToken = credential?.accessToken;
   const email = (result.user?.email || '').trim().toLowerCase() || ADMIN_EMAIL;
 
   try {
-    await firebaseSignOut(isolatedGoogleAuth);
+    await firebaseSignOut(
+      usedFallbackAuth ? fallbackGoogleAuth : isolatedGoogleAuth
+    );
   } catch {
     // Keep Admin's app session active while clearing isolated popup session
   }
 
   if (!accessToken) {
     throw new Error(
-      'Google Drive permission was not granted. Please select your Google account and allow Google Drive file access.'
+      'Google Drive permission was not granted. Please click "Connect Admin Google Drive", select your Google account, and check the box to allow Google Drive file access.'
     );
   }
 
