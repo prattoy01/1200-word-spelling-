@@ -758,6 +758,29 @@ async function startServer() {
     res.json({ ok: true, count });
   });
 
+  // Fetch a specific batch of General App Audio recordings (fast delta sync for new devices)
+  app.post('/api/sync/recordings-batch', async (req, res) => {
+    const requestedIds: string[] = Array.isArray(req.body?.wordIds)
+      ? req.body.wordIds.map(String).slice(0, 60)
+      : [];
+    const deletedRecSet = new Set(store.deletedRecordingIds);
+    const recordingsMap: Record<string, any> = {};
+
+    // Ensure store has audio loaded if empty
+    if (Object.keys(store.recordings).length === 0) {
+      await syncDiskStoreWithCloudSqlOnRequest(true);
+    }
+
+    for (const wid of requestedIds) {
+      if (!wid || deletedRecSet.has(wid)) continue;
+      const rec = store.recordings[wid];
+      if (rec && rec.audioDataUrl) {
+        recordingsMap[wid] = rec;
+      }
+    }
+    res.json({ ok: true, recordings: recordingsMap });
+  });
+
   // Delete a General App Audio recording in Cloud SQL + memory store
   app.delete('/api/sync/recordings/:wordId', async (req, res) => {
     const wordId = req.params.wordId;

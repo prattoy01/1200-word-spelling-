@@ -53,6 +53,7 @@ import {
   type AudioContributionRecord,
   type PracticeSessionRecord,
   type PersonalWordRecord,
+  type SyncProgressState,
   subscribeToPublishedRecordings,
   subscribeToAudioContributions,
   subscribeToGlobalWordOverrides,
@@ -73,6 +74,9 @@ import {
   personalWordToWordItem,
   syncPersonalWordsNow,
   syncAudioContributionsNow,
+  subscribeToSyncStatus,
+  getSyncStatusSnapshot,
+  beginAccountSyncCycle,
 } from './services/recordingsService';
 import {
   type ProcessedAudio,
@@ -278,25 +282,91 @@ export default function App() {
   const isAdmin = isAdminUser(user);
 
   const [isManualSyncing, setIsManualSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<SyncProgressState>(() =>
+    getSyncStatusSnapshot()
+  );
+  const [showSyncBanner, setShowSyncBanner] = useState(false);
+  const syncBannerHideTimerRef = useRef<number | null>(null);
 
-  // 1. Track Auth state across Chrome profiles & auto-sync recordings + favourite words on load
+  useEffect(() => {
+    const unsub = subscribeToSyncStatus((next) => {
+      setSyncStatus(next);
+      if (next.phase === 'syncing') {
+        if (syncBannerHideTimerRef.current) {
+          window.clearTimeout(syncBannerHideTimerRef.current);
+          syncBannerHideTimerRef.current = null;
+        }
+        if (auth.currentUser || next.audioTotal > next.audioLoaded) {
+          setShowSyncBanner(true);
+        }
+      } else if (next.phase === 'synced' && next.lastSyncedAtMs > 0) {
+        if (syncBannerHideTimerRef.current) {
+          window.clearTimeout(syncBannerHideTimerRef.current);
+        }
+        syncBannerHideTimerRef.current = window.setTimeout(() => {
+          setShowSyncBanner(false);
+        }, 5500);
+      }
+    });
+    return () => {
+      unsub();
+      if (syncBannerHideTimerRef.current) {
+        window.clearTimeout(syncBannerHideTimerRef.current);
+      }
+    };
+  }, []);
+
+  const triggerInteractiveAccountSync = useCallback(
+    async (explicitUser?: User | null) => {
+      const targetUser = explicitUser !== undefined ? explicitUser : auth.currentUser;
+      beginAccountSyncCycle(
+        targetUser
+          ? `Syncing ${targetUser.displayName || targetUser.email?.split('@')[0] || 'account'}...`
+          : 'Syncing audio library...'
+      );
+      setShowSyncBanner(true);
+      try {
+        const [syncedWords] = await Promise.all([
+          syncPersonalWordsNow(targetUser?.uid).catch(() => []),
+          syncLocalRecordingsToCloud(false).catch(() => 0),
+          syncAudioContributionsNow().then(setContributions).catch(() => []),
+        ]);
+        if (Array.isArray(syncedWords)) {
+          setPersonalWords(syncedWords);
+        }
+        await refreshLocalAndCloudState();
+      } catch {
+        // ignore offline fallback
+      }
+    },
+    []
+  );
+
+  // 1. Track Auth state across Chrome profiles & run fast parallel sync on login
   useEffect(() => {
     const unsubAuth = onAuthStateChanged(auth, async (currentUser) => {
       setUser(currentUser);
       setAuthReady(true);
       setContributorNameInput(currentUser?.displayName || '');
-      try {
-        await syncLocalRecordingsToCloud();
-      } catch (err) {
-        console.error('Auto-sync error:', err);
+
+      if (currentUser) {
+        beginAccountSyncCycle(
+          `Syncing ${
+            currentUser.displayName || currentUser.email?.split('@')[0] || 'account'
+          }...`
+        );
+        setShowSyncBanner(true);
       }
-      try {
-        const syncedWords = await syncPersonalWordsNow(currentUser?.uid);
-        setPersonalWords(syncedWords);
-      } catch {
-        // ignore offline/quota fallback
-      }
+
+      // Run Favourites & Audio sync IN PARALLEL (never block Favourites behind Audio!)
+      void syncPersonalWordsNow(currentUser?.uid)
+        .then((syncedWords) => {
+          setPersonalWords(syncedWords);
+        })
+        .catch(() => {});
+
       void refreshLocalAndCloudState();
+      void syncLocalRecordingsToCloud(false).catch(() => {});
     });
     return () => unsubAuth();
   }, []);
@@ -1063,12 +1133,28 @@ export default function App() {
             <div className="flex items-center bg-[#11281e] border border-[#1f4735] rounded-xl overflow-hidden">
               <button
                 type="button"
+                onClick={() => void triggerInteractiveAccountSync(user)}
+                disabled={syncStatus.phase === 'syncing'}
+                title={
+                  syncStatus.phase === 'syncing'
+                    ? syncStatus.stepLabel || 'Syncing with cloud...'
+                    : `Synced (${personalWords.length} Favourites, ${counts.uploads} Audios) — Tap to re-sync`
+                }
+                className="min-h-[38px] pl-2.5 pr-1.5 py-1 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1 whitespace-nowrap shrink-0"
+              >
+                {syncStatus.phase === 'syncing' ? (
+                  <RefreshCw className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0 animate-spin text-[#fbbf24]" />
+                ) : (
+                  <CloudCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+                )}
+              </button>
+              <button
+                type="button"
                 onClick={() => setIsSignInModalOpen(true)}
                 title={`Signed in as ${user.email} — Click to switch account`}
-                className="min-h-[38px] pl-2.5 pr-2 py-1 text-xs font-semibold text-[#10b981] hover:bg-[#173528] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+                className="min-h-[38px] pr-2.5 pl-0.5 py-1 text-xs font-semibold text-[#d7ece2] hover:bg-[#173528] transition-colors flex items-center whitespace-nowrap shrink-0"
               >
-                <CloudCheck className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
-                <span className="max-w-[92px] sm:max-w-[160px] truncate">
+                <span className="max-w-[88px] sm:max-w-[160px] truncate">
                   {user.displayName || user.email?.split('@')[0] || 'Account'}
                 </span>
               </button>
@@ -1076,6 +1162,7 @@ export default function App() {
                 type="button"
                 onClick={async () => {
                   await signOutUser();
+                  setShowSyncBanner(false);
                   setStatusBanner({
                     type: 'success',
                     text: 'Signed out. You can now sign in with another account.',
@@ -1099,6 +1186,92 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* Clear Account Cloud Sync Progress & Confirmation Bar */}
+      {showSyncBanner && (
+        <div className="bg-[#0b1b14] border-b border-[#1c3b2d] px-3.5 sm:px-8 py-2">
+          <div className="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 min-w-0">
+              {syncStatus.phase === 'syncing' ? (
+                <RefreshCw className="w-3.5 h-3.5 text-[#fbbf24] animate-spin shrink-0" />
+              ) : (
+                <CloudCheck className="w-4 h-4 text-[#10b981] shrink-0" />
+              )}
+              <span className="font-semibold text-white truncate">
+                {syncStatus.phase === 'syncing'
+                  ? syncStatus.stepLabel || 'Syncing your account...'
+                  : `Synced${
+                      syncStatus.syncDurationMs > 0
+                        ? ` in ${(syncStatus.syncDurationMs / 1000).toFixed(1)}s`
+                        : ''
+                    }`}
+              </span>
+              <span className="text-[#8ba89a] hidden sm:inline">·</span>
+              <div className="flex items-center gap-2 text-[11px] font-mono">
+                {user && (
+                  <span
+                    className={`px-2 py-0.5 rounded-md border ${
+                      syncStatus.personalWordsSynced
+                        ? 'bg-[#10b981]/15 border-[#10b981]/35 text-[#a7f3d0]'
+                        : 'bg-[#12261d] border-[#1f4232] text-[#9bb8aa]'
+                    }`}
+                  >
+                    ★ {personalWords.length} Favourites{' '}
+                    {syncStatus.personalWordsSynced ? '✓' : '...'}
+                  </span>
+                )}
+                <span
+                  className={`px-2 py-0.5 rounded-md border ${
+                    syncStatus.audioTotal > 0 &&
+                    syncStatus.audioLoaded >= syncStatus.audioTotal
+                      ? 'bg-[#10b981]/15 border-[#10b981]/35 text-[#a7f3d0]'
+                      : 'bg-[#12261d] border-[#1f4232] text-[#fde68a]'
+                  }`}
+                >
+                  🔊 {counts.uploads}
+                  {syncStatus.audioTotal > counts.uploads
+                    ? `/${syncStatus.audioTotal}`
+                    : ''}{' '}
+                  Audios{' '}
+                  {syncStatus.audioTotal === 0 ||
+                  syncStatus.audioLoaded >= syncStatus.audioTotal
+                    ? '✓'
+                    : '...'}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2 shrink-0">
+              {syncStatus.phase === 'syncing' && syncStatus.audioTotal > 0 && (
+                <div className="w-20 sm:w-28 h-1.5 rounded-full bg-[#152e23] overflow-hidden">
+                  <div
+                    className="h-full bg-[#10b981] transition-all duration-200"
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.round(
+                          (syncStatus.audioLoaded /
+                            Math.max(1, syncStatus.audioTotal)) *
+                            100
+                        )
+                      )}%`,
+                    }}
+                  />
+                </div>
+              )}
+              {syncStatus.phase !== 'syncing' && (
+                <button
+                  type="button"
+                  onClick={() => setShowSyncBanner(false)}
+                  className="text-[11px] font-semibold text-[#8ba89a] hover:text-white px-1.5 py-0.5"
+                >
+                  Hide
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Mobile Live / Upcoming Contest Alert Banner (Shown only when an active or scheduled contest exists) */}
       {activeScreen !== 'contests' && liveOrUpcomingContest && (

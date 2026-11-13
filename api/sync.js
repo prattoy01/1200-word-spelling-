@@ -122,7 +122,7 @@ export default async function handler(req, res) {
     // Pull latest state from canonical Cloud Run + Cloud SQL backend if available
     try {
       const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 3500);
+      const t = setTimeout(() => controller.abort(), 1500);
       const upRes = await fetch(
         `${UPSTREAM_CLOUD_RUN_BASE}/api/sync/state?includeAudio=${includeAudio ? 'true' : 'false'}&_t=${Date.now()}`,
         { cache: 'no-store', signal: controller.signal }
@@ -433,6 +433,24 @@ export default async function handler(req, res) {
     return;
   }
 
+  // POST /api/sync/recordings-batch
+  if (req.method === 'POST' && resource === 'recordings-batch') {
+    const requestedIds = Array.isArray(body?.wordIds)
+      ? body.wordIds.map(String).slice(0, 60)
+      : [];
+    const deletedRecSet = new Set(store.deletedRecordingIds);
+    const recordingsMap = {};
+    for (const wid of requestedIds) {
+      if (!wid || deletedRecSet.has(wid)) continue;
+      const rec = store.recordings[wid];
+      if (rec && rec.audioDataUrl) {
+        recordingsMap[wid] = rec;
+      }
+    }
+    res.status(200).json({ ok: true, recordings: recordingsMap });
+    return;
+  }
+
   // DELETE /api/sync/recordings/:wordId
   if (req.method === 'DELETE' && resource === 'recordings' && param1) {
     delete store.recordings[param1];
@@ -494,7 +512,7 @@ export default async function handler(req, res) {
     }
     try {
       const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 2500);
+      const t = setTimeout(() => controller.abort(), 1500);
       const upRes = await fetch(
         `${UPSTREAM_CLOUD_RUN_BASE}/api/sync/personal-words/${encodeURIComponent(param1)}?_t=${Date.now()}`,
         { cache: 'no-store', signal: controller.signal }

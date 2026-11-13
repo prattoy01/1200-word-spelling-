@@ -413,26 +413,28 @@ export async function signInAsAdminDirect(
   );
 
   let firestorePasswordHash: string | null = null;
-  try {
-    const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
-    const snap = await Promise.race([
-      getDoc(accountRef),
-      new Promise<null>((resolve) => setTimeout(() => resolve(null), 2500)),
-    ]);
-    if (snap && snap.exists()) {
-      const data = snap.data();
-      if (typeof data?.passwordHash === 'string' && data.passwordHash.length > 0) {
-        firestorePasswordHash = data.passwordHash;
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(
-            ADMIN_CUSTOM_PWD_STORAGE_KEY,
-            firestorePasswordHash
-          );
+  if (!isFirestoreQuotaExhausted()) {
+    try {
+      const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
+      const snap = await Promise.race([
+        getDoc(accountRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
+      ]);
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        if (typeof data?.passwordHash === 'string' && data.passwordHash.length > 0) {
+          firestorePasswordHash = data.passwordHash;
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(
+              ADMIN_CUSTOM_PWD_STORAGE_KEY,
+              firestorePasswordHash
+            );
+          }
         }
       }
+    } catch {
+      // Firestore quota or offline fallback — verify against local/default hash below
     }
-  } catch {
-    // Firestore quota or offline fallback — verify against local/default hash below
   }
 
   const authoritativeHash =
@@ -449,24 +451,6 @@ export async function signInAsAdminDirect(
 
   const finalHash = authoritativeHash;
 
-  try {
-    const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, uid);
-    await setDoc(
-      accountRef,
-      {
-        uid,
-        email: cleanEmail,
-        displayName: 'Prattoy Mondal',
-        passwordHash: finalHash,
-        role: 'admin',
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
-  } catch {
-    // Firestore quota or offline fallback — proceed with verified local session
-  }
-
   const sessionToken = await computeSessionToken(uid, cleanEmail, finalHash);
   const adminProfile: CloudUserProfile = {
     uid,
@@ -482,6 +466,23 @@ export async function signInAsAdminDirect(
   };
 
   notifyAuthListeners(adminProfile);
+
+  // Sync admin record in background so login UI never hangs on slow Firestore long-polling
+  if (!isFirestoreQuotaExhausted()) {
+    void setDoc(
+      doc(db, USER_ACCOUNTS_COLLECTION, uid),
+      {
+        uid,
+        email: cleanEmail,
+        displayName: 'Prattoy Mondal',
+        passwordHash: finalHash,
+        role: 'admin',
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    ).catch(() => {});
+  }
+
   return adminProfile;
 }
 
@@ -517,16 +518,21 @@ export async function signInWithEmailPassword(params: {
 
   let existingData: { passwordHash?: string; displayName?: string } | null =
     null;
-  try {
-    const accountSnap = await getDoc(accountRef);
-    if (accountSnap.exists()) {
-      existingData = accountSnap.data() as {
-        passwordHash?: string;
-        displayName?: string;
-      };
+  if (!isFirestoreQuotaExhausted()) {
+    try {
+      const accountSnap = await Promise.race([
+        getDoc(accountRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 1100)),
+      ]);
+      if (accountSnap && accountSnap.exists()) {
+        existingData = accountSnap.data() as {
+          passwordHash?: string;
+          displayName?: string;
+        };
+      }
+    } catch {
+      // Offline / quota / timeout fallback: proceed with deterministic local session
     }
-  } catch {
-    // Offline / quota fallback: proceed with deterministic local session
   }
 
   if (existingData && existingData.passwordHash) {
@@ -565,20 +571,6 @@ export async function signInWithEmailPassword(params: {
         .replace(/[._-]+/g, ' ')
         .replace(/\b\w/g, (l) => l.toUpperCase());
 
-    try {
-      await setDoc(accountRef, {
-        uid,
-        email: cleanEmail,
-        displayName: cleanName.slice(0, 120),
-        passwordHash: inputHash,
-        role: 'user',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch {
-      // Offline / rule fallback — still allow local session
-    }
-
     const sessionToken = await computeSessionToken(uid, cleanEmail, inputHash);
     const profile: CloudUserProfile = {
       uid,
@@ -594,6 +586,19 @@ export async function signInWithEmailPassword(params: {
     };
 
     notifyAuthListeners(profile);
+
+    if (!isFirestoreQuotaExhausted()) {
+      void setDoc(accountRef, {
+        uid,
+        email: cleanEmail,
+        displayName: cleanName.slice(0, 120),
+        passwordHash: inputHash,
+        role: 'user',
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      }).catch(() => {});
+    }
+
     return profile;
   }
 }
@@ -636,25 +641,30 @@ export async function signInQuickProfile(params: {
   let finalHash = defaultHash;
   let finalName = cleanName;
 
-  try {
-    const snap = await getDoc(accountRef);
-    if (snap.exists()) {
-      const data = snap.data();
-      finalHash = data.passwordHash || defaultHash;
-      finalName = (params.displayName || '').trim() || data.displayName || cleanName;
-    } else {
-      await setDoc(accountRef, {
-        uid,
-        email: cleanEmail,
-        displayName: cleanName.slice(0, 120),
-        passwordHash: defaultHash,
-        role: 'user',
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+  if (!isFirestoreQuotaExhausted()) {
+    try {
+      const snap = await Promise.race([
+        getDoc(accountRef),
+        new Promise<null>((resolve) => setTimeout(() => resolve(null), 900)),
+      ]);
+      if (snap && snap.exists()) {
+        const data = snap.data();
+        finalHash = data.passwordHash || defaultHash;
+        finalName = (params.displayName || '').trim() || data.displayName || cleanName;
+      } else {
+        void setDoc(accountRef, {
+          uid,
+          email: cleanEmail,
+          displayName: cleanName.slice(0, 120),
+          passwordHash: defaultHash,
+          role: 'user',
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        }).catch(() => {});
+      }
+    } catch {
+      // Offline fallback
     }
-  } catch {
-    // Offline fallback
   }
 
   const sessionToken = await computeSessionToken(uid, cleanEmail, finalHash);
@@ -734,9 +744,9 @@ export async function signInStudentWithUniqueId(
     `student_unique_${internalUid}`
   );
 
-  try {
+  if (!isFirestoreQuotaExhausted()) {
     const accountRef = doc(db, USER_ACCOUNTS_COLLECTION, internalUid);
-    await setDoc(accountRef, {
+    void setDoc(accountRef, {
       uid: internalUid,
       email: uniqueEmail,
       displayName: uniqueDisplayName,
@@ -744,9 +754,7 @@ export async function signInStudentWithUniqueId(
       role: 'user',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
-  } catch {
-    // Offline fallback — local session still works immediately
+    }).catch(() => {});
   }
 
   const sessionToken = await computeSessionToken(
