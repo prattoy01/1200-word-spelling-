@@ -447,7 +447,14 @@ async function startServer() {
       if (rec && !deletedRecSet.has(wordId)) {
         recordingsMap[wordId] = includeAudio
           ? rec
-          : { ...rec, audioDataUrl: '' };
+          : {
+              ...rec,
+              audioDataUrl:
+                typeof (rec as any).audioDataUrl === 'string' &&
+                (rec as any).audioDataUrl.startsWith('gdrive://')
+                  ? (rec as any).audioDataUrl
+                  : '',
+            };
       }
     }
 
@@ -472,6 +479,58 @@ async function startServer() {
       wordOverrides: wordOverridesMap,
       deletedWordOverrideIds: store.deletedWordOverrideIds,
     });
+  });
+
+  // Public CORS-safe streaming proxy for Admin Google Drive global pronunciation audio
+  app.get('/api/sync/drive-audio/:fileId', async (req, res) => {
+    const fileId = String(req.params.fileId || '').trim();
+    if (!/^[a-zA-Z0-9_-]{10,128}$/.test(fileId)) {
+      res.status(400).json({ ok: false, error: 'Invalid Drive file ID' });
+      return;
+    }
+    const apiKey = process.env.VITE_FIREBASE_API_KEY || '';
+    const candidateUrls = [
+      ...(apiKey
+        ? [
+            `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+              fileId
+            )}?alt=media&key=${encodeURIComponent(apiKey)}`,
+          ]
+        : []),
+      `https://drive.usercontent.google.com/download?id=${encodeURIComponent(
+        fileId
+      )}&export=download`,
+      `https://drive.google.com/uc?export=download&id=${encodeURIComponent(
+        fileId
+      )}`,
+    ];
+
+    for (const upstreamUrl of candidateUrls) {
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 7000);
+        const upRes = await fetch(upstreamUrl, {
+          redirect: 'follow',
+          signal: controller.signal,
+        });
+        clearTimeout(t);
+        if (!upRes.ok) continue;
+        const ct = (upRes.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('text/html') || ct.includes('application/json')) continue;
+        const buf = Buffer.from(await upRes.arrayBuffer());
+        if (buf.length < 150) continue;
+        res.setHeader(
+          'Content-Type',
+          ct.startsWith('audio/') ? ct.split(';')[0] : 'audio/mpeg'
+        );
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.status(200).send(buf);
+        return;
+      } catch {
+        // try next upstream URL
+      }
+    }
+    res.status(404).json({ ok: false, error: 'Drive audio file unavailable' });
   });
 
   // Upsert one or more contests into Cloud SQL PostgreSQL + memory store

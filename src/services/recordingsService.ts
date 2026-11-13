@@ -25,8 +25,11 @@ import {
   USE_FIRESTORE_COLLECTION_LISTENERS,
   isFirestoreQuotaExhausted,
   markFirestoreQuotaExhausted,
+  getAdminDriveAccessToken,
+  FIRESTORE_PROJECT_ID,
+  FIRESTORE_DATABASE_ID,
+  FIRESTORE_API_KEY,
 } from '../firebase';
-import firebaseConfig from '../../firebase-applet-config.json';
 import {
   type ProcessedAudio,
   saveRecordingToLocalCache,
@@ -34,6 +37,14 @@ import {
   getAllLocalCachedRecordings,
   isSyntheticRestoredPlaceholder,
 } from '../utils/audioUtils';
+import {
+  isDriveAudioRef,
+  extractDriveFileId,
+  buildDriveAudioRef,
+  uploadWordAudioToAdminDrive,
+  deleteWordAudioFromAdminDrive,
+  fetchDriveAudioAsDataUrl,
+} from './googleDriveService';
 import {
   toWordId,
   WORDS_CATALOG,
@@ -78,6 +89,7 @@ export interface CloudRecording {
   word: string;
   banglaMeaning: string;
   audioDataUrl: string;
+  driveFileId?: string;
   mimeType: string;
   fileName: string;
   fileSize: number;
@@ -507,7 +519,7 @@ async function ensureSignaturesSeededFromIndexedDb(): Promise<
   return cachedServerAudioState?.recordings || {};
 }
 
-const FIRESTORE_REST_BASE_URL = `https://firestore.googleapis.com/v1/projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents`;
+const FIRESTORE_REST_BASE_URL = `https://firestore.googleapis.com/v1/projects/${FIRESTORE_PROJECT_ID}/databases/${FIRESTORE_DATABASE_ID}/documents`;
 
 async function fetchFirestoreRecordingsMetaRest(
   timeoutMs = 3000
@@ -517,7 +529,7 @@ async function fetchFirestoreRecordingsMetaRest(
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(
-      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${firebaseConfig.apiKey}`,
+      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${FIRESTORE_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -605,9 +617,9 @@ async function fetchFirestoreRecordingsBatchRest(
   try {
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
-    const docPrefix = `projects/${firebaseConfig.projectId}/databases/${firebaseConfig.firestoreDatabaseId}/documents/${RECORDINGS_PATH}/`;
+    const docPrefix = `projects/${FIRESTORE_PROJECT_ID}/databases/${FIRESTORE_DATABASE_ID}/documents/${RECORDINGS_PATH}/`;
     const res = await fetch(
-      `${FIRESTORE_REST_BASE_URL}:batchGet?key=${firebaseConfig.apiKey}`,
+      `${FIRESTORE_REST_BASE_URL}:batchGet?key=${FIRESTORE_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -681,7 +693,7 @@ async function fetchFirestorePersonalWordsRest(
     const controller = new AbortController();
     const timer = window.setTimeout(() => controller.abort(), timeoutMs);
     const res = await fetch(
-      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${firebaseConfig.apiKey}`,
+      `${FIRESTORE_REST_BASE_URL}:runQuery?key=${FIRESTORE_API_KEY}`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -878,15 +890,16 @@ async function fetchSharedServerAudioState(
         ([wid]) => !delRecSet.has(wid)
       );
 
-      // Compute which audio recordings this browser is missing or has an older version of
+      // Compute which audio recordings this browser is missing or has an older version of (Delta-Sync)
       const missingWordIds: string[] = [];
       let alreadyCachedCount = 0;
       for (const [wid, meta] of serverRecEntries) {
         const localRec = localMap[wid];
         const prevRec = prevRecordings[wid];
         const hasAudioLocally = Boolean(
-          (localRec?.audioDataUrl && !localRec.isPersonalOverride) ||
-            prevRec?.audioDataUrl
+          (localRec?.audioDataUrl?.startsWith('data:') &&
+            !localRec.isPersonalOverride) ||
+            prevRec?.audioDataUrl?.startsWith('data:')
         );
         const localTs = Math.max(
           localRec?.updatedAtMs || 0,
@@ -912,7 +925,7 @@ async function fetchSharedServerAudioState(
           : {}),
       });
 
-      // Step 2: Build initial merged map with whatever audio we already have locally
+      // Step 2: Build initial merged map preserving decoded local audio + tracking driveFileId
       const mergedRecordings: Record<string, CloudRecording> = {
         ...prevRecordings,
       };
@@ -921,14 +934,28 @@ async function fetchSharedServerAudioState(
       }
       for (const [wid, r] of serverRecEntries) {
         const localCached = localMap[wid];
+        const driveId = extractDriveFileId(r.audioDataUrl) || r.driveFileId;
+        const decodedLocalOrPrev =
+          (prevRecordings[wid]?.audioDataUrl?.startsWith('data:')
+            ? prevRecordings[wid].audioDataUrl
+            : '') ||
+          (!localCached?.isPersonalOverride &&
+          localCached?.audioDataUrl?.startsWith('data:')
+            ? localCached.audioDataUrl
+            : '');
         const audioDataUrl =
-          r.audioDataUrl ||
-          prevRecordings[wid]?.audioDataUrl ||
-          (!localCached?.isPersonalOverride ? localCached?.audioDataUrl : '') ||
-          '';
+          (r.audioDataUrl?.startsWith('data:') ? r.audioDataUrl : '') ||
+          decodedLocalOrPrev ||
+          (isDriveAudioRef(r.audioDataUrl) ? r.audioDataUrl : '');
         if (audioDataUrl) {
-          mergedRecordings[wid] = { ...r, audioDataUrl };
-          cachedFullAudioSignatures.add(`r:${wid}:${r?.updatedAtMs || 0}`);
+          mergedRecordings[wid] = {
+            ...r,
+            audioDataUrl,
+            ...(driveId ? { driveFileId: driveId } : {}),
+          };
+          if (audioDataUrl.startsWith('data:')) {
+            cachedFullAudioSignatures.add(`r:${wid}:${r?.updatedAtMs || 0}`);
+          }
         }
       }
 
@@ -945,52 +972,116 @@ async function fetchSharedServerAudioState(
             !prevContribMap.get(c.id)?.audioDataUrl
         );
 
-      // Step 3: Fetch ONLY missing/updated recordings in fast parallel chunks of 25
+      // Step 3: Fetch ONLY missing/updated recordings (Drive files via Drive/proxy, legacy Base64 via batch API)
       if (includeAudio && missingWordIds.length > 0) {
-        const CHUNK_SIZE = 25;
-        const chunks: string[][] = [];
-        for (let i = 0; i < missingWordIds.length; i += CHUNK_SIZE) {
-          chunks.push(missingWordIds.slice(i, i + CHUNK_SIZE));
-        }
-
         let loadedSoFar = alreadyCachedCount;
 
-        const applyFetchedRecordingsMap = (
-          recsMap: Record<string, CloudRecording>
-        ) => {
-          for (const [wid, rec] of Object.entries(recsMap)) {
-            if (rec && rec.audioDataUrl && !delRecSet.has(wid)) {
-              const wasMissing = !mergedRecordings[wid]?.audioDataUrl;
-              mergedRecordings[wid] = {
-                ...rec,
-                status: 'published',
-                source: 'cloud',
-                isPersonalOverride: false,
-              };
-              cachedFullAudioSignatures.add(
-                `r:${wid}:${rec.updatedAtMs || 0}`
-              );
-              if (wasMissing) loadedSoFar++;
-              if (!localMap[wid]?.isPersonalOverride) {
-                void saveRecordingToLocalCache({
-                  wordId: rec.wordId,
-                  word: rec.word,
-                  banglaMeaning: rec.banglaMeaning || '',
-                  audioDataUrl: rec.audioDataUrl,
-                  mimeType: rec.mimeType || 'audio/mpeg',
-                  fileName: rec.fileName || `${rec.wordId}.mp3`,
-                  fileSize: rec.fileSize || 1024,
-                  durationMs: rec.durationMs || 1200,
-                  ownerId: rec.ownerId || 'admin_general_audio',
-                  ownerName: rec.ownerName || 'General App Audio',
-                  updatedAtMs: rec.updatedAtMs || Date.now(),
-                  syncedToCloud: true,
-                  isPersonalOverride: false,
-                });
-              }
-            }
+        const hydrateResolvedRecording = (rec: CloudRecording, resolvedDataUrl: string) => {
+          const driveId = extractDriveFileId(rec.audioDataUrl) || rec.driveFileId;
+          const wasMissingDecoded = !mergedRecordings[rec.wordId]?.audioDataUrl?.startsWith('data:');
+          mergedRecordings[rec.wordId] = {
+            ...rec,
+            audioDataUrl: resolvedDataUrl,
+            ...(driveId ? { driveFileId: driveId } : {}),
+            status: 'published',
+            source: 'cloud',
+            isPersonalOverride: false,
+          };
+          cachedFullAudioSignatures.add(
+            `r:${rec.wordId}:${rec.updatedAtMs || 0}`
+          );
+          if (wasMissingDecoded) loadedSoFar++;
+          if (!localMap[rec.wordId]?.isPersonalOverride) {
+            void saveRecordingToLocalCache({
+              wordId: rec.wordId,
+              word: rec.word,
+              banglaMeaning: rec.banglaMeaning || '',
+              audioDataUrl: resolvedDataUrl,
+              ...(driveId ? { driveFileId: driveId } : {}),
+              mimeType: rec.mimeType || 'audio/mpeg',
+              fileName: rec.fileName || `${rec.wordId}.mp3`,
+              fileSize: rec.fileSize || 1024,
+              durationMs: rec.durationMs || 1200,
+              ownerId: rec.ownerId || 'admin_general_audio',
+              ownerName: rec.ownerName || 'General App Audio',
+              updatedAtMs: rec.updatedAtMs || Date.now(),
+              syncedToCloud: true,
+              isPersonalOverride: false,
+            });
           }
         };
+
+        const applyFetchedRecordingsMap = async (
+          recsMap: Record<string, CloudRecording>
+        ) => {
+          const driveToResolve: CloudRecording[] = [];
+          for (const [wid, rec] of Object.entries(recsMap)) {
+            if (!rec || !rec.audioDataUrl || delRecSet.has(wid)) continue;
+            if (isDriveAudioRef(rec.audioDataUrl)) {
+              driveToResolve.push({ ...rec, wordId: wid });
+            } else if (rec.audioDataUrl.startsWith('data:')) {
+              hydrateResolvedRecording({ ...rec, wordId: wid }, rec.audioDataUrl);
+            }
+          }
+          if (driveToResolve.length > 0) {
+            await Promise.all(
+              driveToResolve.map(async (dRec) => {
+                const resolved = await fetchDriveAudioAsDataUrl(
+                  dRec.audioDataUrl,
+                  dRec.mimeType
+                );
+                if (resolved) {
+                  hydrateResolvedRecording(dRec, resolved);
+                }
+              })
+            );
+          }
+        };
+
+        // First resolve any wordIds whose metadata already has a tiny gdrive:// reference
+        const directDriveMetas: CloudRecording[] = [];
+        const batchLookupIds: string[] = [];
+        for (const wid of missingWordIds) {
+          const meta = combinedMetaRecordings[wid];
+          if (meta && isDriveAudioRef(meta.audioDataUrl)) {
+            directDriveMetas.push(meta);
+          } else {
+            batchLookupIds.push(wid);
+          }
+        }
+
+        if (directDriveMetas.length > 0) {
+          const DRIVE_CHUNK = 8;
+          for (let i = 0; i < directDriveMetas.length; i += DRIVE_CHUNK) {
+            const slice = directDriveMetas.slice(i, i + DRIVE_CHUNK);
+            await Promise.all(
+              slice.map(async (mRec) => {
+                const resolved = await fetchDriveAudioAsDataUrl(
+                  mRec.audioDataUrl,
+                  mRec.mimeType
+                );
+                if (resolved) {
+                  hydrateResolvedRecording(mRec, resolved);
+                }
+              })
+            );
+            emitSyncStatus({
+              audioTotal: totalAudioCount,
+              audioLoaded: Math.min(totalAudioCount, loadedSoFar),
+              stepLabel: `Syncing Drive audio (${Math.min(
+                totalAudioCount,
+                loadedSoFar
+              )}/${totalAudioCount})...`,
+            });
+            notifyRecordingsListeners();
+          }
+        }
+
+        const CHUNK_SIZE = 25;
+        const chunks: string[][] = [];
+        for (let i = 0; i < batchLookupIds.length; i += CHUNK_SIZE) {
+          chunks.push(batchLookupIds.slice(i, i + CHUNK_SIZE));
+        }
 
         await Promise.all(
           chunks.map(async (chunkIds) => {
@@ -1000,17 +1091,17 @@ async function fetchSharedServerAudioState(
               4500
             );
             if (batchRecs) {
-              applyFetchedRecordingsMap(batchRecs);
+              await applyFetchedRecordingsMap(batchRecs);
             }
             const stillMissingInChunk = chunkIds.filter(
-              (wid) => !mergedRecordings[wid]?.audioDataUrl
+              (wid) => !mergedRecordings[wid]?.audioDataUrl?.startsWith('data:')
             );
             if (stillMissingInChunk.length > 0) {
               const fsBatch = await fetchFirestoreRecordingsBatchRest(
                 stillMissingInChunk,
                 4500
               );
-              applyFetchedRecordingsMap(fsBatch);
+              await applyFetchedRecordingsMap(fsBatch);
             }
             emitSyncStatus({
               audioTotal: totalAudioCount,
@@ -1273,6 +1364,7 @@ export function subscribeToPublishedRecordings(
             word: item.word,
             banglaMeaning: item.banglaMeaning,
             audioDataUrl: item.audioDataUrl,
+            ...(item.driveFileId ? { driveFileId: item.driveFileId } : {}),
             mimeType: item.mimeType,
             fileName: item.fileName,
             fileSize: item.fileSize,
@@ -1280,7 +1372,7 @@ export function subscribeToPublishedRecordings(
             ownerId: item.ownerId,
             ownerName: item.ownerName,
             status: 'published',
-            updatedAtMs: item.updatedAtMs,
+            updatedAtMs: item.syncedToCloud ? item.updatedAtMs : item.updatedAtMs,
             source: item.syncedToCloud ? 'cloud' : 'local-unsynced',
             isPersonalOverride: false,
             contributedToAdmin: Boolean(item.contributedToAdmin),
@@ -1304,12 +1396,25 @@ export function subscribeToPublishedRecordings(
             )
           ) {
             const existing = generalOnly[wordId];
+            const incomingDriveId =
+              extractDriveFileId(sRec.audioDataUrl) || sRec.driveFileId;
+            const keepExistingDecodedBlob = Boolean(
+              existing?.audioDataUrl?.startsWith('data:') &&
+                isDriveAudioRef(sRec.audioDataUrl) &&
+                (existing.updatedAtMs || 0) >= (sRec.updatedAtMs || 0)
+            );
             if (
               !existing ||
               (sRec.updatedAtMs || 0) >= (existing.updatedAtMs || 0)
             ) {
+              const resolvedDriveId =
+                incomingDriveId || existing?.driveFileId;
               const rec: CloudRecording = {
                 ...sRec,
+                audioDataUrl: keepExistingDecodedBlob
+                  ? existing!.audioDataUrl
+                  : sRec.audioDataUrl,
+                ...(resolvedDriveId ? { driveFileId: resolvedDriveId } : {}),
                 status: 'published',
                 source: 'cloud',
                 isPersonalOverride: false,
@@ -1317,12 +1422,16 @@ export function subscribeToPublishedRecordings(
               generalOnly[wordId] = rec;
               merged[wordId] = rec;
 
-              if (!localMap[wordId]?.isPersonalOverride) {
+              if (
+                !localMap[wordId]?.isPersonalOverride &&
+                rec.audioDataUrl.startsWith('data:')
+              ) {
                 void saveRecordingToLocalCache({
                   wordId: rec.wordId,
                   word: rec.word,
                   banglaMeaning: rec.banglaMeaning,
                   audioDataUrl: rec.audioDataUrl,
+                  ...(resolvedDriveId ? { driveFileId: resolvedDriveId } : {}),
                   mimeType: rec.mimeType,
                   fileName: rec.fileName,
                   fileSize: rec.fileSize,
@@ -1461,7 +1570,11 @@ export function subscribeToPublishedRecordings(
               continue;
             }
             const serverRec = latestServerGeneral[wid];
-            if (!serverRec || (item.updatedAtMs || 0) > (serverRec.updatedAtMs || 0)) {
+            if (
+              (!serverRec ||
+                (item.updatedAtMs || 0) > (serverRec.updatedAtMs || 0)) &&
+              !isDriveAudioRef(serverRec?.audioDataUrl)
+            ) {
               missingOnServer.push({
                 wordId: item.wordId,
                 word: item.word,
@@ -1672,11 +1785,39 @@ export async function publishGeneralCloudRecording(params: {
   });
 
   const nowMs = Date.now();
+  const localBinaryDataUrl = clean.audioDataUrl;
+  let cloudAudioDataUrl = clean.audioDataUrl;
+  let driveFileId: string | undefined;
+
+  // If Admin Google Drive is connected, upload audio binary to Admin's Google Drive
+  // and publish only the lightweight `gdrive://<fileId>` pointer to Firestore & /api/sync.
+  const driveToken = getAdminDriveAccessToken();
+  if (driveToken && localBinaryDataUrl.startsWith('data:')) {
+    try {
+      const uploaded = await uploadWordAudioToAdminDrive({
+        wordId: clean.wordId,
+        word: clean.word,
+        audioDataUrl: localBinaryDataUrl,
+        mimeType: clean.mimeType,
+        fileName: clean.fileName,
+        accessToken: driveToken,
+      });
+      cloudAudioDataUrl = uploaded.driveRef;
+      driveFileId = uploaded.fileId;
+    } catch (driveErr) {
+      console.warn(
+        'Admin Google Drive upload skipped (falling back to cloud database sync):',
+        driveErr
+      );
+    }
+  }
+
   const generalRec: CloudRecording = {
     wordId: clean.wordId,
     word: clean.word,
     banglaMeaning: clean.banglaMeaning,
-    audioDataUrl: clean.audioDataUrl,
+    audioDataUrl: cloudAudioDataUrl,
+    ...(driveFileId ? { driveFileId } : {}),
     mimeType: clean.mimeType,
     fileName: clean.fileName,
     fileSize: clean.fileSize,
@@ -1694,19 +1835,21 @@ export async function publishGeneralCloudRecording(params: {
   // 1. Push to shared backend server AND global cloud relay so all users receive the General Audio immediately
   await Promise.all([
     pushGeneralRecordingToSharedServer(generalRec),
-    publishRecordingUpsertToRelay(generalRec, params.existingAudioKey).catch(
-      () => {}
-    ),
+    publishRecordingUpsertToRelay(
+      { ...generalRec, audioDataUrl: localBinaryDataUrl },
+      params.existingAudioKey
+    ).catch(() => {}),
   ]);
 
-  // 2. Also cache locally if Admin doesn't have a personal override
+  // 2. Also cache decoded audio locally if Admin doesn't have a personal override
   const localMap = await getAllLocalCachedRecordings();
   if (!localMap[clean.wordId]?.isPersonalOverride) {
     await saveRecordingToLocalCache({
       wordId: clean.wordId,
       word: clean.word,
       banglaMeaning: clean.banglaMeaning,
-      audioDataUrl: clean.audioDataUrl,
+      audioDataUrl: localBinaryDataUrl,
+      ...(driveFileId ? { driveFileId } : {}),
       mimeType: clean.mimeType,
       fileName: clean.fileName,
       fileSize: clean.fileSize,
@@ -1721,7 +1864,7 @@ export async function publishGeneralCloudRecording(params: {
 
   notifyRecordingsListeners();
 
-  // 3. Also write to Cloud Firestore (with timeout race so quota limits never block)
+  // 3. Also write lightweight ref (`gdrive://...` when Drive connected, else Base64) to Cloud Firestore
   try {
     const docRef = doc(db, RECORDINGS_PATH, clean.wordId);
     await Promise.race([
@@ -1729,7 +1872,7 @@ export async function publishGeneralCloudRecording(params: {
         wordId: clean.wordId,
         word: clean.word,
         banglaMeaning: clean.banglaMeaning,
-        audioDataUrl: clean.audioDataUrl,
+        audioDataUrl: cloudAudioDataUrl,
         mimeType: clean.mimeType,
         fileName: clean.fileName,
         fileSize: clean.fileSize,
@@ -1746,6 +1889,137 @@ export async function publishGeneralCloudRecording(params: {
   } catch {
     // Shared server + Cloud Relay + local cache already updated
   }
+}
+
+/**
+ * Admin Action: Migrates existing database-hosted Base64 General Audios into the Admin's connected Google Drive
+ * so all heavy audio files live in Admin's Google Drive while Firestore/SQL/Delta-Sync store tiny `gdrive://` refs.
+ */
+export async function migrateGeneralRecordingsToAdminDrive(
+  generalRecordingsList: CloudRecording[],
+  onProgress?: (completed: number, total: number, currentWord: string) => void
+): Promise<{ migrated: number; skippedDrive: number; failed: number }> {
+  const user = auth.currentUser;
+  if (!isAdminUser(user)) {
+    throw new Error(
+      `Access denied: Only the Admin (${ADMIN_EMAIL}) can migrate General Audio to Google Drive.`
+    );
+  }
+  const driveToken = getAdminDriveAccessToken();
+  if (!driveToken) {
+    throw new Error('Please click "Connect Admin Google Drive" first.');
+  }
+
+  const localMap = await getAllLocalCachedRecordings();
+  const candidates = generalRecordingsList.filter(
+    (rec) =>
+      rec &&
+      rec.wordId &&
+      !rec.driveFileId &&
+      !isDriveAudioRef(rec.audioDataUrl) &&
+      (rec.audioDataUrl?.startsWith('data:') ||
+        localMap[rec.wordId]?.audioDataUrl?.startsWith('data:'))
+  );
+
+  const skippedDrive = generalRecordingsList.length - candidates.length;
+  if (candidates.length === 0) {
+    return { migrated: 0, skippedDrive, failed: 0 };
+  }
+
+  let migrated = 0;
+  let failed = 0;
+  let index = 0;
+  const CONCURRENCY = 3;
+
+  const worker = async () => {
+    while (index < candidates.length) {
+      const rec = candidates[index++];
+      if (!rec) continue;
+      onProgress?.(migrated + failed, candidates.length, rec.word);
+      try {
+        const binaryDataUrl = rec.audioDataUrl?.startsWith('data:')
+          ? rec.audioDataUrl
+          : localMap[rec.wordId]?.audioDataUrl || '';
+        if (!binaryDataUrl.startsWith('data:')) {
+          failed++;
+          continue;
+        }
+        const uploaded = await uploadWordAudioToAdminDrive({
+          wordId: rec.wordId,
+          word: rec.word,
+          audioDataUrl: binaryDataUrl,
+          mimeType: rec.mimeType,
+          fileName: rec.fileName,
+          accessToken: driveToken,
+        });
+        const nowMs = Date.now();
+        const updatedCloudRec: CloudRecording = {
+          ...rec,
+          audioDataUrl: uploaded.driveRef,
+          driveFileId: uploaded.fileId,
+          status: 'published',
+          updatedAtMs: nowMs,
+          source: 'cloud',
+          isPersonalOverride: false,
+        };
+
+        await Promise.all([
+          pushGeneralRecordingToSharedServer(updatedCloudRec),
+          Promise.race([
+            setDoc(doc(db, RECORDINGS_PATH, rec.wordId), {
+              wordId: rec.wordId,
+              word: rec.word,
+              banglaMeaning: rec.banglaMeaning || '',
+              audioDataUrl: uploaded.driveRef,
+              mimeType: rec.mimeType || 'audio/mpeg',
+              fileName: rec.fileName || `${rec.wordId}.mp3`,
+              fileSize: rec.fileSize || 1024,
+              durationMs: rec.durationMs || 1200,
+              ownerId: rec.ownerId || 'admin_general_audio',
+              ownerName: rec.ownerName || 'Admin Approved',
+              status: 'published',
+              createdAt: serverTimestamp(),
+              updatedAt: serverTimestamp(),
+            }),
+            new Promise<void>((resolve) => setTimeout(resolve, 2500)),
+          ]).catch(() => {}),
+        ]);
+
+        if (!localMap[rec.wordId]?.isPersonalOverride) {
+          await saveRecordingToLocalCache({
+            wordId: rec.wordId,
+            word: rec.word,
+            banglaMeaning: rec.banglaMeaning || '',
+            audioDataUrl: binaryDataUrl,
+            driveFileId: uploaded.fileId,
+            mimeType: rec.mimeType || 'audio/mpeg',
+            fileName: rec.fileName || `${rec.wordId}.mp3`,
+            fileSize: rec.fileSize || 1024,
+            durationMs: rec.durationMs || 1200,
+            ownerId: rec.ownerId || 'admin_general_audio',
+            ownerName: rec.ownerName || 'Admin Approved',
+            updatedAtMs: nowMs,
+            syncedToCloud: true,
+            isPersonalOverride: false,
+          });
+        }
+        migrated++;
+      } catch (err) {
+        console.warn(`Drive migration failed for "${rec.word}":`, err);
+        failed++;
+      }
+      onProgress?.(migrated + failed, candidates.length, rec.word);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, candidates.length) }, () =>
+      worker()
+    )
+  );
+  await fetchSharedServerAudioState(true, true);
+  notifyRecordingsListeners();
+  return { migrated, skippedDrive, failed };
 }
 
 /**
@@ -2576,11 +2850,19 @@ export async function updateRecordingBanglaMeaning(params: {
   const { recording, newBanglaMeaning } = params;
   const safeBangla = newBanglaMeaning.trim().slice(0, 200);
 
+  const driveId =
+    recording.driveFileId || extractDriveFileId(recording.audioDataUrl) || undefined;
+  const cloudAudioRef =
+    driveId && !recording.isPersonalOverride
+      ? buildDriveAudioRef(driveId)
+      : recording.audioDataUrl;
+
   await saveRecordingToLocalCache({
     wordId: recording.wordId,
     word: recording.word,
     banglaMeaning: safeBangla,
     audioDataUrl: recording.audioDataUrl,
+    ...(driveId ? { driveFileId: driveId } : {}),
     mimeType: recording.mimeType,
     fileName: recording.fileName,
     fileSize: recording.fileSize,
@@ -2596,6 +2878,8 @@ export async function updateRecordingBanglaMeaning(params: {
   if (!recording.isPersonalOverride && isAdminUser(auth.currentUser)) {
     const updatedRec: CloudRecording = {
       ...recording,
+      audioDataUrl: cloudAudioRef,
+      ...(driveId ? { driveFileId: driveId } : {}),
       banglaMeaning: safeBangla,
       updatedAtMs: Date.now(),
     };
@@ -2609,7 +2893,7 @@ export async function updateRecordingBanglaMeaning(params: {
       await updateDoc(docRef, {
         word: recording.word.slice(0, 120),
         banglaMeaning: safeBangla,
-        audioDataUrl: recording.audioDataUrl,
+        audioDataUrl: cloudAudioRef,
         mimeType: recording.mimeType,
         fileName: recording.fileName,
         fileSize: recording.fileSize,
@@ -2643,14 +2927,23 @@ export async function removePersonalRecordingOverride(
 export async function deleteWordRecording(
   wordId: string,
   _ownerId?: string,
-  alsoDeleteFromGeneralCloud = false
+  alsoDeleteFromGeneralCloud = false,
+  driveFileIdToDelete?: string | null
 ): Promise<void> {
   if (alsoDeleteFromGeneralCloud && !isAdminUser(auth.currentUser)) {
     throw new Error(
       `Access denied: Only the Admin (${ADMIN_EMAIL}) can delete General App Audio.`
     );
   }
+  let resolvedDriveFileId = driveFileIdToDelete || null;
   if (alsoDeleteFromGeneralCloud) {
+    if (!resolvedDriveFileId) {
+      const localMap = await getAllLocalCachedRecordings();
+      resolvedDriveFileId =
+        localMap[wordId]?.driveFileId ||
+        extractDriveFileId(cachedServerAudioState?.recordings?.[wordId]?.audioDataUrl) ||
+        null;
+    }
     markRecordingDeletedLocally(wordId);
   }
   await removeRecordingFromLocalCache(wordId);
@@ -2662,6 +2955,9 @@ export async function deleteWordRecording(
         method: 'DELETE',
       }).catch(() => {}),
       publishRecordingDeleteToRelay(wordId).catch(() => {}),
+      resolvedDriveFileId && getAdminDriveAccessToken()
+        ? deleteWordAudioFromAdminDrive(resolvedDriveFileId).catch(() => false)
+        : Promise.resolve(false),
     ]);
 
     const docRef = doc(db, RECORDINGS_PATH, wordId);

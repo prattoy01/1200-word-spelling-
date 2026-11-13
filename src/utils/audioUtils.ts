@@ -9,6 +9,11 @@
 
 import { WORDS_CATALOG, toWordId, type WordItem } from '../data/words';
 import { SCREENSHOT_14_REAL_AUDIO } from '../data/screenshot14Audio';
+import {
+  isDriveAudioRef,
+  buildDriveAudioRef,
+  fetchDriveAudioAsDataUrl,
+} from '../services/googleDriveService';
 
 export interface ProcessedAudio {
   audioDataUrl: string;
@@ -892,10 +897,17 @@ export async function preloadOriginalAudioForWords(
 export async function playWordAudio(options: {
   word: string;
   audioDataUrl?: string | null;
+  driveFileId?: string | null;
   bundledAudioFile?: string | null;
   playbackRate?: number;
 }): Promise<void> {
-  const { word, audioDataUrl, bundledAudioFile, playbackRate = 1.0 } = options;
+  const {
+    word,
+    audioDataUrl,
+    driveFileId,
+    bundledAudioFile,
+    playbackRate = 1.0,
+  } = options;
   const wordId = toWordId(word);
 
   const audioEl = getSharedAudioElement();
@@ -906,18 +918,30 @@ export async function playWordAudio(options: {
     }
   }
 
-  // 1. Real user-uploaded / recorded audio (ignoring any legacy synthetic sine-wave data)
+  // 1. Real user-uploaded / recorded audio or Admin Google Drive audio
+  const resolvedAudioRef =
+    audioDataUrl || (driveFileId ? buildDriveAudioRef(driveFileId) : null);
+  const isDriveRef = isDriveAudioRef(resolvedAudioRef);
   const isRealCustomAudio =
-    Boolean(audioDataUrl) &&
-    audioDataUrl!.startsWith('data:') &&
-    !isSyntheticRestoredPlaceholder(word, audioDataUrl);
+    Boolean(resolvedAudioRef) &&
+    (resolvedAudioRef!.startsWith('data:') || isDriveRef) &&
+    !isSyntheticRestoredPlaceholder(word, resolvedAudioRef);
 
-  if (isRealCustomAudio && audioDataUrl) {
-    const playedCustom = await playBlobOrDataUrlWithSharedAudio(
-      audioDataUrl,
-      playbackRate
-    );
-    if (playedCustom) return;
+  if (isRealCustomAudio && resolvedAudioRef) {
+    let playableDataUrl = resolvedAudioRef;
+    if (isDriveRef) {
+      const resolved = await fetchDriveAudioAsDataUrl(resolvedAudioRef);
+      if (resolved) {
+        playableDataUrl = resolved;
+      }
+    }
+    if (playableDataUrl.startsWith('data:')) {
+      const playedCustom = await playBlobOrDataUrlWithSharedAudio(
+        playableDataUrl,
+        playbackRate
+      );
+      if (playedCustom) return;
+    }
   }
 
   // 2. Check Embedded 14 Real MP3 Recordings (100% offline)
@@ -1051,6 +1075,7 @@ export interface CachedRecordingItem {
   word: string;
   banglaMeaning: string;
   audioDataUrl: string;
+  driveFileId?: string;
   mimeType: string;
   fileName: string;
   fileSize: number;
@@ -1149,7 +1174,8 @@ export function getWordAudioSourceInfo(options: {
 
   const hasCustomAudio =
     Boolean(recording?.audioDataUrl) &&
-    recording!.audioDataUrl!.startsWith('data:') &&
+    (recording!.audioDataUrl!.startsWith('data:') ||
+      isDriveAudioRef(recording?.audioDataUrl)) &&
     !isSyntheticRestoredPlaceholder(word, recording?.audioDataUrl);
 
   if (hasCustomAudio && recording) {

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   ShieldCheck,
   CheckCircle2,
@@ -17,6 +17,12 @@ import {
   RotateCcw,
   Save,
   LogIn,
+  HardDrive,
+  UploadCloud,
+  Unlink,
+  Database,
+  AlertTriangle,
+  RefreshCw,
 } from 'lucide-react';
 import {
   WORDS_CATALOG,
@@ -31,10 +37,12 @@ import {
   rejectAudioContribution,
   deleteAudioContribution,
   deleteWordRecording,
+  migrateGeneralRecordingsToAdminDrive,
   saveGlobalWordSpellingOverride,
   resetGlobalWordSpellingOverride,
   syncAudioContributionsNow,
 } from '../services/recordingsService';
+import { isDriveAudioRef } from '../services/googleDriveService';
 import {
   type ContestRecord,
   deleteOrCancelContest,
@@ -47,6 +55,11 @@ import {
   updateAdminPassword,
   signInAsAdminDirect,
   signInWithGoogle,
+  connectAdminGoogleDrive,
+  disconnectAdminGoogleDrive,
+  getAdminGoogleDriveStatus,
+  subscribeToAdminDriveStatus,
+  type AdminDriveStatus,
   ADMIN_EMAIL,
 } from '../firebase';
 
@@ -111,6 +124,23 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
   const [unlockError, setUnlockError] = useState<string | null>(null);
   const [isUnlockingAdmin, setIsUnlockingAdmin] = useState(false);
 
+  // Admin Google Drive connection, migration & delete confirmation states
+  const [driveStatus, setDriveStatus] = useState<AdminDriveStatus>(() =>
+    getAdminGoogleDriveStatus()
+  );
+  const [isConnectingDrive, setIsConnectingDrive] = useState(false);
+  const [migrationProgress, setMigrationProgress] = useState<{
+    completed: number;
+    total: number;
+    currentWord: string;
+  } | null>(null);
+  const [pendingDeleteGeneralRec, setPendingDeleteGeneralRec] =
+    useState<CloudRecording | null>(null);
+
+  useEffect(() => {
+    return subscribeToAdminDriveStatus(setDriveStatus);
+  }, []);
+
   const isRecognizedOwner = Boolean(isAdmin || isAdminUser(auth.currentUser));
 
   const pendingList = useMemo(
@@ -122,6 +152,20 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     () => contributions.filter((c) => c.status !== 'pending'),
     [contributions]
   );
+
+  const { driveHostedCount, dbHostedCount } = useMemo(() => {
+    let driveCount = 0;
+    let dbCount = 0;
+    for (const rec of Object.values(generalRecordingsMap)) {
+      if (!rec) continue;
+      if (rec.driveFileId || isDriveAudioRef(rec.audioDataUrl)) {
+        driveCount++;
+      } else {
+        dbCount++;
+      }
+    }
+    return { driveHostedCount: driveCount, dbHostedCount: dbCount };
+  }, [generalRecordingsMap]);
 
   const generalList = useMemo(() => {
     const q = searchGeneral.trim().toLowerCase();
@@ -402,15 +446,106 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
     }
   };
 
-  const handleDeleteGeneralAudio = async (rec: CloudRecording) => {
+  const handleConnectAdminDrive = async () => {
+    setIsConnectingDrive(true);
+    setFeedbackBanner(null);
+    try {
+      const next = await connectAdminGoogleDrive();
+      setDriveStatus(next);
+      setFeedbackBanner({
+        type: 'success',
+        text: `Connected Admin Google Drive (${next.email || ADMIN_EMAIL}). Approved General Audio and migrations now save directly to your "ListenWrite-Global-Audio" Drive folder.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Could not connect Admin Google Drive.',
+      });
+    } finally {
+      setIsConnectingDrive(false);
+    }
+  };
+
+  const handleDisconnectAdminDrive = () => {
+    disconnectAdminGoogleDrive();
+    setFeedbackBanner({
+      type: 'success',
+      text: 'Disconnected Admin Google Drive session token. Existing Drive audios remain playable for all students.',
+    });
+  };
+
+  const handleMigrateToDrive = async () => {
+    if (!driveStatus.connected) {
+      setFeedbackBanner({
+        type: 'error',
+        text: 'Please connect Admin Google Drive first before migrating database audios.',
+      });
+      return;
+    }
+    const allGeneral = Object.values(generalRecordingsMap);
+    setMigrationProgress({
+      completed: 0,
+      total: dbHostedCount,
+      currentWord: 'Preparing...',
+    });
+    setFeedbackBanner(null);
+    try {
+      const res = await migrateGeneralRecordingsToAdminDrive(
+        allGeneral,
+        (completed, total, currentWord) => {
+          setMigrationProgress({ completed, total, currentWord });
+        }
+      );
+      await onRefreshAudioState?.();
+      setFeedbackBanner({
+        type: res.failed > 0 && res.migrated === 0 ? 'error' : 'success',
+        text:
+          res.migrated === 0 && res.failed === 0
+            ? 'All General App Audios are already stored on Admin Google Drive!'
+            : `Drive Migration finished: ${res.migrated} moved to Admin Google Drive${
+                res.failed > 0 ? `, ${res.failed} skipped/failed` : ''
+              }. Firestore & /api/sync now store tiny gdrive:// pointers.`,
+      });
+    } catch (err) {
+      setFeedbackBanner({
+        type: 'error',
+        text:
+          err instanceof Error
+            ? err.message
+            : 'Failed to migrate General Audios to Google Drive.',
+      });
+    } finally {
+      setMigrationProgress(null);
+    }
+  };
+
+  const confirmDeleteGeneralAudio = async () => {
+    const rec = pendingDeleteGeneralRec;
+    if (!rec) return;
+    const isDriveHosted = Boolean(
+      rec.driveFileId || isDriveAudioRef(rec.audioDataUrl)
+    );
+    setPendingDeleteGeneralRec(null);
     setProcessingId(rec.wordId);
     setFeedbackBanner(null);
     try {
-      await deleteWordRecording(rec.wordId, rec.ownerId, true);
+      await deleteWordRecording(
+        rec.wordId,
+        rec.ownerId,
+        true,
+        rec.driveFileId || null
+      );
       await onRefreshAudioState?.();
       setFeedbackBanner({
         type: 'success',
-        text: `Removed General App Audio for "${rec.word}". Users without a personal audio will now hear the default bundled audio.`,
+        text: `Removed General App Audio for "${rec.word}"${
+          isDriveHosted && driveStatus.connected
+            ? ' (and deleted its file from Admin Google Drive)'
+            : ''
+        }. Users without a personal audio will now hear the default bundled audio.`,
       });
     } catch (err) {
       setFeedbackBanner({
@@ -604,6 +739,158 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             </div>
           </div>
         </div>
+      </section>
+
+      {/* Admin Google Drive Global Audio Storage Card */}
+      <section className="rounded-3xl bg-[#0b1913] border border-[#214535] p-5 sm:p-6 space-y-4 shadow-xl">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-start gap-3.5">
+            <div className="w-11 h-11 rounded-2xl bg-[#38bdf8]/15 border border-[#38bdf8]/35 flex items-center justify-center text-[#38bdf8] shrink-0">
+              <HardDrive className="w-5 h-5" />
+            </div>
+            <div className="space-y-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="text-sm sm:text-base font-extrabold text-white">
+                  Admin Google Drive · Global Audio Storage
+                </h2>
+                <span
+                  className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wide ${
+                    driveStatus.connected
+                      ? 'bg-[#10b981]/15 text-[#34d399] border border-[#10b981]/35'
+                      : 'bg-[#13261d] text-[#8ba89a] border border-[#244737]'
+                  }`}
+                >
+                  {driveStatus.connected
+                    ? `Connected: ${driveStatus.email || ADMIN_EMAIL}`
+                    : 'Not Connected (Optional)'}
+                </span>
+              </div>
+              <p className="text-xs text-[#8ba89a] leading-relaxed">
+                Store heavy Global MP3/WAV files in your Admin Google Drive folder (
+                <code className="text-[#c4d9ce]">ListenWrite-Global-Audio</code>
+                ) while Firestore &amp; Delta-Sync hold tiny{' '}
+                <code className="text-[#38bdf8]">gdrive://</code> pointers. Students listen seamlessly with zero Google login or OAuth prompts.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            {!driveStatus.connected ? (
+              <button
+                type="button"
+                onClick={handleConnectAdminDrive}
+                disabled={isConnectingDrive}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-white hover:bg-[#f1f3f4] text-[#1f1f1f] border border-[#dadce0] text-xs font-bold inline-flex items-center gap-2.5 shadow-sm transition-colors disabled:opacity-60"
+              >
+                <svg
+                  className="w-4 h-4 shrink-0"
+                  viewBox="0 0 24 24"
+                  aria-hidden="true"
+                >
+                  <path
+                    fill="#4285F4"
+                    d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+                  />
+                  <path
+                    fill="#34A853"
+                    d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.11-6.72-4.96H1.29v3.14C3.26 21.3 7.31 24 12 24z"
+                  />
+                  <path
+                    fill="#FBBC05"
+                    d="M5.28 14.24c-.24-.72-.38-1.49-.38-2.24s.14-1.52.38-2.24V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.99-3.14z"
+                  />
+                  <path
+                    fill="#EA4335"
+                    d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.99 3.14c.95-2.85 3.6-4.96 6.72-4.96z"
+                  />
+                </svg>
+                <span>
+                  {isConnectingDrive
+                    ? 'Authorizing Google Drive...'
+                    : 'Connect Admin Google Drive'}
+                </span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  onClick={handleMigrateToDrive}
+                  disabled={dbHostedCount === 0 || Boolean(migrationProgress)}
+                  className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[#38bdf8] hover:bg-[#0ea5e9] text-[#04131c] text-xs font-extrabold inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  {migrationProgress ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <UploadCloud className="w-3.5 h-3.5" />
+                  )}
+                  <span>
+                    {migrationProgress
+                      ? `Migrating ${migrationProgress.completed}/${migrationProgress.total}...`
+                      : dbHostedCount > 0
+                      ? `Migrate Database Audios → Drive (${dbHostedCount})`
+                      : 'All General Audios on Drive'}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDisconnectAdminDrive}
+                  disabled={Boolean(migrationProgress)}
+                  className="min-h-[40px] px-3 py-2 rounded-xl bg-[#11261d] hover:bg-[#183529] border border-[#244c3a] text-xs font-semibold text-[#c4d9ce] inline-flex items-center gap-1.5 transition-colors disabled:opacity-50"
+                >
+                  <Unlink className="w-3.5 h-3.5 text-[#f87171]" />
+                  <span>Disconnect</span>
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 text-[11px]">
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#08130e] border border-[#1a3327] text-[#38bdf8] font-semibold">
+            <HardDrive className="w-3.5 h-3.5" />
+            <span>Drive-Hosted: {driveHostedCount}</span>
+          </span>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-[#08130e] border border-[#1a3327] text-[#fbbf24] font-semibold">
+            <Database className="w-3.5 h-3.5" />
+            <span>Database-Hosted: {dbHostedCount}</span>
+          </span>
+          <span className="text-[#7ea090]">
+            Delta-Sync checks timestamps first and caches decoded audio in IndexedDB on each student&apos;s device.
+          </span>
+        </div>
+
+        {migrationProgress && (
+          <div className="rounded-2xl bg-[#08130e] border border-[#1d3e30] p-3 space-y-2">
+            <div className="flex items-center justify-between text-xs">
+              <span className="font-semibold text-[#38bdf8]">
+                Uploading &ldquo;{migrationProgress.currentWord}&rdquo; to Admin Google Drive...
+              </span>
+              <span className="font-mono text-[#c4d9ce]">
+                {migrationProgress.completed} / {migrationProgress.total}
+              </span>
+            </div>
+            <div className="h-2 rounded-full bg-[#10241b] overflow-hidden">
+              <div
+                className="h-full bg-[#38bdf8] transition-all duration-300"
+                style={{
+                  width: `${
+                    migrationProgress.total > 0
+                      ? Math.min(
+                          100,
+                          Math.round(
+                            (migrationProgress.completed /
+                              migrationProgress.total) *
+                              100
+                          )
+                        )
+                      : 0
+                  }%`,
+                }}
+              />
+            </div>
+          </div>
+        )}
       </section>
 
       {/* Feedback Banner */}
@@ -1143,59 +1430,76 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             </div>
           ) : (
             <div className="rounded-2xl bg-[#08130e] border border-[#1a3327] divide-y divide-[#14291f] max-h-96 overflow-y-auto">
-              {generalList.map((rec) => (
-                <div
-                  key={rec.wordId}
-                  className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                >
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="font-bold text-sm text-white">
-                        {rec.word}
-                      </span>
-                      {rec.banglaMeaning && (
-                        <span className="text-xs text-[#10b981]">
-                          ({rec.banglaMeaning})
+              {generalList.map((rec) => {
+                const isDriveHosted = Boolean(
+                  rec.driveFileId || isDriveAudioRef(rec.audioDataUrl)
+                );
+                return (
+                  <div
+                    key={rec.wordId}
+                    className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                  >
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="font-bold text-sm text-white">
+                          {rec.word}
                         </span>
-                      )}
-                      <span className="px-2 py-0.5 rounded bg-[#10b981]/15 text-[#10b981] text-[10px] font-bold">
-                        General Audio
-                      </span>
+                        {rec.banglaMeaning && (
+                          <span className="text-xs text-[#10b981]">
+                            ({rec.banglaMeaning})
+                          </span>
+                        )}
+                        <span className="px-2 py-0.5 rounded bg-[#10b981]/15 text-[#10b981] text-[10px] font-bold">
+                          General Audio
+                        </span>
+                        {isDriveHosted ? (
+                          <span className="px-2 py-0.5 rounded bg-[#38bdf8]/15 border border-[#38bdf8]/30 text-[#38bdf8] text-[10px] font-bold inline-flex items-center gap-1">
+                            <HardDrive className="w-2.5 h-2.5" />
+                            <span>Google Drive</span>
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-[#fbbf24]/15 border border-[#fbbf24]/30 text-[#fbbf24] text-[10px] font-bold inline-flex items-center gap-1">
+                            <Database className="w-2.5 h-2.5" />
+                            <span>Database</span>
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[11px] text-[#7ea090] mt-0.5">
+                        Source: {rec.ownerName} ·{' '}
+                        {Math.max(1, Math.round(rec.fileSize / 1024))} KB
+                      </div>
                     </div>
-                    <div className="text-[11px] text-[#7ea090] mt-0.5">
-                      Source: {rec.ownerName} ·{' '}
-                      {Math.max(1, Math.round(rec.fileSize / 1024))} KB
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          playWordAudio({
+                            word: rec.word,
+                            audioDataUrl: rec.audioDataUrl,
+                            driveFileId: rec.driveFileId,
+                          })
+                        }
+                        className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5"
+                      >
+                        <Volume2 className="w-3.5 h-3.5" />
+                        <span>Listen</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled={processingId === rec.wordId}
+                        onClick={() => setPendingDeleteGeneralRec(rec)}
+                        title="Remove General Audio override"
+                        className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#2a1215] hover:bg-[#3b181c] text-xs font-semibold text-[#f87171] flex items-center gap-1"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Remove</span>
+                      </button>
                     </div>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        playWordAudio({
-                          word: rec.word,
-                          audioDataUrl: rec.audioDataUrl,
-                        })
-                      }
-                      className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#12281e] hover:bg-[#19382a] text-xs font-semibold text-[#10b981] flex items-center gap-1.5"
-                    >
-                      <Volume2 className="w-3.5 h-3.5" />
-                      <span>Listen</span>
-                    </button>
-
-                    <button
-                      type="button"
-                      disabled={processingId === rec.wordId}
-                      onClick={() => handleDeleteGeneralAudio(rec)}
-                      title="Remove General Audio override"
-                      className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#2a1215] hover:bg-[#3b181c] text-xs font-semibold text-[#f87171] flex items-center gap-1"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                      <span>Remove</span>
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>
@@ -1359,6 +1663,60 @@ export const AdminPanelView: React.FC<AdminPanelViewProps> = ({
             </div>
           )}
         </section>
+      )}
+      {/* Explicit Confirmation Modal before deleting General App Audio / Drive file */}
+      {pendingDeleteGeneralRec && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 px-4 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="confirm-delete-general-title"
+        >
+          <div className="w-full max-w-md rounded-3xl bg-[#0d1d16] border border-[#2a5442] p-6 space-y-4 shadow-2xl">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-2xl bg-[#f87171]/15 border border-[#f87171]/40 flex items-center justify-center text-[#f87171] shrink-0">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div>
+                <h3
+                  id="confirm-delete-general-title"
+                  className="text-base font-extrabold text-white"
+                >
+                  Remove General Audio for &ldquo;{pendingDeleteGeneralRec.word}&rdquo;?
+                </h3>
+                <p className="text-xs text-[#9bb8aa] mt-1 leading-relaxed">
+                  This removes the approved General App Audio across Firestore, sync cache, and all student devices that haven&apos;t set a personal override.
+                </p>
+                {(pendingDeleteGeneralRec.driveFileId ||
+                  isDriveAudioRef(pendingDeleteGeneralRec.audioDataUrl)) && (
+                  <p className="text-xs text-[#38bdf8] mt-2 leading-relaxed">
+                    {driveStatus.connected
+                      ? 'Because Admin Google Drive is connected, this will also move the audio file in your Google Drive folder to trash.'
+                      : 'This audio is stored on Admin Google Drive. Removing it clears the app pointer (connect Admin Google Drive first if you also want to delete the file from Google Drive).'}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                onClick={() => setPendingDeleteGeneralRec(null)}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-[#11261d] hover:bg-[#173327] border border-[#224736] text-xs font-bold text-[#d2e5dc]"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void confirmDeleteGeneralAudio()}
+                className="min-h-[40px] px-4 py-2 rounded-xl bg-[#dc2626] hover:bg-[#b91c1c] text-xs font-extrabold text-white inline-flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Confirm Remove</span>
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </main>
   );

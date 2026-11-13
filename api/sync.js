@@ -200,25 +200,6 @@ export default async function handler(req, res) {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
               structuredQuery: {
-                ...(includeAudio
-                  ? {}
-                  : {
-                      select: {
-                        fields: [
-                          { fieldPath: 'wordId' },
-                          { fieldPath: 'word' },
-                          { fieldPath: 'banglaMeaning' },
-                          { fieldPath: 'mimeType' },
-                          { fieldPath: 'fileName' },
-                          { fieldPath: 'fileSize' },
-                          { fieldPath: 'durationMs' },
-                          { fieldPath: 'ownerId' },
-                          { fieldPath: 'ownerName' },
-                          { fieldPath: 'status' },
-                          { fieldPath: 'updatedAt' },
-                        ],
-                      },
-                    }),
                 from: [{ collectionId: 'recordings' }],
                 where: {
                   fieldFilter: {
@@ -292,7 +273,16 @@ export default async function handler(req, res) {
     const recordingsMap = {};
     for (const [wordId, rec] of Object.entries(store.recordings)) {
       if (rec && !deletedRecSet.has(wordId)) {
-        recordingsMap[wordId] = includeAudio ? rec : { ...rec, audioDataUrl: '' };
+        recordingsMap[wordId] = includeAudio
+          ? rec
+          : {
+              ...rec,
+              audioDataUrl:
+                typeof rec.audioDataUrl === 'string' &&
+                rec.audioDataUrl.startsWith('gdrive://')
+                  ? rec.audioDataUrl
+                  : '',
+            };
       }
     }
     const deletedWordOverrideSet = new Set(store.deletedWordOverrideIds);
@@ -316,6 +306,53 @@ export default async function handler(req, res) {
       wordOverrides: wordOverridesMap,
       deletedWordOverrideIds: store.deletedWordOverrideIds,
     });
+    return;
+  }
+
+  // GET /api/sync/drive-audio/:fileId — Public zero-login streaming proxy for Admin Google Drive audio
+  if (req.method === 'GET' && resource === 'drive-audio' && param1) {
+    const fileId = String(param1 || '').trim();
+    if (!/^[a-zA-Z0-9_-]{10,128}$/.test(fileId)) {
+      res.status(400).json({ ok: false, error: 'Invalid Drive file ID' });
+      return;
+    }
+    const candidateUrls = [
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(
+        fileId
+      )}?alt=media&key=${encodeURIComponent(FIRESTORE_API_KEY)}`,
+      `https://drive.usercontent.google.com/download?id=${encodeURIComponent(
+        fileId
+      )}&export=download`,
+      `https://drive.google.com/uc?export=download&id=${encodeURIComponent(
+        fileId
+      )}`,
+    ];
+    for (const upstreamUrl of candidateUrls) {
+      try {
+        const controller = new AbortController();
+        const t = setTimeout(() => controller.abort(), 7000);
+        const upRes = await fetch(upstreamUrl, {
+          redirect: 'follow',
+          signal: controller.signal,
+        });
+        clearTimeout(t);
+        if (!upRes.ok) continue;
+        const ct = (upRes.headers.get('content-type') || '').toLowerCase();
+        if (ct.includes('text/html') || ct.includes('application/json')) continue;
+        const buf = Buffer.from(await upRes.arrayBuffer());
+        if (buf.length < 150) continue;
+        res.setHeader(
+          'Content-Type',
+          ct.startsWith('audio/') ? ct.split(';')[0] : 'audio/mpeg'
+        );
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.status(200).send(buf);
+        return;
+      } catch {
+        // try next url
+      }
+    }
+    res.status(404).json({ ok: false, error: 'Drive audio file unavailable' });
     return;
   }
 

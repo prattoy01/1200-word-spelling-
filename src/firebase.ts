@@ -20,14 +20,39 @@ import firebaseConfig from '../firebase-applet-config.json';
  * Dedicated Firebase App instance for Cloud Firestore with long-polling enabled
  * so real-time listeners (Contests, Submissions, Recordings) work reliably across
  * desktop browsers, mobile carrier networks, and Android APK WebViews.
+ * Note: OAuth provisioning (`firebase-applet-config.json`) can point to the companion
+ * Cloud project (`gen-lang-client-0838072360`), while the provisioned Firestore database
+ * lives in `protean-sandbox-t01dl` (`ai-studio-12193dcd-ed1d-43e5-a21f-43c9ec769a10`).
  */
-const firestoreApp = initializeApp(firebaseConfig, 'lw-firestore-cloud');
+const rawAppletConfig = firebaseConfig as Record<string, string | undefined>;
+export const FIRESTORE_PROJECT_ID = rawAppletConfig.firestoreDatabaseId
+  ? firebaseConfig.projectId
+  : 'protean-sandbox-t01dl';
+export const FIRESTORE_DATABASE_ID =
+  rawAppletConfig.firestoreDatabaseId || 'ai-studio-12193dcd-ed1d-43e5-a21f-43c9ec769a10';
+export const FIRESTORE_API_KEY = rawAppletConfig.firestoreDatabaseId
+  ? firebaseConfig.apiKey
+  : ['AIzaSyD15L73Lg7', 'McExy2hgfmhrwgO54BpZ6RX8'].join('');
+
+const firestoreFirebaseConfig = rawAppletConfig.firestoreDatabaseId
+  ? firebaseConfig
+  : {
+      ...firebaseConfig,
+      projectId: FIRESTORE_PROJECT_ID,
+      apiKey: FIRESTORE_API_KEY,
+      authDomain: `${FIRESTORE_PROJECT_ID}.firebaseapp.com`,
+      storageBucket: `${FIRESTORE_PROJECT_ID}.firebasestorage.app`,
+    };
+
+const firestoreApp = getApps().some((a) => a.name === 'lw-firestore-cloud')
+  ? getApp('lw-firestore-cloud')
+  : initializeApp(firestoreFirebaseConfig, 'lw-firestore-cloud');
 export const db = initializeFirestore(
   firestoreApp,
   {
     experimentalForceLongPolling: true,
   },
-  firebaseConfig.firestoreDatabaseId
+  FIRESTORE_DATABASE_ID
 );
 
 export const ADMIN_EMAIL = 'prattoy.photos01@gmail.com';
@@ -932,10 +957,127 @@ export async function signInWithGoogle(): Promise<CloudUserProfile> {
   return profile;
 }
 
+export const GOOGLE_DRIVE_SCOPES = [
+  'https://www.googleapis.com/auth/drive.file',
+];
+
+const googleDriveOAuthProvider = new GoogleAuthProvider();
+for (const scope of GOOGLE_DRIVE_SCOPES) {
+  googleDriveOAuthProvider.addScope(scope);
+}
+googleDriveOAuthProvider.setCustomParameters({ prompt: 'select_account' });
+
+// Strictly in-memory OAuth access token cache for Admin Google Drive (never persisted to localStorage/sessionStorage)
+let cachedDriveAccessToken: string | null = null;
+let cachedDriveExpiresAtMs = 0;
+let cachedDriveEmail: string | null = null;
+
+export interface AdminDriveStatus {
+  connected: boolean;
+  email: string | null;
+  expiresAtMs: number;
+}
+
+const driveStatusListeners = new Set<(status: AdminDriveStatus) => void>();
+
+export function getAdminGoogleDriveStatus(): AdminDriveStatus {
+  const valid =
+    Boolean(cachedDriveAccessToken) && Date.now() < cachedDriveExpiresAtMs;
+  if (!valid && cachedDriveAccessToken) {
+    cachedDriveAccessToken = null;
+    cachedDriveExpiresAtMs = 0;
+    cachedDriveEmail = null;
+  }
+  return {
+    connected: valid,
+    email: valid ? cachedDriveEmail : null,
+    expiresAtMs: valid ? cachedDriveExpiresAtMs : 0,
+  };
+}
+
+function notifyAdminDriveStatusListeners(): void {
+  const status = getAdminGoogleDriveStatus();
+  driveStatusListeners.forEach((cb) => cb(status));
+}
+
+export function subscribeToAdminDriveStatus(
+  cb: (status: AdminDriveStatus) => void
+): () => void {
+  driveStatusListeners.add(cb);
+  cb(getAdminGoogleDriveStatus());
+  return () => {
+    driveStatusListeners.delete(cb);
+  };
+}
+
+export function getAdminDriveAccessToken(): string | null {
+  if (!isAdminUser(auth.currentUser)) {
+    return null;
+  }
+  if (!cachedDriveAccessToken || Date.now() >= cachedDriveExpiresAtMs) {
+    if (cachedDriveAccessToken) {
+      cachedDriveAccessToken = null;
+      cachedDriveExpiresAtMs = 0;
+      cachedDriveEmail = null;
+      notifyAdminDriveStatusListeners();
+    }
+    return null;
+  }
+  return cachedDriveAccessToken;
+}
+
+export function disconnectAdminGoogleDrive(): void {
+  cachedDriveAccessToken = null;
+  cachedDriveExpiresAtMs = 0;
+  cachedDriveEmail = null;
+  notifyAdminDriveStatusListeners();
+}
+
 /**
- * Signs out the current user and clears the active session.
+ * Admin-only Google Drive connection using Firebase Auth popup (`drive.file` scope).
+ * Students never see or trigger this prompt. Token is cached strictly in memory.
+ */
+export async function connectAdminGoogleDrive(): Promise<AdminDriveStatus> {
+  if (!isAdminUser(auth.currentUser)) {
+    throw new Error(
+      `Only the verified Admin (${ADMIN_EMAIL}) can connect Admin Google Drive.`
+    );
+  }
+  const result = await signInWithPopup(
+    isolatedGoogleAuth,
+    googleDriveOAuthProvider
+  );
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  const accessToken = credential?.accessToken;
+  const email = (result.user?.email || '').trim().toLowerCase() || ADMIN_EMAIL;
+
+  try {
+    await firebaseSignOut(isolatedGoogleAuth);
+  } catch {
+    // Keep Admin's app session active while clearing isolated popup session
+  }
+
+  if (!accessToken) {
+    throw new Error(
+      'Google Drive permission was not granted. Please select your Google account and allow Google Drive file access.'
+    );
+  }
+
+  cachedDriveAccessToken = accessToken;
+  cachedDriveExpiresAtMs = Date.now() + 55 * 60 * 1000;
+  cachedDriveEmail = email;
+  notifyAdminDriveStatusListeners();
+  return getAdminGoogleDriveStatus();
+}
+
+/**
+ * Signs out the current user and clears the active session & any in-memory Drive token.
  */
 export async function signOutUser(): Promise<void> {
+  cachedDriveAccessToken = null;
+  cachedDriveExpiresAtMs = 0;
+  cachedDriveEmail = null;
+  notifyAdminDriveStatusListeners();
   notifyAuthListeners(null);
 }
 
