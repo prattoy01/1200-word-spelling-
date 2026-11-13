@@ -56,6 +56,7 @@ import {
   refreshOfflineOriginalAudioIndex,
 } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
+import { AudioSourceTag } from './AudioSourceTag';
 
 interface PracticeViewProps {
   recordingsMap: Record<string, CloudRecording>;
@@ -1971,8 +1972,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                   <Volume2 className="w-5 h-5" />
                 </div>
                 <div>
-                  <div className="text-sm font-bold text-white">
-                    Automatic Audio Playback ({examPlayCount} of 3)
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-bold text-white">
+                      Automatic Audio Playback ({examPlayCount} of 3)
+                    </span>
+                    <AudioSourceTag
+                      word={activeExamWord.word}
+                      recording={activeExamRec}
+                      hasBundledAudio={activeExamWord.hasBundledAudio}
+                      compact
+                    />
                   </div>
                   <div className="text-xs text-[#8ba89a] mt-0.5">
                     Listening strictly: Plays 3 times with pauses. Replay &amp; Move Back are locked.
@@ -2139,13 +2148,19 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         <XCircle className="w-5 h-5 text-[#f87171] shrink-0 mt-0.5" />
                       )}
                       <div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
                           <span className="font-mono text-xs text-[#6d8a7b]">
                             #{idx + 1}
                           </span>
                           <span className="font-bold text-sm text-white">
                             {ans.wordItem.word}
                           </span>
+                          <AudioSourceTag
+                            word={ans.wordItem.word}
+                            recording={rec}
+                            hasBundledAudio={ans.wordItem.hasBundledAudio}
+                            compact
+                          />
                           <span className="text-xs text-[#8ba89a]">
                             ({rec?.banglaMeaning || ans.wordItem.bangla})
                           </span>
@@ -2319,21 +2334,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         {currentWord.category}
                       </span>
                       <span aria-hidden="true">·</span>
-                      <span
-                        className={`whitespace-nowrap text-[11px] ${
-                          activeRecording
-                            ? 'text-[#fbbf24] font-semibold'
-                            : currentWord.hasBundledAudio
-                            ? 'text-[#10b981]'
-                            : 'text-[#f87171]'
-                        }`}
-                      >
-                        {activeRecording
-                          ? 'Custom Audio'
-                          : currentWord.hasBundledAudio
-                          ? 'Studio Voice'
-                          : 'TTS Voice'}
-                      </span>
+                      <AudioSourceTag
+                        word={currentWord.word}
+                        recording={activeRecording}
+                        hasBundledAudio={currentWord.hasBundledAudio}
+                        compact
+                      />
                     </div>
 
                     <div className="flex flex-wrap items-center gap-1.5 shrink-0">
@@ -2648,8 +2654,16 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                         <div className="text-[10px] font-semibold uppercase tracking-wider text-[#10b981]">
                           Answer Spelling
                         </div>
-                        <div className="text-lg sm:text-2xl font-bold font-mono text-white break-words tracking-wide">
-                          {currentWord.word}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-lg sm:text-2xl font-bold font-mono text-white break-words tracking-wide">
+                            {currentWord.word}
+                          </span>
+                          <AudioSourceTag
+                            word={currentWord.word}
+                            recording={activeRecording}
+                            hasBundledAudio={currentWord.hasBundledAudio}
+                            compact
+                          />
                         </div>
                       </div>
                       <button
@@ -2766,11 +2780,19 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                                 ? 'Correct Spelling!'
                                 : 'Check Spelling Carefully'}
                             </div>
-                            <div className="mt-0.5 text-sm">
-                              Correct Answer:{' '}
-                              <strong className="font-mono text-white underline decoration-[#10b981]">
-                                {currentWord.word}
-                              </strong>
+                            <div className="mt-0.5 text-sm flex flex-wrap items-center gap-2">
+                              <span>
+                                Correct Answer:{' '}
+                                <strong className="font-mono text-white underline decoration-[#10b981]">
+                                  {currentWord.word}
+                                </strong>
+                              </span>
+                              <AudioSourceTag
+                                word={currentWord.word}
+                                recording={activeRecording}
+                                hasBundledAudio={currentWord.hasBundledAudio}
+                                compact
+                              />
                             </div>
                           </div>
                         </div>
@@ -3136,6 +3158,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                             >
                               {item.word}
                             </span>
+                            <AudioSourceTag
+                              word={item.word}
+                              recording={rec}
+                              hasBundledAudio={item.hasBundledAudio}
+                              compact
+                            />
                             {isSelectedWord && (
                               <span className="px-2 py-0.5 rounded-md bg-[#10b981]/20 text-[#10b981] text-[10px] font-bold whitespace-nowrap shrink-0">
                                 {shouldBlurActiveSpelling
@@ -3617,6 +3645,12 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                                 <span className="font-bold text-sm text-white">
                                   {item.word}
                                 </span>
+                                <AudioSourceTag
+                                  word={item.word}
+                                  recording={rec}
+                                  hasBundledAudio={catalogMatch?.hasBundledAudio}
+                                  compact
+                                />
                                 {banglaText && (
                                   <span className="text-xs text-[#8ba89a]">
                                     ({banglaText})
@@ -3723,13 +3757,19 @@ export const PracticeView: React.FC<PracticeViewProps> = ({
                           key={w.id}
                           className="p-3.5 sm:px-5 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
                         >
-                          <div className="flex items-center gap-2.5">
+                          <div className="flex flex-wrap items-center gap-2.5">
                             <span className="font-mono text-xs text-[#6d8a7b]">
                               #{idx + 1}
                             </span>
                             <span className="font-bold text-sm text-white">
                               {w.word}
                             </span>
+                            <AudioSourceTag
+                              word={w.word}
+                              recording={rec}
+                              hasBundledAudio={w.hasBundledAudio}
+                              compact
+                            />
                             <span className="text-xs text-[#8ba89a]">
                               ({rec?.banglaMeaning || w.bangla})
                             </span>

@@ -1121,3 +1121,84 @@ export async function getAllLocalCachedRecordings(): Promise<
   }
 }
 
+export type WordAudioSourceKind =
+  | 'personal'
+  | 'admin'
+  | 'default-bundled'
+  | 'browser-default';
+
+export interface WordAudioSourceInfo {
+  kind: WordAudioSourceKind;
+  label: string;
+  shortLabel: string;
+  detail: string;
+}
+
+export function getWordAudioSourceInfo(options: {
+  word: string;
+  recording?: {
+    audioDataUrl?: string | null;
+    isPersonalOverride?: boolean;
+    ownerName?: string | null;
+  } | null;
+  hasBundledAudio?: boolean;
+}): WordAudioSourceInfo {
+  const { word, recording, hasBundledAudio } = options;
+  const wordId = toWordId(word);
+  const normWord = word.toLowerCase().trim();
+
+  const hasCustomAudio =
+    Boolean(recording?.audioDataUrl) &&
+    recording!.audioDataUrl!.startsWith('data:') &&
+    !isSyntheticRestoredPlaceholder(word, recording?.audioDataUrl);
+
+  if (hasCustomAudio && recording) {
+    if (recording.isPersonalOverride) {
+      return {
+        kind: 'personal',
+        label: 'Personal Audio',
+        shortLabel: 'Personal',
+        detail: 'Your personal recorded or uploaded pronunciation',
+      };
+    }
+    const cleanOwner = (recording.ownerName || '').trim();
+    const isNamedContributor =
+      Boolean(cleanOwner) &&
+      !/^(admin|general app audio)$/i.test(cleanOwner);
+    return {
+      kind: 'admin',
+      label: 'Admin Audio',
+      shortLabel: 'Admin Audio',
+      detail: isNamedContributor
+        ? `Submitted by ${cleanOwner} (Admin Approved)`
+        : 'Recorded / Submitted by Admin',
+    };
+  }
+
+  const catalogMatch =
+    wordLookupMap.get(normWord) || wordLookupMap.get(wordId);
+  const isBundled =
+    Boolean(hasBundledAudio) ||
+    Boolean(catalogMatch?.hasBundledAudio) ||
+    embeddedOriginalAudioMap.has(wordId) ||
+    embeddedOriginalAudioMap.has(normWord) ||
+    (catalogMatch ? embeddedOriginalAudioMap.has(catalogMatch.id) : false);
+
+  if (isBundled) {
+    return {
+      kind: 'default-bundled',
+      label: 'Default Audio',
+      shortLabel: 'Default Audio',
+      detail: 'Default built-in studio pronunciation audio',
+    };
+  }
+
+  return {
+    kind: 'browser-default',
+    label: 'Browser Audio',
+    shortLabel: 'Browser Audio',
+    detail: 'Playing default browser voice (no Admin recording yet)',
+  };
+}
+
+

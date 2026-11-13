@@ -36,6 +36,7 @@ import {
 import { WORDS_CATALOG, type WordItem } from '../data/words';
 import { auth } from '../firebase';
 import { MultiWordAudioBuilder } from './MultiWordAudioBuilder';
+import { AudioSourceTag } from './AudioSourceTag';
 
 interface PersonalWordsModalProps {
   isOpen: boolean;
@@ -571,11 +572,12 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
                                 ({item.bangla})
                               </span>
                             )}
-                            {customRec?.isPersonalOverride && (
-                              <span className="px-2 py-0.5 rounded bg-[#38bdf8]/15 text-[#38bdf8] text-[10px] font-bold">
-                                Custom Voice
-                              </span>
-                            )}
+                            <AudioSourceTag
+                              word={wordItem.word}
+                              recording={customRec}
+                              hasBundledAudio={wordItem.hasBundledAudio}
+                              compact
+                            />
                           </div>
                           {item.example && (
                             <p className="text-[11px] text-[#7ea090] mt-0.5 truncate">
@@ -646,6 +648,12 @@ export const PersonalWordsModal: React.FC<PersonalWordsModalProps> = ({
                           <span className="font-bold font-mono text-sm text-white">
                             {item.word}
                           </span>
+                          <AudioSourceTag
+                            word={item.word}
+                            recording={customRec}
+                            hasBundledAudio={item.hasBundledAudio}
+                            compact
+                          />
                           <span className="text-xs text-[#10b981]">
                             ({bangla})
                           </span>

@@ -47,6 +47,7 @@ import {
 } from '../services/contestService';
 import { playWordAudio } from '../utils/audioUtils';
 import { NoSuggestSpellingInput } from './NoSuggestSpellingInput';
+import { AudioSourceTag } from './AudioSourceTag';
 import { signInStudentWithUniqueId, type User } from '../firebase';
 
 interface ContestPlatformViewProps {
@@ -2396,11 +2397,18 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                                     <XCircle className="w-4 h-4 text-[#f87171] shrink-0 mt-0.5" />
                                   )}
                                   <div className="min-w-0 text-xs">
-                                    <div className="font-mono font-bold text-white">
-                                      #{i + 1}. {r.word}{' '}
-                                      <span className="font-sans font-normal text-[#8ba89a]">
-                                        ({r.bangla})
+                                    <div className="flex flex-wrap items-center gap-2 font-mono font-bold text-white">
+                                      <span>
+                                        #{i + 1}. {r.word}{' '}
+                                        <span className="font-sans font-normal text-[#8ba89a]">
+                                          ({r.bangla})
+                                        </span>
                                       </span>
+                                      <AudioSourceTag
+                                        word={r.word}
+                                        recording={rec}
+                                        compact
+                                      />
                                     </div>
                                     <div className="text-[11px] mt-0.5">
                                       Your Answer:{' '}
@@ -2441,9 +2449,17 @@ export const ContestPlatformView: React.FC<ContestPlatformViewProps> = ({
                               key={w.id}
                               className="p-2.5 rounded-xl bg-[#09140f] border border-[#173024] text-xs flex items-center justify-between gap-2"
                             >
-                              <span className="font-mono font-bold text-white truncate">
-                                #{idx + 1}. {w.word}
-                              </span>
+                              <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                                <span className="font-mono font-bold text-white truncate">
+                                  #{idx + 1}. {w.word}
+                                </span>
+                                <AudioSourceTag
+                                  word={w.word}
+                                  recording={recordingsMap[w.id]}
+                                  hasBundledAudio={w.hasBundledAudio}
+                                  compact
+                                />
+                              </div>
                               <button
                                 type="button"
                                 onClick={() =>

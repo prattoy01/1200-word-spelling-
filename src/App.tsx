@@ -1671,13 +1671,13 @@ export default function App() {
                             </span>
                           ) : (
                             <span className="text-[#fbbf24]">
-                              General App Audio
+                              Admin Audio (General)
                             </span>
                           )
                         ) : item.hasBundledAudio ? (
-                          <span className="text-[#10b981]">Bundled</span>
+                          <span className="text-[#10b981]">Default Audio</span>
                         ) : (
-                          <span className="text-[#f87171]">Missing</span>
+                          <span className="text-[#cbd5e1]">Browser Audio</span>
                         )}
                       </div>
                     </button>
@@ -1734,16 +1734,16 @@ export default function App() {
                       ? 'text-[#fbbf24]'
                       : selectedWord.hasBundledAudio
                       ? 'text-[#10b981]'
-                      : 'text-[#f87171]'
+                      : 'text-[#cbd5e1]'
                   }`}
                 >
                   {selectedRecording
                     ? selectedRecording.isPersonalOverride
                       ? 'My Personal Audio (Locked for You)'
-                      : 'General App Audio (Admin Approved)'
+                      : 'Admin Audio (General App)'
                     : selectedWord.hasBundledAudio
-                    ? 'Bundled'
-                    : 'Missing'}
+                    ? 'Default Audio (Bundled)'
+                    : 'Browser Audio (Default Voice)'}
                 </span>
 
                 {selectedRecording &&
